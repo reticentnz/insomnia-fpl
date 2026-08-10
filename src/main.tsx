@@ -300,6 +300,13 @@ function App() {
   const [syncingAccount, setSyncingAccount] = useState(false);
   const [userName, setUserName] = useState<string>(() => {
     try {
+      const savedAccount =
+        localStorage.getItem("insomnia-fpl-account") ||
+        localStorage.getItem("fplgod-account");
+      if (savedAccount) {
+        const parsed = JSON.parse(savedAccount);
+        if (parsed?.managerName) return parsed.managerName;
+      }
       return (
         localStorage.getItem("insomnia-fpl-user-name") ||
         localStorage.getItem("fplgod-user-name") ||
@@ -960,6 +967,10 @@ function App() {
       }
       setFplAccount(res.account);
       localStorage.setItem("insomnia-fpl-account", JSON.stringify(res.account));
+      if (res.account.managerName) {
+        setUserName(res.account.managerName);
+        localStorage.setItem("insomnia-fpl-user-name", res.account.managerName);
+      }
       saveUserProfile(res.account, ids.length === 15 ? ids : selectedIds);
 
       if (res.account.bank !== undefined) {
