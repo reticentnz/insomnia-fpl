@@ -28,9 +28,9 @@ COPY package.json package-lock.json ./
 RUN --mount=type=cache,target=/root/.npm npm install --omit=dev --no-audit
 
 COPY --from=build --chown=node:node /app/dist ./dist
-COPY --from=build --chown=node:node /app/scripts/serve.mjs ./scripts/serve.mjs
-COPY --from=build --chown=node:node /app/scripts/db.mjs ./scripts/db.mjs
-COPY --from=build --chown=node:node /app/src/player-signals.ts ./src/player-signals.ts
+COPY --from=build --chown=node:node /app/scripts ./scripts
+COPY --from=build --chown=node:node /app/prisma ./prisma
+COPY --from=build --chown=node:node /app/src ./src
 RUN mkdir -p /app/data && chown node:node /app/data
 
 USER node
