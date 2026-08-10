@@ -3539,10 +3539,9 @@ function EvidencePanel({
             {result.signals.map((signal) => {
               const player = squad.find((p) => p.id === signal.playerId);
               const xPts = player ? horizonProjection(player, horizon) : null;
-              const proposedProb =
-                signal.value.startProbability !== undefined
-                  ? Math.round(signal.value.startProbability * 100)
-                  : null;
+              const rawProb = signal.value?.startProbability;
+              const normProb = typeof rawProb === "number" ? (rawProb > 1 ? rawProb / 100 : rawProb) : null;
+              const proposedProb = normProb !== null ? Math.round(normProb * 100) : null;
 
               return (
                 <article className="evidence-item" key={signal.id}>
@@ -4505,10 +4504,9 @@ function SignalsTab({
         <div className="signal-feed">
           {filtered.map((signal) => {
             const player = playerMap.get(signal.playerId);
-            const proposedProb =
-              typeof signal.value?.startProbability === "number"
-                ? Math.round(signal.value.startProbability * 100)
-                : null;
+            const rawProb = signal.value?.startProbability;
+            const normProb = typeof rawProb === "number" ? (rawProb > 1 ? rawProb / 100 : rawProb) : null;
+            const proposedProb = normProb !== null ? Math.round(normProb * 100) : null;
             const isReviewing = reviewingId === signal.id;
 
             return (

@@ -120,7 +120,10 @@ function confidenceLabel(confidence: number): RoleConfidence {
 function signalRole(signal: PlayerSignal): RoleSignalValue {
   // Null is an explicit "not supplied" value in LLM-normalized signals.
   // Only a numeric start probability should override the depth-role fallback.
-  if (typeof signal.value.startProbability === "number") return signal.value;
+  if (typeof signal.value.startProbability === "number") {
+    const prob = signal.value.startProbability > 1 ? signal.value.startProbability / 100 : signal.value.startProbability;
+    return { ...signal.value, startProbability: prob };
+  }
   if (signal.value.depthRole === "FIRST_CHOICE")
     return { ...signal.value, startProbability: 0.88 };
   if (signal.value.depthRole === "ROTATION")

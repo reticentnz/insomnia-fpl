@@ -36,8 +36,39 @@ import { ensureDatabaseSchema } from './db-push.mjs'
 let systemStatus = {
   status: 'initializing',
   isSeeding: false,
+  isIngesting: false,
   message: 'Initializing database schema...',
-  playerCount: 0
+  playerCount: 0,
+  lastIngestedAt: null,
+  nextIngestAt: null,
+  ingestIntervalHours: 12
+}
+
+let scheduledIngestTimer = null
+
+function setupScheduledIngestion() {
+  const hoursRaw = process.env.FPL_INGEST_INTERVAL_HOURS ?? '12'
+  const hours = parseFloat(hoursRaw)
+  if (isNaN(hours) || hours <= 0) {
+    console.log('⏱️ Periodic FPL ingestion is disabled (FPL_INGEST_INTERVAL_HOURS=0).')
+    systemStatus.ingestIntervalHours = 0
+    return
+  }
+
+  const intervalMs = hours * 60 * 60 * 1000
+  systemStatus.ingestIntervalHours = hours
+  systemStatus.nextIngestAt = new Date(Date.now() + intervalMs).toISOString()
+  console.log(`⏱️ Scheduled periodic FPL ingestion active every ${hours} hour(s). Next run at: ${systemStatus.nextIngestAt}`)
+
+  if (scheduledIngestTimer) clearInterval(scheduledIngestTimer)
+  scheduledIngestTimer = setInterval(() => {
+    if (systemStatus.isSeeding || systemStatus.isIngesting) {
+      console.log('⏱️ Scheduled ingestion skipped (ingestion already in progress).')
+      return
+    }
+    console.log('⏱️ Starting scheduled periodic FPL ingestion...')
+    triggerBackgroundIngest()
+  }, intervalMs)
 }
 
 async function performColdStartInitialization() {
@@ -61,6 +92,8 @@ async function performColdStartInitialization() {
       systemStatus.message = `System ready with ${count} players.`
       console.log(`✅ Database ready (${count} players loaded).`)
     }
+
+    setupScheduledIngestion()
   } catch (err) {
     console.error('⚠️ Cold-start setup warning:', err.message)
     systemStatus.status = 'error'
@@ -69,10 +102,16 @@ async function performColdStartInitialization() {
 }
 
 async function triggerBackgroundIngest() {
+  if (systemStatus.isIngesting) {
+    console.log('⚠️ Background ingestion launch skipped: Ingestion already in progress.')
+    return false
+  }
   try {
+    systemStatus.isIngesting = true
     const { execFile } = await import('node:child_process')
     const scriptPath = path.resolve('scripts/ingest-fpl.mjs')
-    execFile(process.execPath, ['--experimental-strip-types', scriptPath], (error) => {
+    execFile(process.execPath, ['--experimental-strip-types', scriptPath], async (error) => {
+      systemStatus.isIngesting = false
       if (error) {
         console.error('⚠️ Background FPL ingestion note:', error.message)
         systemStatus.status = 'error'
@@ -83,12 +122,24 @@ async function triggerBackgroundIngest() {
         systemStatus.status = 'ready'
         systemStatus.isSeeding = false
         systemStatus.message = 'Live FPL data ingested successfully.'
+        systemStatus.lastIngestedAt = new Date().toISOString()
+        if (systemStatus.ingestIntervalHours > 0) {
+          systemStatus.nextIngestAt = new Date(Date.now() + systemStatus.ingestIntervalHours * 60 * 60 * 1000).toISOString()
+        }
+        try {
+          const db = await getDb()
+          const result = await db.query('SELECT COUNT(*) as count FROM "Player"').catch(() => ({ rows: [{ count: 0 }] }))
+          systemStatus.playerCount = Number(result.rows[0]?.count || 0)
+        } catch {}
       }
     })
+    return true
   } catch (err) {
+    systemStatus.isIngesting = false
     console.error('⚠️ Background ingestion launch error:', err)
     systemStatus.status = 'ready'
     systemStatus.isSeeding = false
+    return false
   }
 }
 
@@ -601,7 +652,7 @@ function groundedResponseFailure(data,model,webSearchCalls,provider='openai'){
   const usage=researchUsage(model,data?.usage,webSearchCalls,provider)
   const tokenSummary=usage.totalTokens?` Usage: ${usage.totalTokens.toLocaleString()} tokens (${usage.inputTokens.toLocaleString()} input, ${usage.outputTokens.toLocaleString()} output).`:''
   if(refusal)return `Grounded research was refused: ${String(refusal).slice(0,400)}${tokenSummary}`
-  if(status==='incomplete'&&reason==='max_output_tokens')return `Grounded research exhausted its 6,000-token response budget before producing the structured audit.${tokenSummary}`
+  if(status==='incomplete'&&reason==='max_output_tokens')return `Grounded research exhausted its token response budget before producing the structured audit.${tokenSummary}`
   if(status==='incomplete')return `Grounded research was incomplete (${reason||'reason not supplied'}) and produced no structured audit.${tokenSummary}`
   if(status==='failed')return `Grounded research failed${data?.error?.message?`: ${data.error.message}`:'.'}${tokenSummary}`
   const outputTypes=(Array.isArray(data?.output)?data.output:[]).map(item=>item?.type).filter(Boolean)
@@ -647,12 +698,14 @@ function normalizeDeepSeekSignals(parsed,players,priorityAudit,deadline){
       signalType.includes('ROLE')||signalType.includes('DEPTH')?'EXPECTED_ROLE':'EXPECTED_ROLE'
     )
     const originalValue=raw.value&&typeof raw.value==='object'?raw.value:{}
+    const rawStartProb = originalValue.startProbability ?? raw.startProbability ?? null
+    const startProbability = typeof rawStartProb === 'number' ? (rawStartProb > 1 ? rawStartProb / 100 : rawStartProb) : null
     return {
       ...raw,
       playerName:raw.playerName||audit?.name||players.find(player=>player.id===raw.playerId)?.name||`Player ${raw.playerId}`,
       kind,
       value:{
-        startProbability:originalValue.startProbability??raw.startProbability??null,
+        startProbability,
         minutesIfStarting:originalValue.minutesIfStarting??null,
         substituteProbabilityWhenBenched:originalValue.substituteProbabilityWhenBenched??null,
         minutesIfSubstitute:originalValue.minutesIfSubstitute??null,
@@ -685,8 +738,8 @@ async function callGroundedSquadChallenge(players,gameweek,deadline,customConfig
     `Today is ${new Date().toISOString().slice(0,10)}. Research the supplied locked squad for Gameweek ${gameweek}.`,
     'Search the live web. Challenge only factual assumptions that materially affect expected starts, minutes, position/role, injuries, penalties, set pieces, or preseason hierarchy.',
     'Use a maximum of one focused web search per priority player and stop searching once that player has a credible current source. Do not repeat broad squad-wide searches or paste long source text into the response.',
-    'Prefer official club and Premier League sources, then reputable current journalists or established predicted-lineup publications. Do not create signals from fan opinion, squad-structure preferences, or another site merely preferring one player.',
-    'Every signal must have a directly supporting source URL you actually opened. Copy sourceUrl verbatim from a URL returned by web search; do not reconstruct or rewrite it. If evidence is conflicting, lower confidence and explain the conflict. Start probabilities are calibrated estimates, not quoted facts.',
+    'Prefer official club and Premier League sources, then reputable current journalists or established predicted-lineup publications. Do not create signals from fan opinion, squad-structure preferences, or another site merely preferring one player. Note: Preseason friendly lineups alone are high-rotation and low-confidence unless backed by manager comments.',
+    'Every signal must have a directly supporting source URL you actually opened. Copy sourceUrl verbatim from a URL returned by web search; do not reconstruct or rewrite it. If evidence is conflicting, lower confidence and explain the conflict. Start probabilities are calibrated estimates between 0.0 and 1.0 (e.g. 0.05 for 5%, 0.15 for 15%), NOT percentages over 1.0.',
     'You must return exactly one audits entry for every player in Priority audit. Do not spend searches proving routine low-risk starters are safe. For a budget goalkeeper, explicitly establish whether they are first choice, competition, or backup. For a recent transfer, explicitly establish their expected new-team role rather than carrying forward old-club minutes.',
     'Use outcome MATERIAL_RISK whenever the evidence implies a meaningful projection change, and include a matching signal for that player. NO_MATERIAL_RISK requires a supporting searched source. Use INSUFFICIENT_EVIDENCE only after searching; its sourceUrl may be an empty string.',
     'Keep the overall summary under 180 words and each audit or signal evidenceSummary under 80 words. Return only the requested JSON object—no preamble, no markdown, and no conversational explanation before or after it.',
@@ -698,7 +751,7 @@ async function callGroundedSquadChallenge(players,gameweek,deadline,customConfig
     `Players: ${JSON.stringify(players.map(player=>({id:player.id,name:player.name,club:player.club,position:player.position,price:player.price,projectedPoints:player.projectedPoints,roleProfile:player.roleProfile,transferredRecently:player.transferredRecently,status:player.status,news:player.news})))}`
   ].join('\n')
   const endpoint=isDeepSeek?'https://api.deepseek.com/responses':'https://api.openai.com/v1/responses'
-  const requestBody={model,tools:[{type:'web_search'}],tool_choice:'auto',input:prompt,max_output_tokens:isDeepSeek?5000:6000,text:{format:isDeepSeek?{type:'json_object'}:{type:'json_schema',name:'fpl_squad_challenge',strict:true,schema:challengeSchema}}}
+  const requestBody={model,tools:[{type:'web_search'}],tool_choice:'auto',input:prompt,max_output_tokens:12000,text:{format:isDeepSeek?{type:'json_object'}:{type:'json_schema',name:'fpl_squad_challenge',strict:true,schema:challengeSchema}}}
   if(isDeepSeek)requestBody.reasoning={effort:'low'}
   if(!isDeepSeek)Object.assign(requestBody,{background:true,max_tool_calls:8,include:['web_search_call.action.sources']})
   let response=await fetch(endpoint,{
@@ -845,6 +898,24 @@ function startServerOnAvailablePort(targetPort) {
           res.writeHead(503, { 'content-type': 'application/json; charset=utf-8' })
             .end(JSON.stringify({ error: error instanceof Error ? error.message : 'Live data unavailable' }))
         }
+      }
+      return
+    }
+
+    if (request === '/api/fpl-refresh' && req.method === 'POST') {
+      try {
+        if (systemStatus.isIngesting || systemStatus.isSeeding) {
+          sendJson(res, 409, { error: 'Ingestion is already in progress' })
+          return
+        }
+        const triggered = await triggerBackgroundIngest()
+        if (triggered) {
+          sendJson(res, 202, { message: 'Background FPL data ingestion triggered successfully', status: systemStatus })
+        } else {
+          sendJson(res, 409, { error: 'Ingestion is already in progress' })
+        }
+      } catch (err) {
+        sendJson(res, 500, { error: err.message })
       }
       return
     }
