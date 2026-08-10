@@ -290,6 +290,13 @@ function App() {
   const [onboardingModalOpen, setOnboardingModalOpen] = useState<boolean>(() => {
     return !hasCompletedOnboarding() && !fplAccount;
   });
+  const [systemStatus, setSystemStatus] = useState<SystemStatus | null>(null);
+  const [teamInput, setTeamInput] = useState("");
+  const [teamMessage, setTeamMessage] = useState("");
+  const [toast, setToast] = useState<ToastState>(null);
+  const [previousSquad, setPreviousSquad] = useState<number[] | null>(null);
+  const [pendingTransfer, setPendingTransfer] = useState<Transfer | null>(null);
+  const [comparison, setComparison] = useState<Transfer | null>(null);
   const [syncingAccount, setSyncingAccount] = useState(false);
   const [userName, setUserName] = useState<string>(() => {
     try {
