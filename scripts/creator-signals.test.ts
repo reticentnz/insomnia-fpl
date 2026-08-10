@@ -29,6 +29,8 @@ describe('creator signal ingestion helpers',()=>{
     expect(alias.player?.id).toBe(10)
     const ambiguous=matchCreatorClaim({rawPlayerName:'Fernandez'},catalog,[])
     expect(ambiguous.status).toBe('AMBIGUOUS')
+    const spursMatch=matchCreatorClaim({rawPlayerName:'Fernandez',clubHint:'Spurs'},catalog,[])
+    expect(spursMatch.player?.id).toBe(12)
   })
 
   it('creates timestamped evidence and only carries explicit role values',()=>{

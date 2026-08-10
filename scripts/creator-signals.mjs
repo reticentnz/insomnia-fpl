@@ -3,6 +3,11 @@ import { createHash } from 'node:crypto'
 const clamp=(value,min=0,max=1)=>Math.min(max,Math.max(min,Number.isFinite(Number(value))?Number(value):min))
 export const normalizeEntityText=value=>String(value||'').normalize('NFD').replace(/[\u0300-\u036f]/g,'').toLowerCase().replace(/[^a-z0-9]+/g,' ').trim()
 const compact=value=>normalizeEntityText(value).replace(/\s+/g,'')
+const clubCodes={arsenal:'ars','aston villa':'avl',bournemouth:'bou',brentford:'bre',brighton:'bha','brighton and hove albion':'bha',burnley:'bur',chelsea:'che','crystal palace':'cry',everton:'eve',fulham:'ful',ipswich:'ips','ipswich town':'ips',leeds:'lee','leeds united':'lee',liverpool:'liv','man city':'mci','manchester city':'mci','man united':'mun','manchester united':'mun',newcastle:'new','newcastle united':'new',sunderland:'sun',spurs:'tot',tottenham:'tot','tottenham hotspur':'tot','west ham':'whu','west ham united':'whu',wolves:'wol',wolverhampton:'wol'}
+const clubKeys=value=>{
+  const normalized=normalizeEntityText(value)
+  return new Set([normalized,clubCodes[normalized]].filter(Boolean))
+}
 
 function editDistance(left,right){
   const row=Array.from({length:right.length+1},(_,index)=>index)
@@ -99,11 +104,11 @@ export function matchCreatorClaim(claim,catalog,aliases=[]){
     const player=catalog.find(candidate=>Number(candidate.id)===Number(alias.playerId))
     if(player)return {status:'MATCHED',player,confidence:1,candidates:[{player,confidence:1,reasons:['verified alias']}]}
   }
-  const clubHint=normalizeEntityText(claim.clubHint),positionHint=String(claim.positionHint||'').toUpperCase()
+  const clubHint=normalizeEntityText(claim.clubHint),clubHintKeys=clubKeys(claim.clubHint),positionHint=String(claim.positionHint||'').toUpperCase()
   const priceHint=Number(claim.priceHint)
   const candidates=catalog.map(player=>{
     const base=nameScore(claim.rawPlayerName,player.name)
-    const clubMatches=clubHint&&[player.club,player.clubName,player.teamName].some(value=>normalizeEntityText(value)===clubHint)
+    const clubMatches=clubHint&&[player.club,player.clubName,player.teamName].some(value=>[...clubKeys(value)].some(key=>clubHintKeys.has(key)))
     const positionMatches=positionHint&&String(player.position||'').toUpperCase()===positionHint
     const priceMatches=Number.isFinite(priceHint)&&Math.abs(Number(player.price)-priceHint)<=.1
     const confidence=clamp(base+(clubMatches?.18:0)+(positionMatches?.06:0)+(priceMatches?.05:0))
