@@ -38,6 +38,20 @@ describe('player evidence signals',()=>{
     expect(resolvePlayerRole(base,[opinion],{now:new Date('2026-08-10T12:00:00Z'),gameweek:1})).toEqual(base)
   })
 
+  it('decays a fourteen-day-old signal to half the weight of a fresh signal',()=>{
+    const fresh=signal({id:6,observedAt:'2026-08-10T00:00:00Z',value:{startProbability:1}})
+    const old=signal({id:7,observedAt:'2026-07-27T00:00:00Z',value:{startProbability:0}})
+    const resolved=resolvePlayerRole(base,[fresh,old],{now:new Date('2026-08-10T00:00:00Z'),gameweek:1})
+    expect(resolved.startProbability).toBeCloseTo(2/3,5)
+  })
+
+  it('does not decay manual overrides',()=>{
+    const manual=signal({id:8,sourceType:'MANUAL_OVERRIDE',observedAt:'2026-07-01T00:00:00Z',value:{startProbability:1},confidence:1})
+    const resolved=resolvePlayerRole(base,[manual],{now:new Date('2026-08-10T00:00:00Z'),gameweek:1})
+    expect(resolved.startProbability).toBe(1)
+    expect(resolved.confidence).toBe('HIGH')
+  })
+
   it('sanitizes external source URLs preventing invalid relative redirects to untitled pages',()=>{
     expect(sanitizeExternalUrl('untitled')).toBeNull()
     expect(sanitizeExternalUrl('Untitled source')).toBeNull()

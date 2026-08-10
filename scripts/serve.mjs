@@ -8,6 +8,9 @@ import { matchCreatorClaim, normalizeCreatorPayload, normalizeEntityText, signal
 const port = Number(process.env.PORT || 4173)
 const host = process.env.HOST || '127.0.0.1'
 const RESEARCH_AUDIT_LIMIT = 6
+const ROLE_BEARING_SIGNAL_KINDS = new Set(['DEPTH_CHART', 'EXPECTED_ROLE', 'START_PROBABILITY'])
+export const EMPIRICAL_EXPIRY_MIN_MINUTES = 75
+export const EMPIRICAL_EXPIRY_LOOKBACK_GW = 3
 const mime = {
   '.html': 'text/html; charset=utf-8',
   '.js': 'application/javascript; charset=utf-8',
@@ -45,6 +48,67 @@ let systemStatus = {
 }
 
 let scheduledIngestTimer = null
+
+export async function expirePriorRoleSignals(db, playerId, kind) {
+  if (!ROLE_BEARING_SIGNAL_KINDS.has(kind)) return 0
+  const result = await db.query(
+    `UPDATE "PlayerSignal"
+     SET status='EXPIRED', "updatedAt"=CURRENT_TIMESTAMP
+     WHERE "playerId"=$1 AND kind=$2 AND status IN ('VERIFIED','PENDING')
+       AND "sourceType" <> 'MANUAL_OVERRIDE'`,
+    [playerId, kind],
+  )
+  return Number(result.changes || 0)
+}
+
+export async function expireContradictedSignals(db, currentGameweek) {
+  const completed = await db.query(
+    `SELECT id FROM "Gameweek"
+     WHERE finished=true AND id < $1
+     ORDER BY id DESC LIMIT $2`,
+    [currentGameweek, EMPIRICAL_EXPIRY_LOOKBACK_GW],
+  )
+  if (!completed.rows.length) return 0
+
+  const gameweeks = completed.rows.map(row => Number(row.id))
+  const placeholders = gameweeks.map((_, index) => `$${index + 1}`).join(',')
+  const averages = await db.query(
+    `SELECT "playerId", AVG(minutes) AS averageMinutes
+     FROM "PlayerMatchStat"
+     WHERE gameweek IN (${placeholders})
+     GROUP BY "playerId"
+     HAVING AVG(minutes) >= $${gameweeks.length + 1}`,
+    [...gameweeks, EMPIRICAL_EXPIRY_MIN_MINUTES],
+  )
+  let expired = 0
+  for (const row of averages.rows) {
+    const playerId = Number(row.playerId)
+    const signals = await db.query(
+      `SELECT id, kind, value FROM "PlayerSignal"
+       WHERE "playerId"=$1 AND status IN ('VERIFIED','PENDING')`,
+      [playerId],
+    )
+    for (const signal of signals.rows) {
+      const value = parseJson(signal.value, {})
+      const depthRole = value.depthRole
+      const startProbability = Number(value.startProbability)
+      const contradicted = depthRole === 'BACKUP' || depthRole === 'ROTATION' ||
+        (Number.isFinite(startProbability) && startProbability < 0.4)
+      if (!contradicted) continue
+      const reasons = []
+      if (depthRole === 'BACKUP' || depthRole === 'ROTATION') reasons.push(`depthRole=${depthRole}`)
+      if (Number.isFinite(startProbability) && startProbability < 0.4) reasons.push(`startProbability=${startProbability}`)
+      const reason = `Empirical expiry: average ${Number(row.averageMinutes).toFixed(1)} minutes/game across last ${gameweeks.length} completed gameweeks contradicts ${reasons.join(' and ')}`
+      await db.query(
+        `UPDATE "PlayerSignal" SET status='EXPIRED', "updatedAt"=CURRENT_TIMESTAMP WHERE id=$1 AND status IN ('VERIFIED','PENDING')`,
+        [signal.id],
+      )
+      console.log(`⏳ Expired signal ${signal.id} for player ${playerId}: ${reason}`)
+      expired += 1
+    }
+  }
+  return expired
+}
 
 function setupScheduledIngestion() {
   const hoursRaw = process.env.FPL_INGEST_INTERVAL_HOURS ?? '12'
@@ -130,6 +194,10 @@ async function triggerBackgroundIngest() {
           const db = await getDb()
           const result = await db.query('SELECT COUNT(*) as count FROM "Player"').catch(() => ({ rows: [{ count: 0 }] }))
           systemStatus.playerCount = Number(result.rows[0]?.count || 0)
+          const current = await db.query('SELECT id FROM "Gameweek" WHERE "isCurrent"=true ORDER BY id DESC LIMIT 1').catch(() => ({ rows: [] }))
+          if (current.rows[0]?.id != null) {
+            await expireContradictedSignals(db, Number(current.rows[0].id))
+          }
         } catch {}
       }
     })
@@ -264,6 +332,7 @@ async function createSignalForCreatorClaim(db,claimRow,source,gameweek){
   const observedAt=new Date().toISOString()
   const inserted=await db.query('INSERT INTO "PlayerSignal" ("playerId","gameweekId",kind,value,"sourceType","sourceUrl","evidenceSummary",confidence,"observedAt","validUntil",status) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11) RETURNING *',[draft.playerId,gameweek,draft.kind,JSON.stringify(draft.value),draft.sourceType,draft.sourceUrl,draft.evidenceSummary,confidence,observedAt,validityDeadline(claimRow.timeHorizon),status])
   const signal=inserted.rows[0]
+  await expirePriorRoleSignals(db, Number(draft.playerId), draft.kind)
   await db.query('UPDATE "CreatorClaim" SET "signalId"=$1,"updatedAt"=CURRENT_TIMESTAMP WHERE id=$2',[signal.id,claimRow.id])
   if(status==='VERIFIED')await materializePlayerOutlook(Number(claimRow.resolvedPlayerId))
   return {signal,created:true}
@@ -831,6 +900,7 @@ async function persistChallengeSignals(challenge,currentGameweek){
       continue
     }
     const result=await db.query('INSERT INTO "PlayerSignal" ("playerId","gameweekId",kind,value,"sourceType","sourceUrl","evidenceSummary",confidence,"observedAt","validUntil",status) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11) RETURNING id',[signal.playerId,currentGameweek,signal.kind,JSON.stringify(signal.value),signal.sourceType,signal.sourceUrl,signal.evidenceSummary,signal.confidence,observedAt,validUntil.toISOString(),'PENDING'])
+    await expirePriorRoleSignals(db, Number(signal.playerId), signal.kind)
     stored.push({...signal,id:result.rows[0].id,status:'PENDING',observedAt})
   }
   return {...challenge,signals:stored}
@@ -942,6 +1012,7 @@ function startServerOnAvailablePort(targetPort) {
         const observedAt=new Date().toISOString(),validUntil=new Date(payload.validUntil||Date.now()+7*24*60*60*1000)
         if(!Number.isFinite(validUntil.getTime()))throw new Error('validUntil must be a valid timestamp')
         const result=await db.query('INSERT INTO "PlayerSignal" ("playerId","gameweekId",kind,value,"sourceType","sourceUrl","evidenceSummary",confidence,"observedAt","validUntil",status) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11) RETURNING *',[payload.playerId,payload.gameweek||null,payload.kind,JSON.stringify(payload.value||{}),manual?'MANUAL_OVERRIDE':'USER_FEEDBACK',payload.sourceUrl||null,payload.evidenceSummary,manual?1:Math.max(0,Math.min(1,Number(payload.confidence)||.4)),observedAt,validUntil.toISOString(),manual?'VERIFIED':'PENDING'])
+        await expirePriorRoleSignals(db, Number(payload.playerId), payload.kind)
         invalidateLiveDataCache()
         if(manual)await materializePlayerOutlook(payload.playerId)
         sendJson(res,201,{signal:result.rows[0]})
@@ -1043,6 +1114,7 @@ function startServerOnAvailablePort(targetPort) {
             [player.id,gameweek,'EXPECTED_ROLE',JSON.stringify({note:summary}),sourceType,sourceUrl,`[${player.name}] ${summary}`,payloadConfidence,observedAt,validUntil,status]
           )
           if(result.rows[0]){
+            await expirePriorRoleSignals(db, Number(player.id), 'EXPECTED_ROLE')
             created.push({...result.rows[0],value:{note:summary},confidence:payloadConfidence,gameweek,autoApproved:false})
           }
         }

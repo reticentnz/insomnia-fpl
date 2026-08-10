@@ -138,9 +138,10 @@ function signalRole(signal: PlayerSignal): RoleSignalValue {
 export function resolvePlayerRole(
   base: PlayerRoleProfile,
   signals: PlayerSignal[],
-  options: { now?: Date; gameweek?: number } = {},
+  options: { now?: Date; gameweek?: number; decayHalfLifeDays?: number } = {},
 ): PlayerRoleProfile {
   const now = options.now ?? new Date();
+  const decayHalfLifeDays = options.decayHalfLifeDays ?? 14;
   const eligible = signals.filter(
     (signal) =>
       signal.status === "VERIFIED" &&
@@ -168,12 +169,22 @@ export function resolvePlayerRole(
         new Date(b.observedAt).getTime() - new Date(a.observedAt).getTime(),
     );
   const inputs = overrides.length ? [overrides[0]] : roleInputs;
+  const effectiveWeight = (signal: PlayerSignal) => {
+    // Manual overrides intentionally bypass both decay and weighted averaging.
+    if (signal.sourceType === "MANUAL_OVERRIDE") return clamp(signal.confidence);
+    if (!(decayHalfLifeDays > 0)) return clamp(signal.confidence);
+    const observedAt = new Date(signal.observedAt).getTime();
+    const ageDays = Number.isFinite(observedAt)
+      ? Math.max(0, (now.getTime() - observedAt) / (24 * 60 * 60 * 1000))
+      : 0;
+    return clamp(signal.confidence) * 2 ** (-ageDays / decayHalfLifeDays);
+  };
   const weighted = <K extends keyof RoleSignalValue>(key: K, fallback: number) => {
     const values: { value: number; weight: number }[] = [];
     inputs.forEach((signal) => {
       const value = signalRole(signal)[key];
       if (typeof value === "number") {
-        values.push({ value, weight: clamp(signal.confidence) });
+        values.push({ value, weight: effectiveWeight(signal) });
       }
     });
     if (!values.length) return fallback;
@@ -184,7 +195,7 @@ export function resolvePlayerRole(
       : fallback;
   };
   const aggregateConfidence =
-    inputs.reduce((sum, signal) => sum + clamp(signal.confidence), 0) /
+    inputs.reduce((sum, signal) => sum + effectiveWeight(signal), 0) /
     inputs.length;
 
   return normalizeRoleProfile({
