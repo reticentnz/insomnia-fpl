@@ -6,7 +6,10 @@ import { ensureDatabaseSchema } from './db-push.mjs'
 const SOURCE_UNDERSTAT = 'UNDERSTAT'
 const SOURCE_ODDS = 'ODDS_MARKET'
 const seasonStart = Number(process.env.FPL_SEASON_START_YEAR || new Date().getUTCFullYear())
-const cacheDir = process.env.SIGNAL_CACHE_DIR || path.resolve(process.cwd(), '.cache', 'signal-feeds')
+const defaultCacheDir = process.env.FPL_DATA_CACHE_FILE
+  ? path.join(path.dirname(process.env.FPL_DATA_CACHE_FILE), 'signal-feeds')
+  : path.resolve(process.cwd(), '.cache', 'signal-feeds')
+const cacheDir = process.env.SIGNAL_CACHE_DIR || defaultCacheDir
 const headers = { 'user-agent': 'Insomnia-FPL/1.0 (+local analytics)', accept: 'text/html,application/json' }
 
 function number(value) {

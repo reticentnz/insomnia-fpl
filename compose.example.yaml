@@ -12,6 +12,7 @@ services:
       SIGNAL_INGEST_TOKEN: ${SIGNAL_INGEST_TOKEN:?set SIGNAL_INGEST_TOKEN}
       SIGNAL_CONFIG_FILE: /app/data/signal-config.json
       FPL_DATA_CACHE_FILE: /app/data/cache/fpl-data.json
+      SIGNAL_CACHE_DIR: /app/data/cache/signal-feeds
     ports:
       - "4173:4173"
     volumes:
