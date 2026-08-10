@@ -72,13 +72,13 @@ export function normalizeCreatorPayload(payload){
     if(!rawPlayerName||!summary)return null
     const category=allowedCategories.has(String(raw.category||'').toUpperCase())?String(raw.category).toUpperCase():'OTHER'
     const sentiment=allowedSentiments.has(String(raw.sentiment||'').toUpperCase())?String(raw.sentiment).toUpperCase():'NEUTRAL'
-    const timestampSeconds=Number.isFinite(Number(raw.timestampSeconds))?Math.max(0,Math.round(Number(raw.timestampSeconds))):null
+    const timestampSeconds=raw.timestampSeconds!==null&&raw.timestampSeconds!==undefined&&Number.isFinite(Number(raw.timestampSeconds))?Math.max(0,Math.round(Number(raw.timestampSeconds))):null
     const depthRole=allowedDepthRoles.has(String(raw.depthRole||'').toUpperCase())?String(raw.depthRole).toUpperCase():null
     const startProbability=typeof raw.startProbability==='number'?clamp(raw.startProbability):null
     const externalClaimId=String(raw.externalClaimId||`${source.platform}:${source.externalId}:${timestampSeconds??index}:${normalizeEntityText(rawPlayerName)}:${category}:${hash(summary)}`).slice(0,300)
     return {
       externalClaimId,rawPlayerName,clubHint:raw.clubHint||raw.club||null,positionHint:raw.positionHint||null,
-      priceHint:Number.isFinite(Number(raw.priceHint))?Number(raw.priceHint):null,category,sentiment,summary,
+      priceHint:raw.priceHint!==null&&raw.priceHint!==undefined&&Number.isFinite(Number(raw.priceHint))?Number(raw.priceHint):null,category,sentiment,summary,
       evidenceText:raw.evidenceText?String(raw.evidenceText).replace(/\s+/g,' ').trim().slice(0,2000):null,
       timestampSeconds,timeHorizon:raw.timeHorizon||'UNKNOWN',numericClaims:Array.isArray(raw.numericClaims)?raw.numericClaims.slice(0,20):[],
       relatedMentions:Array.isArray(raw.relatedMentions)?raw.relatedMentions.slice(0,20):[],depthRole,startProbability,
@@ -114,8 +114,9 @@ export function matchCreatorClaim(claim,catalog,aliases=[]){
     return {player,confidence,reasons}
   }).filter(candidate=>candidate.confidence>=.42).sort((a,b)=>b.confidence-a.confidence||String(a.player.name).localeCompare(String(b.player.name))).slice(0,5)
   const best=candidates[0],runnerUp=candidates[1]
-  const requiredGap = clubHint ? 0.1 : 0.15
-  if(best&&best.confidence>=.72&&(!runnerUp||best.confidence-runnerUp.confidence>=requiredGap))return {status:'MATCHED',player:best.player,confidence:best.confidence,candidates}
+  const margin=!runnerUp?1:best.confidence-runnerUp.confidence
+  const strongContext=best?.reasons.includes('club matched')&&best.confidence>=.65&&margin>=.12
+  if(best&&(strongContext||(best.confidence>=.72&&margin>=(clubHint?.1:.15))))return {status:'MATCHED',player:best.player,confidence:best.confidence,candidates}
   if(best&&best.confidence>=.5)return {status:'AMBIGUOUS',player:null,confidence:best.confidence,candidates}
   return {status:'UNRESOLVED',player:null,confidence:best?.confidence||0,candidates}
 }
