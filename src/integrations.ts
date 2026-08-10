@@ -711,3 +711,43 @@ export async function saveSignalConfig(config: SignalSourceConfig): Promise<Sign
   if (!res.ok) throw new Error('Could not save signal config')
   return await res.json()
 }
+
+export type SystemStatus = {
+  status: 'initializing' | 'seeding' | 'ready' | 'error';
+  isSeeding: boolean;
+  message: string;
+  playerCount: number;
+};
+
+export async function fetchSystemStatus(): Promise<SystemStatus> {
+  try {
+    const res = await fetch('/api/system-status')
+    if (!res.ok) return { status: 'ready', isSeeding: false, message: 'Server online', playerCount: 0 }
+    return await res.json()
+  } catch {
+    return { status: 'ready', isSeeding: false, message: 'Offline mode', playerCount: 0 }
+  }
+}
+
+const ONBOARDING_STORAGE_KEY = 'fplgod-onboarding-completed'
+
+export function hasCompletedOnboarding(): boolean {
+  try {
+    return localStorage.getItem(ONBOARDING_STORAGE_KEY) === 'true'
+  } catch {
+    return false
+  }
+}
+
+export function completeOnboarding(): void {
+  try {
+    localStorage.setItem(ONBOARDING_STORAGE_KEY, 'true')
+  } catch {}
+}
+
+export function resetOnboarding(): void {
+  try {
+    localStorage.removeItem(ONBOARDING_STORAGE_KEY)
+  } catch {}
+}
+

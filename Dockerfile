@@ -19,7 +19,7 @@ FROM node:22-alpine AS runtime
 ENV NODE_ENV=production \
     HOST=0.0.0.0 \
     PORT=4173 \
-    DATABASE_URL=file:/app/data/fplgod.db \
+    DATABASE_URL=file:/app/data/insomnia-fpl.db \
     FPL_DATA_CACHE_FILE=/app/data/cache/fpl-data.json
 
 WORKDIR /app

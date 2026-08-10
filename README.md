@@ -18,15 +18,15 @@ The production image builds the React bundle in a Node build stage and runs only
 Build and run it on any Docker host:
 
 ```bash
-docker build -t fpl-god:local .
+docker build -t insomnia-fpl:local .
 docker run -d \
-  --name fpl-god \
+  --name insomnia-fpl \
   --restart unless-stopped \
   -p 4173:4173 \
-  -e DATABASE_URL='file:/app/data/fplgod.db' \
+  -e DATABASE_URL='file:/app/data/insomnia-fpl.db' \
   -e FPL_DATA_CACHE_FILE='/app/data/cache/fpl-data.json' \
   -v "$PWD/data:/app/data" \
-  fpl-god:local
+  insomnia-fpl:local
 ```
 
 Alternatively, copy `compose.example.yaml` to `compose.yaml`, then run `docker compose up -d --build`. The bind-mounted `./data` directory retains the SQLite database, WAL files and restart cache when the container is stopped or replaced. Ensure it is writable by container UID 1000 before the first start.

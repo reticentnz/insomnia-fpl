@@ -30,6 +30,66 @@ for (const envFile of ['.env.local', '.env']) {
 const colours = ['#e74c3c', '#3b82f6', '#8b5cf6', '#dc2626', '#22c55e', '#f59e0b', '#60a5fa', '#334155']
 
 import { getDb } from './db.mjs'
+import { ensureDatabaseSchema } from './db-push.mjs'
+
+let systemStatus = {
+  status: 'initializing',
+  isSeeding: false,
+  message: 'Initializing database schema...',
+  playerCount: 0
+}
+
+async function performColdStartInitialization() {
+  try {
+    console.log('🚀 Ensuring database schema...')
+    await ensureDatabaseSchema()
+    const db = await getDb()
+    const result = await db.query('SELECT COUNT(*) as count FROM "Player"').catch(() => ({ rows: [{ count: 0 }] }))
+    const count = Number(result.rows[0]?.count || 0)
+    systemStatus.playerCount = count
+
+    if (count === 0) {
+      console.log('📦 Cold start: Database is unseeded. Starting background live FPL ingestion...')
+      systemStatus.status = 'seeding'
+      systemStatus.isSeeding = true
+      systemStatus.message = 'Seeding initial FPL data in background...'
+      triggerBackgroundIngest()
+    } else {
+      systemStatus.status = 'ready'
+      systemStatus.isSeeding = false
+      systemStatus.message = `System ready with ${count} players.`
+      console.log(`✅ Database ready (${count} players loaded).`)
+    }
+  } catch (err) {
+    console.error('⚠️ Cold-start setup warning:', err.message)
+    systemStatus.status = 'error'
+    systemStatus.message = `Initialization note: ${err.message}`
+  }
+}
+
+async function triggerBackgroundIngest() {
+  try {
+    const { execFile } = await import('node:child_process')
+    const scriptPath = path.resolve('scripts/ingest-fpl.mjs')
+    execFile(process.execPath, ['--experimental-strip-types', scriptPath], (error) => {
+      if (error) {
+        console.error('⚠️ Background FPL ingestion note:', error.message)
+        systemStatus.status = 'error'
+        systemStatus.isSeeding = false
+        systemStatus.message = `Ingestion error: ${error.message}`
+      } else {
+        console.log('✅ Background FPL ingestion completed.')
+        systemStatus.status = 'ready'
+        systemStatus.isSeeding = false
+        systemStatus.message = 'Live FPL data ingested successfully.'
+      }
+    })
+  } catch (err) {
+    console.error('⚠️ Background ingestion launch error:', err)
+    systemStatus.status = 'ready'
+    systemStatus.isSeeding = false
+  }
+}
 
 function invalidateLiveDataCache() {}
 
@@ -608,7 +668,15 @@ function startServerOnAvailablePort(targetPort) {
       res.writeHead(200, {
         'content-type': 'application/json; charset=utf-8',
         'cache-control': 'no-store'
-      }).end(JSON.stringify({ status: 'ok' }))
+      }).end(JSON.stringify({ status: 'ok', database: systemStatus.status, isSeeding: systemStatus.isSeeding, playerCount: systemStatus.playerCount }))
+      return
+    }
+
+    if (request === '/api/system-status') {
+      res.writeHead(200, {
+        'content-type': 'application/json; charset=utf-8',
+        'cache-control': 'no-store'
+      }).end(JSON.stringify(systemStatus))
       return
     }
 
@@ -1173,7 +1241,10 @@ function startServerOnAvailablePort(targetPort) {
     }
   })
 
-  server.listen(targetPort, host, () => console.log(`Insomnia FPL running at http://${host}:${targetPort}`))
+  server.listen(targetPort, host, () => {
+    console.log(`Insomnia FPL running at http://${host}:${targetPort}`)
+    performColdStartInitialization().catch(err => console.error('Cold-start initialization failed:', err))
+  })
 }
 
 startServerOnAvailablePort(port)

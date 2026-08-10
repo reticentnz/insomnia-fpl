@@ -68,6 +68,11 @@ import {
   saveSignalConfig,
   type SignalSourceConfig,
   DEFAULT_SIGNAL_SOURCE_CONFIG,
+  fetchSystemStatus,
+  hasCompletedOnboarding,
+  completeOnboarding,
+  resetOnboarding,
+  type SystemStatus,
 } from "./integrations";
 import type { PlayerSignal } from "./player-signals";
 import { createToolContext } from "./intelligence";
@@ -272,6 +277,10 @@ function App() {
   const [importModalOpen, setImportModalOpen] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [importing, setImporting] = useState(false);
+  const [onboardingModalOpen, setOnboardingModalOpen] = useState<boolean>(() => {
+    return !hasCompletedOnboarding() && !fplAccount;
+  });
+  const [systemStatus, setSystemStatus] = useState<SystemStatus | null>(null);
   const [teamInput, setTeamInput] = useState("");
   const [teamMessage, setTeamMessage] = useState("");
   const [toast, setToast] = useState<ToastState>(null);
@@ -280,7 +289,9 @@ function App() {
   const [comparison, setComparison] = useState<Transfer | null>(null);
   const [fplAccount, setFplAccount] = useState<FplAccount | null>(() => {
     try {
-      const stored = localStorage.getItem("fplgod-account");
+      const stored =
+        localStorage.getItem("insomnia-fpl-account") ||
+        localStorage.getItem("fplgod-account");
       return stored ? JSON.parse(stored) : null;
     } catch {
       return null;
@@ -289,14 +300,21 @@ function App() {
   const [syncingAccount, setSyncingAccount] = useState(false);
   const [userName, setUserName] = useState<string>(() => {
     try {
-      return localStorage.getItem("fplgod-user-name") || "Alex";
+      return (
+        localStorage.getItem("insomnia-fpl-user-name") ||
+        localStorage.getItem("fplgod-user-name") ||
+        "Alex"
+      );
     } catch {
       return "Alex";
     }
   });
   const [hadSavedSquad] = useState(() => {
     try {
-      return Boolean(localStorage.getItem("fplgod-squad"));
+      return Boolean(
+        localStorage.getItem("insomnia-fpl-squad") ||
+          localStorage.getItem("fplgod-squad"),
+      );
     } catch {
       return false;
     }
@@ -304,7 +322,11 @@ function App() {
   const [selectedIds, setSelectedIds] = useState<number[]>(() => {
     try {
       return (
-        JSON.parse(localStorage.getItem("fplgod-squad") || "null") || squadIds
+        JSON.parse(
+          localStorage.getItem("insomnia-fpl-squad") ||
+            localStorage.getItem("fplgod-squad") ||
+            "null",
+        ) || squadIds
       );
     } catch {
       return squadIds;
@@ -314,7 +336,9 @@ function App() {
     try {
       return (
         JSON.parse(
-          localStorage.getItem("fplgod-manager-settings") || "null",
+          localStorage.getItem("insomnia-fpl-manager-settings") ||
+            localStorage.getItem("fplgod-manager-settings") ||
+            "null",
         ) || { bank: 1.2, freeTransfers: 1 }
       );
     } catch {
@@ -343,14 +367,22 @@ function App() {
   const [analysisNonce, setAnalysisNonce] = useState(0);
   const [apiKey, setApiKey] = useState<string>(() => {
     try {
-      return localStorage.getItem("fplgod-ai-key") || "";
+      return (
+        localStorage.getItem("insomnia-fpl-ai-key") ||
+        localStorage.getItem("fplgod-ai-key") ||
+        ""
+      );
     } catch {
       return "";
     }
   });
   const [aiProvider, setAiProvider] = useState<string>(() => {
     try {
-      return localStorage.getItem("fplgod-ai-provider") || "gemini";
+      return (
+        localStorage.getItem("insomnia-fpl-ai-provider") ||
+        localStorage.getItem("fplgod-ai-provider") ||
+        "gemini"
+      );
     } catch {
       return "gemini";
     }
@@ -359,7 +391,9 @@ function App() {
   const [squadChallenge, setSquadChallenge] =
     useState<SquadChallengeResult | null>(() => {
       try {
-        const saved = localStorage.getItem("fplgod-squad-challenge-result");
+        const saved =
+          localStorage.getItem("insomnia-fpl-squad-challenge-result") ||
+          localStorage.getItem("fplgod-squad-challenge-result");
         return saved ? JSON.parse(saved) : null;
       } catch {
         return null;
@@ -376,7 +410,11 @@ function App() {
   const [initialClear, setInitialClear] = useState(false);
   const [lockedIds, setLockedIds] = useState<number[]>(() => {
     try {
-      return JSON.parse(localStorage.getItem("fplgod-locked-players") || "[]");
+      return JSON.parse(
+        localStorage.getItem("insomnia-fpl-locked-players") ||
+          localStorage.getItem("fplgod-locked-players") ||
+          "[]",
+      );
     } catch {
       return [];
     }
@@ -517,12 +555,13 @@ function App() {
     if (squadChallenge) {
       try {
         localStorage.setItem(
-          "fplgod-squad-challenge-result",
+          "insomnia-fpl-squad-challenge-result",
           JSON.stringify(squadChallenge),
         );
       } catch {}
     } else {
       try {
+        localStorage.removeItem("insomnia-fpl-squad-challenge-result");
         localStorage.removeItem("fplgod-squad-challenge-result");
       } catch {}
     }
@@ -567,10 +606,10 @@ function App() {
     getUserProfile().then(({ account, selectedIds: serverIds }) => {
       if (account) {
         setFplAccount(account);
-        localStorage.setItem("fplgod-account", JSON.stringify(account));
+        localStorage.setItem("insomnia-fpl-account", JSON.stringify(account));
         if (serverIds && serverIds.length === 15) {
           setSelectedIds(serverIds);
-          localStorage.setItem("fplgod-squad", JSON.stringify(serverIds));
+          localStorage.setItem("insomnia-fpl-squad", JSON.stringify(serverIds));
         }
       }
     });
@@ -709,8 +748,8 @@ function App() {
     setChallengeError(null);
     setChallengeRawOutput("");
     setChallengeOutputTypes([]);
-    localStorage.setItem("fplgod-squad", JSON.stringify(ids));
-    localStorage.setItem("fplgod-locked-players", JSON.stringify(validLocks));
+    localStorage.setItem("insomnia-fpl-squad", JSON.stringify(ids));
+    localStorage.setItem("insomnia-fpl-locked-players", JSON.stringify(validLocks));
     if (fplAccount) {
       saveUserProfile(fplAccount, ids);
     }
@@ -790,7 +829,7 @@ function App() {
   };
   const saveManager = (next: ManagerSettings) => {
     setManager(next);
-    localStorage.setItem("fplgod-manager-settings", JSON.stringify(next));
+    localStorage.setItem("insomnia-fpl-manager-settings", JSON.stringify(next));
     setSettingsOpen(false);
   };
   const compareTransfer = (t: Transfer) => {
@@ -914,14 +953,14 @@ function App() {
         saveSquad(ids);
       }
       setFplAccount(res.account);
-      localStorage.setItem("fplgod-account", JSON.stringify(res.account));
+      localStorage.setItem("insomnia-fpl-account", JSON.stringify(res.account));
       saveUserProfile(res.account, ids.length === 15 ? ids : selectedIds);
 
       if (res.account.bank !== undefined) {
         const updatedManager = { ...manager, bank: res.account.bank };
         setManager(updatedManager);
         localStorage.setItem(
-          "fplgod-manager-settings",
+          "insomnia-fpl-manager-settings",
           JSON.stringify(updatedManager),
         );
       }
@@ -946,11 +985,61 @@ function App() {
 
   const unlinkAccount = () => {
     setFplAccount(null);
+    localStorage.removeItem("insomnia-fpl-account");
     localStorage.removeItem("fplgod-account");
     deleteUserProfile();
     setImportModalOpen(false);
     setToast({ message: "Season FPL account unlinked." });
   };
+  useEffect(() => {
+    fetchSystemStatus().then((status) => setSystemStatus(status));
+  }, []);
+
+  const handleOnboardingImport = async (teamIdStr: string) => {
+    const idNum = parseTeamId(teamIdStr);
+    if (!idNum) {
+      return { success: false, error: "Please enter a numeric Team ID or official FPL URL." };
+    }
+    try {
+      const res = await fetchFplAccount(idNum, currentGameweek || 1);
+      const ids = res.picks
+        .map((p) => p.element)
+        .filter((id) => catalog.some((x) => x.id === id));
+      if (ids.length === 15) {
+        saveSquad(ids);
+      }
+      setFplAccount(res.account);
+      localStorage.setItem("insomnia-fpl-account", JSON.stringify(res.account));
+      saveUserProfile(res.account, ids.length === 15 ? ids : selectedIds);
+      if (res.account.bank !== undefined) {
+        const updatedManager = { ...manager, bank: res.account.bank };
+        setManager(updatedManager);
+        localStorage.setItem(
+          "insomnia-fpl-manager-settings",
+          JSON.stringify(updatedManager),
+        );
+      }
+      return { success: true, managerName: res.account.managerName };
+    } catch {
+      return { success: false, error: "Could not find FPL account with that ID." };
+    }
+  };
+
+  const handleOnboardingComplete = (data: { managerName: string; apiKey?: string; provider?: string }) => {
+    setUserName(data.managerName);
+    localStorage.setItem("insomnia-fpl-user-name", data.managerName);
+    localStorage.setItem("fplgod-user-name", data.managerName);
+    completeOnboarding();
+    setOnboardingModalOpen(false);
+    setToast({ message: `Welcome to Insomnia FPL, ${data.managerName}!` });
+  };
+
+  const handleOnboardingSkip = () => {
+    completeOnboarding();
+    setOnboardingModalOpen(false);
+    setToast({ message: "Welcome! Exploring with demo squad." });
+  };
+
   if (catalogMode === "loading") return <LoadingScreen />;
   const syncText =
     catalogMode === "live"
@@ -962,6 +1051,11 @@ function App() {
         : "Database offline (0 players)";
   return (
     <div className="app">
+      {systemStatus?.isSeeding && (
+        <div className="seeding-banner">
+          <Sparkles size={14} /> Initial live Premier League data is currently seeding in the background...
+        </div>
+      )}
       <aside className="app-sidebar">
         <div className="brand">
           <div className="brand-mark">⚽</div>
@@ -1049,7 +1143,7 @@ function App() {
               const n = prompt("Enter your name:", userName);
               if (n && n.trim()) {
                 setUserName(n.trim());
-                localStorage.setItem("fplgod-user-name", n.trim());
+                localStorage.setItem("insomnia-fpl-user-name", n.trim());
               }
             }}
           >
@@ -1265,6 +1359,17 @@ function App() {
           value={manager}
           onSave={saveManager}
           onClose={() => setSettingsOpen(false)}
+          onReopenOnboarding={() => {
+            setSettingsOpen(false);
+            setOnboardingModalOpen(true);
+          }}
+        />
+      )}
+      {onboardingModalOpen && (
+        <OnboardingWizardModal
+          onComplete={handleOnboardingComplete}
+          onSkip={handleOnboardingSkip}
+          onImportTeam={handleOnboardingImport}
         />
       )}
       {exportModalOpen && (
@@ -1527,10 +1632,12 @@ function ManagerSettingsModal({
   value,
   onSave,
   onClose,
+  onReopenOnboarding,
 }: {
   value: ManagerSettings;
   onSave: (v: ManagerSettings) => void;
   onClose: () => void;
+  onReopenOnboarding?: () => void;
 }) {
   const [bank, setBank] = useState(String(value.bank));
   const [freeTransfers, setFreeTransfers] = useState(
@@ -1592,6 +1699,16 @@ function ManagerSettingsModal({
           local plan. Insomnia FPL never changes your official team.
         </p>
         <div className="modal-foot">
+          {onReopenOnboarding && (
+            <button
+              className="ghost-btn"
+              onClick={onReopenOnboarding}
+              style={{ marginRight: "auto" }}
+              type="button"
+            >
+              ✨ Setup Guide
+            </button>
+          )}
           <button className="ghost-btn" onClick={onClose}>
             Cancel
           </button>
@@ -1604,6 +1721,161 @@ function ManagerSettingsModal({
             Save details
           </button>
         </div>
+      </div>
+    </div>
+  );
+}
+
+function OnboardingWizardModal({
+  onComplete,
+  onSkip,
+  onImportTeam,
+}: {
+  onComplete: (data: { managerName: string; apiKey?: string; provider?: string }) => void;
+  onSkip: () => void;
+  onImportTeam: (teamIdStr: string) => Promise<{ success: boolean; managerName?: string; error?: string }>;
+}) {
+  const [step, setStep] = useState<1 | 2>(1);
+  const [teamInput, setTeamInput] = useState("");
+  const [managerName, setManagerName] = useState("");
+  const [apiKey, setApiKey] = useState("");
+  const [provider, setProvider] = useState("openai");
+  const [loading, setLoading] = useState(false);
+  const [errorMsg, setErrorMsg] = useState("");
+
+  const handleImport = async () => {
+    if (!teamInput.trim()) {
+      setErrorMsg("Please enter an FPL Team ID or team URL.");
+      return;
+    }
+    setLoading(true);
+    setErrorMsg("");
+    const res = await onImportTeam(teamInput);
+    setLoading(false);
+    if (res.success) {
+      if (res.managerName && !managerName) {
+        setManagerName(res.managerName);
+      }
+      setStep(2);
+    } else {
+      setErrorMsg(res.error || "Could not fetch FPL team. Verify your Team ID.");
+    }
+  };
+
+  const handleFinish = () => {
+    onComplete({
+      managerName: managerName.trim() || "Alex",
+      apiKey: apiKey.trim() || undefined,
+      provider,
+    });
+  };
+
+  return (
+    <div className="modal-backdrop" role="presentation">
+      <div className="modal onboarding-modal" role="dialog" aria-modal="true" aria-labelledby="onboarding-title">
+        <div className="onboarding-header">
+          <div className="onboarding-badge">
+            <Sparkles size={14} /> WELCOME TO INSOMNIA FPL
+          </div>
+          <h2 id="onboarding-title">
+            {step === 1 ? "Sync Your FPL Squad" : "Customize Your Experience"}
+          </h2>
+          <p className="muted">
+            {step === 1
+              ? "Import your official 15-man squad to unlock personalized transfer recommendations, fixture difficulty, and captaincy advice."
+              : "Set your preferred manager name and optional AI credentials for web-search squad research."}
+          </p>
+          <div className="onboarding-steps-indicator">
+            <span className={`step-dot ${step === 1 ? "active" : "done"}`}>1. Squad Sync</span>
+            <span className="step-line" />
+            <span className={`step-dot ${step === 2 ? "active" : ""}`}>2. Settings & AI</span>
+          </div>
+        </div>
+
+        {step === 1 ? (
+          <div className="onboarding-body">
+            <label className="onboarding-field">
+              <span>FPL Team ID or URL</span>
+              <input
+                type="text"
+                placeholder="e.g. 123456 or https://fantasy.premierleague.com/entry/123456/..."
+                value={teamInput}
+                onChange={(e) => {
+                  setTeamInput(e.target.value);
+                  setErrorMsg("");
+                }}
+                onKeyDown={(e) => e.key === "Enter" && handleImport()}
+                disabled={loading}
+              />
+            </label>
+            {errorMsg && <p className="onboarding-error">{errorMsg}</p>}
+            <div className="onboarding-tip">
+              <Shield size={14} /> <strong>Private & Safe:</strong> Insomnia FPL reads public league data only and never alters your official squad.
+            </div>
+            <div className="modal-foot onboarding-actions">
+              <button className="ghost-btn" onClick={onSkip} type="button">
+                Skip & Explore Demo Squad
+              </button>
+
+              <button className="dark-btn" onClick={handleImport} disabled={loading} type="button">
+                {loading ? "Syncing..." : "Sync Squad →"}
+              </button>
+            </div>
+          </div>
+        ) : (
+          <div className="onboarding-body">
+            <div className="settings-grid">
+              <label>
+                Manager Name
+                <input
+                  type="text"
+                  placeholder="e.g. Alex"
+                  value={managerName}
+                  onChange={(e) => setManagerName(e.target.value)}
+                />
+              </label>
+
+              <label>
+                LLM Provider (Optional)
+                <select value={provider} onChange={(e) => setProvider(e.target.value)}>
+                  <option value="openai">OpenAI (GPT-4o)</option>
+                  <option value="gemini">Google Gemini</option>
+                  <option value="anthropic">Anthropic Claude</option>
+                  <option value="deepseek">DeepSeek</option>
+                  <option value="ollama">Local Ollama</option>
+                </select>
+              </label>
+
+              <label style={{ gridColumn: "1 / -1" }}>
+                AI API Key (Optional)
+                <input
+                  type="password"
+                  placeholder="sk-... or AIzaSy..."
+                  value={apiKey}
+                  onChange={(e) => setApiKey(e.target.value)}
+                />
+                <span className="field-subtext">
+                  Enables web-search squad risk challenges and natural language explanations. Deterministic math engine works automatically without a key.
+                </span>
+              </label>
+            </div>
+
+            <div className="onboarding-features-summary">
+              <div className="feature-chip">⚡ Grounded Projections</div>
+              <div className="feature-chip">🛡️ Legal Transfer Validation</div>
+              <div className="feature-chip">✦ Skeptic Squad Challenge</div>
+            </div>
+
+            <div className="modal-foot onboarding-actions">
+              <button className="ghost-btn" onClick={() => setStep(1)} type="button">
+                ← Back
+              </button>
+              <button className="dark-btn" onClick={handleFinish} type="button">
+                Get Started →
+              </button>
+            </div>
+          </div>
+        )}
       </div>
     </div>
   );
@@ -4255,7 +4527,9 @@ function LeaguesView({
   const [teamInput, setTeamInput] = useState<string>("");
 
   const [savedDefaultId, setSavedDefaultId] = useState<number | null>(() => {
-    const raw = localStorage.getItem("fplgod-default-league-id");
+    const raw =
+      localStorage.getItem("insomnia-fpl-default-league-id") ||
+      localStorage.getItem("fplgod-default-league-id");
     return raw ? Number(raw) : null;
   });
 
@@ -4335,7 +4609,7 @@ function LeaguesView({
 
   const handleSetDefault = () => {
     if (selectedLeagueId) {
-      localStorage.setItem("fplgod-default-league-id", String(selectedLeagueId));
+      localStorage.setItem("insomnia-fpl-default-league-id", String(selectedLeagueId));
       setSavedDefaultId(selectedLeagueId);
     }
   };
@@ -6407,12 +6681,13 @@ function AiKeyModal({
     const cleanKey = keyInput.trim();
     setApiKey(cleanKey);
     setProvider(provInput);
-    localStorage.setItem("fplgod-ai-key", cleanKey);
-    localStorage.setItem("fplgod-ai-provider", provInput);
+    localStorage.setItem("insomnia-fpl-ai-key", cleanKey);
+    localStorage.setItem("insomnia-fpl-ai-provider", provInput);
     onClose();
   };
   const clear = () => {
     setApiKey("");
+    localStorage.removeItem("insomnia-fpl-ai-key");
     localStorage.removeItem("fplgod-ai-key");
     setKeyInput("");
     setAutoDetected(null);

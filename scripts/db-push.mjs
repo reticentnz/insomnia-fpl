@@ -30,16 +30,26 @@ const statements = [
   `CREATE TABLE IF NOT EXISTS "UserAccount" ("id" TEXT PRIMARY KEY DEFAULT 'default', "teamId" INTEGER NOT NULL, "teamName" TEXT NOT NULL, "managerName" TEXT NOT NULL DEFAULT '', "totalPoints" INTEGER NOT NULL DEFAULT 0, "gameweekPoints" INTEGER NOT NULL DEFAULT 0, "squadValue" REAL NOT NULL DEFAULT 100, "bank" REAL NOT NULL DEFAULT 0, "overallRank" INTEGER, "transfersCost" INTEGER NOT NULL DEFAULT 0, "eventTransfers" INTEGER NOT NULL DEFAULT 0, "totalTransfers" INTEGER NOT NULL DEFAULT 0, "currentGameweek" INTEGER NOT NULL DEFAULT 1, "selectedIds" TEXT NOT NULL DEFAULT '[]', "lastSynced" DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP, "updatedAt" DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP);`
 ]
 
-const db = getDb()
-try {
-  await db.query('BEGIN')
-  for (const statement of statements) {
-    await db.query(statement)
+export async function ensureDatabaseSchema() {
+  const db = getDb()
+  try {
+    await db.query('BEGIN')
+    for (const statement of statements) {
+      await db.query(statement)
+    }
+    await db.query('COMMIT')
+    const result = await db.query(`SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%' ORDER BY name`)
+    console.log(`database schema ready: ${result.rows.map(row => row.name).join(', ')}`)
+  } catch (error) {
+    await db.query('ROLLBACK')
+    throw error
   }
-  await db.query('COMMIT')
-  const result = await db.query(`SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%' ORDER BY name`)
-  console.log(`database schema ready: ${result.rows.map(row => row.name).join(', ')}`)
-} catch (error) {
-  await db.query('ROLLBACK')
-  throw error
 }
+
+if (process.argv[1] && process.argv[1].endsWith('db-push.mjs')) {
+  ensureDatabaseSchema().catch((err) => {
+    console.error('db-push failed:', err)
+    process.exit(1)
+  })
+}
+
