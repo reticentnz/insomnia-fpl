@@ -153,6 +153,64 @@ model PlayerSignal {
   @@index([gameweekId])
 }
 
+model CreatorContent {
+  id              String         @id
+  platform        String
+  externalId      String
+  creator         String
+  title           String
+  url             String
+  publishedAt     DateTime?
+  payload         Json
+  status          String         @default("PENDING")
+  receivedAt      DateTime       @default(now())
+  processedAt     DateTime?
+  processingError String?
+  claims          CreatorClaim[]
+
+  @@unique([platform, externalId])
+}
+
+model CreatorClaim {
+  id                   String         @id
+  contentId            String
+  rawPlayerName        String
+  normalizedPlayerName String
+  resolvedPlayerId     Int?
+  clubHint             String?
+  positionHint         String?
+  priceHint            Float?
+  category             String
+  sentiment            String
+  summary              String
+  evidenceText         String?
+  timestampSeconds     Int?
+  timeHorizon          String?
+  numericClaims        Json
+  relatedMentions      Json
+  signalValue          Json
+  matchStatus          String         @default("UNRESOLVED")
+  matchConfidence      Float          @default(0)
+  matchCandidates      Json
+  signalId             Int?
+  createdAt            DateTime       @default(now())
+  updatedAt            DateTime       @updatedAt
+  content              CreatorContent @relation(fields: [contentId], references: [id])
+
+  @@index([matchStatus])
+  @@index([resolvedPlayerId])
+}
+
+model PlayerAlias {
+  alias         String   @id
+  playerId      Int
+  canonicalName String
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+
+  @@index([playerId])
+}
+
 model PlayerOutlook {
   playerId                        Int
   gameweekId                      Int

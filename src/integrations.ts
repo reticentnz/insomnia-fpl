@@ -751,3 +751,31 @@ export function resetOnboarding(): void {
   } catch {}
 }
 
+export type ServerAiConfig = {
+  provider?: string;
+  apiKey?: string;
+};
+
+export async function fetchServerAiConfig(): Promise<ServerAiConfig> {
+  try {
+    const res = await fetch('/api/ai-config')
+    if (!res.ok) return {}
+    return await res.json()
+  } catch {
+    return {}
+  }
+}
+
+export async function saveServerAiConfig(provider: string, apiKey: string): Promise<boolean> {
+  try {
+    const res = await fetch('/api/ai-config', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ provider, apiKey }),
+    })
+    return res.ok
+  } catch {
+    return false
+  }
+}
+

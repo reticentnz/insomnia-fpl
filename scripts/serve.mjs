@@ -106,8 +106,14 @@ function sendJson(res,status,payload){
   res.writeHead(status,{'content-type':'application/json; charset=utf-8','cache-control':'no-store'}).end(JSON.stringify(payload))
 }
 
-// ── Signal source config (persisted to signal-config.json) ──────────────────
-const SIGNAL_CONFIG_PATH = path.resolve('signal-config.json')
+// ── Signal source config (persisted beside the SQLite database) ─────────────
+function appDataFile(filename) {
+  const rawDatabasePath=process.env.DATABASE_URL||'file:./dev.db'
+  const cleanDatabasePath=rawDatabasePath.replace(/^file:\/\//,'').replace(/^file:/,'')
+  const resolvedDatabasePath=path.isAbsolute(cleanDatabasePath)?cleanDatabasePath:path.resolve(cleanDatabasePath)
+  return path.join(path.dirname(resolvedDatabasePath),filename)
+}
+const SIGNAL_CONFIG_PATH = process.env.SIGNAL_CONFIG_FILE || appDataFile('signal-config.json')
 const DEFAULT_SOURCE_CONFIG = {
   OFFICIAL_FPL:      { autoApprove: true,  confidenceThreshold: 0.5 },
   OFFICIAL_CLUB:     { autoApprove: true,  confidenceThreshold: 0.5 },
@@ -129,7 +135,28 @@ function loadSignalConfig() {
   return { ...DEFAULT_SOURCE_CONFIG }
 }
 function saveSignalConfig(config) {
-  try { fs.writeFileSync(SIGNAL_CONFIG_PATH, JSON.stringify(config, null, 2)) } catch {}
+  fs.mkdirSync(path.dirname(SIGNAL_CONFIG_PATH),{recursive:true})
+  fs.writeFileSync(SIGNAL_CONFIG_PATH, JSON.stringify(config, null, 2))
+}
+
+const AI_SETTINGS_PATH = process.env.AI_SETTINGS_FILE || appDataFile('ai-settings.json')
+
+function loadAiSettings() {
+  try {
+    if (fs.existsSync(AI_SETTINGS_PATH)) {
+      return JSON.parse(fs.readFileSync(AI_SETTINGS_PATH, 'utf8'))
+    }
+  } catch {}
+  return { provider: '', apiKey: '' }
+}
+
+function saveAiSettings(settings) {
+  try {
+    fs.mkdirSync(path.dirname(AI_SETTINGS_PATH), { recursive: true })
+    fs.writeFileSync(AI_SETTINGS_PATH, JSON.stringify(settings, null, 2))
+  } catch (err) {
+    console.error('Failed to save AI settings:', err)
+  }
 }
 function shouldAutoApprove(sourceType, confidence, config) {
   const entry = (config || loadSignalConfig())[sourceType]
@@ -168,6 +195,7 @@ async function refreshLiveData() {
     signalsByPlayer.set(signal.playerId,existing)
   }
   const outlookByPlayer=new Map(outlookResult.rows.map(row=>[Number(row.playerId),row]))
+  const staleOutlookPlayerIds=new Set()
   const players = result.rows.map(p => {
     const availability = p.chanceOfPlaying ?? (p.status === 'i'||p.status === 'u' ? 0 : p.status === 'd' ? 75 : 100)
     const completedGameweeks=Math.max(0,currentGameweek-1)
@@ -190,10 +218,14 @@ async function refreshLiveData() {
     }:{startProbability:baseStartProbability,minutesIfStarting,substituteProbabilityWhenBenched,minutesIfSubstitute,confidence:coldStart?'LOW':historicalMinutes>=900?'HIGH':'MEDIUM',derivedFromSignalIds:[]}
     const outlook=outlookByPlayer.get(Number(p.id))
     const playerSignals=signalsByPlayer.get(p.id)||[]
+    let outlookSignalIds=[]
+    try{outlookSignalIds=Array.isArray(outlook?.derivedSignalIds)?outlook.derivedSignalIds:JSON.parse(outlook?.derivedSignalIds||'[]')}catch{}
+    const trustedStandaloneOutlook=outlook&&outlookSignalIds.length===0
+    if(outlook&&outlookSignalIds.length>0&&!playerSignals.length)staleOutlookPlayerIds.add(Number(p.id))
     const roleProfile=playerSignals.length
       ? resolvePlayerRole(baseRole,playerSignals,{gameweek:currentGameweek})
-      : outlook
-        ? {startProbability:Number(outlook.startProbability),minutesIfStarting:Number(outlook.minutesIfStarting),substituteProbabilityWhenBenched:Number(outlook.substituteProbabilityWhenBenched),minutesIfSubstitute:Number(outlook.minutesIfSubstitute),confidence:outlook.confidence,derivedFromSignalIds:outlook.derivedSignalIds||[]}
+      : trustedStandaloneOutlook
+        ? {startProbability:Number(outlook.startProbability),minutesIfStarting:Number(outlook.minutesIfStarting),substituteProbabilityWhenBenched:Number(outlook.substituteProbabilityWhenBenched),minutesIfSubstitute:Number(outlook.minutesIfSubstitute),confidence:outlook.confidence,derivedFromSignalIds:outlookSignalIds}
         : resolvePlayerRole(baseRole,[],{gameweek:currentGameweek})
     const actualExpectedMinutes=roleProfile.startProbability*roleProfile.minutesIfStarting+(1-roleProfile.startProbability)*roleProfile.substituteProbabilityWhenBenched*roleProfile.minutesIfSubstitute
     const rawBasePoints=Number(p.epNext)||(Number(p.pointsPerGame)||0)*.7+(Number(p.form)||0)*.3
@@ -232,15 +264,22 @@ async function refreshLiveData() {
       stats:{minutes:Number(p.minutes)||0,starts:Number(p.starts)||0,totalPoints:Number(p.totalPoints)||0,goals:Number(p.goals)||0,assists:Number(p.assists)||0,cleanSheets:Number(p.cleanSheets)||0,goalsConceded:Number(p.goalsConceded)||0,saves:Number(p.saves)||0,bonus:Number(p.bonus)||0,bps:Number(p.bps)||0,yellowCards:Number(p.yellowCards)||0,redCards:Number(p.redCards)||0,ownGoals:Number(p.ownGoals)||0,penaltiesMissed:Number(p.penaltiesMissed)||0,penaltiesSaved:Number(p.penaltiesSaved)||0,expectedGoals:Number(p.expectedGoals)||0,expectedAssists:Number(p.expectedAssists)||0,expectedGoalsConceded:Number(p.expectedGC)||0,expectedGoalsPer90:Number(p.expectedGoalsPer90)||0,expectedAssistsPer90:Number(p.expectedAssistsPer90)||0,expectedGoalsConcededPer90:Number(p.expectedGCPer90)||0,savesPer90:Number(p.savesPer90)||0,clearancesBlocksInterceptions:Number(p.clearancesBlocksInterceptions)||0,tackles:Number(p.tackles)||0,recoveries:Number(p.recoveries)||0,defensiveContribution:Number(p.defensiveContribution)||0,defensiveContributionPer90:Number(p.defensiveContributionPer90)||0}
     }
   })
+  for(const playerId of staleOutlookPlayerIds){
+    await db.query('DELETE FROM "PlayerOutlook" WHERE "playerId"=$1 AND "gameweekId"=$2',[playerId,currentGameweek]).catch(()=>{})
+  }
   return { capturedAt: new Date().toISOString(), currentGameweek, deadline: gw.rows[0]?.deadline || null, modelVersion:'role-aware-v2.0', players }
 }
 
 async function materializePlayerOutlook(playerId) {
   invalidateLiveDataCache()
+  const db=await getDb()
+  const current=await db.query('SELECT id FROM "Gameweek" WHERE "isCurrent"=1 OR (finished=0 AND deadline>=CURRENT_TIMESTAMP) ORDER BY "isCurrent" DESC,deadline ASC LIMIT 1')
+  const currentGameweek=Number(current.rows[0]?.id)||1
+  await db.query('DELETE FROM "PlayerOutlook" WHERE "playerId"=$1 AND "gameweekId"=$2',[playerId,currentGameweek])
   const data=await liveData()
   const player=data.players.find(candidate=>candidate.id===playerId)
-  if(!player?.roleProfile||!data.currentGameweek)return
-  const role=player.roleProfile,db=await getDb()
+  if(!player?.roleProfile||!data.currentGameweek||!(player.roleProfile.derivedFromSignalIds||[]).length)return
+  const role=player.roleProfile
   await db.query(`INSERT INTO "PlayerOutlook" ("playerId","gameweekId","startProbability","minutesIfStarting","substituteProbabilityWhenBenched","minutesIfSubstitute",confidence,"derivedSignalIds","updatedAt") VALUES ($1,$2,$3,$4,$5,$6,$7,$8,CURRENT_TIMESTAMP) ON CONFLICT ("playerId","gameweekId") DO UPDATE SET "startProbability"=EXCLUDED."startProbability","minutesIfStarting"=EXCLUDED."minutesIfStarting","substituteProbabilityWhenBenched"=EXCLUDED."substituteProbabilityWhenBenched","minutesIfSubstitute"=EXCLUDED."minutesIfSubstitute",confidence=EXCLUDED.confidence,"derivedSignalIds"=EXCLUDED."derivedSignalIds","updatedAt"=CURRENT_TIMESTAMP`,[playerId,data.currentGameweek,role.startProbability,role.minutesIfStarting,role.substituteProbabilityWhenBenched,role.minutesIfSubstitute,role.confidence,JSON.stringify(role.derivedFromSignalIds)])
 }
 
@@ -281,8 +320,9 @@ function formatProviderAnswer(raw) {
 }
 
 async function callLLMProvider(prompt, customConfig = {}) {
-  let userProvider = (customConfig.userProvider || 'gemini').toLowerCase()
-  const userKey = customConfig.userApiKey ? customConfig.userApiKey.trim() : ''
+  const storedAi = loadAiSettings()
+  let userProvider = (customConfig.userProvider || storedAi.provider || 'gemini').toLowerCase()
+  const userKey = customConfig.userApiKey ? customConfig.userApiKey.trim() : (storedAi.apiKey || '')
 
   if (userKey) {
     if ((userKey.startsWith('sk-') && !userKey.startsWith('sk-ant-')) && userProvider !== 'openai' && userProvider !== 'deepseek') {
@@ -548,8 +588,9 @@ function normalizeDeepSeekSignals(parsed,players,priorityAudit,deadline){
 const waitFor=milliseconds=>new Promise(resolve=>setTimeout(resolve,milliseconds))
 
 async function callGroundedSquadChallenge(players,gameweek,deadline,customConfig={}){
-  const userProvider=(customConfig.userProvider||'openai').toLowerCase()
-  const userKey=String(customConfig.userApiKey||'').trim()
+  const storedAi = loadAiSettings()
+  const userProvider=(customConfig.userProvider||storedAi.provider||'openai').toLowerCase()
+  const userKey=String(customConfig.userApiKey||storedAi.apiKey||'').trim()
   const isDeepSeek=userProvider==='deepseek'
   const apiKey=(isDeepSeek&&userKey)||(!isDeepSeek&&userProvider==='openai'&&userKey)||(isDeepSeek?process.env.DEEPSEEK_API_KEY:process.env.OPENAI_API_KEY)
   if(!apiKey)throw new Error(`Grounded squad research currently requires a ${isDeepSeek?'DeepSeek':'OpenAI'} API key.`)
@@ -680,6 +721,24 @@ function startServerOnAvailablePort(targetPort) {
       return
     }
 
+    if (request === '/api/ai-config') {
+      if (req.method === 'GET') {
+        const stored = loadAiSettings()
+        sendJson(res, 200, { provider: stored.provider || '', apiKey: stored.apiKey || '' })
+        return
+      }
+      if (req.method === 'POST' || req.method === 'PUT') {
+        try {
+          const body = await readRequestBody(req)
+          saveAiSettings({ provider: body.provider || '', apiKey: body.apiKey || '' })
+          sendJson(res, 200, { success: true, provider: body.provider || '', apiKey: body.apiKey || '' })
+        } catch (err) {
+          sendJson(res, 500, { error: err.message })
+        }
+        return
+      }
+    }
+
     if (request === '/api/fpl-data') {
       try {
         const data = await liveData()
@@ -728,7 +787,7 @@ function startServerOnAvailablePort(targetPort) {
         const db=await getDb(),result=await db.query('UPDATE "PlayerSignal" SET status=$1,"updatedAt"=CURRENT_TIMESTAMP WHERE id=$2 RETURNING *',[payload.status,Number(signalStatusMatch[1])])
         if(!result.rows[0])return sendJson(res,404,{error:'Signal not found'})
         invalidateLiveDataCache()
-        if(payload.status==='VERIFIED')await materializePlayerOutlook(result.rows[0].playerId)
+        await materializePlayerOutlook(result.rows[0].playerId)
         sendJson(res,200,{signal:result.rows[0]})
       }catch(error){sendJson(res,400,{error:error instanceof Error?error.message:'Unable to update signal'})}
       return

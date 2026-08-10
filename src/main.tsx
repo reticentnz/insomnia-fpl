@@ -51,6 +51,8 @@ import {
   getUserProfile,
   saveUserProfile,
   deleteUserProfile,
+  fetchServerAiConfig,
+  saveServerAiConfig,
   challengeSquad,
   SquadChallengeError,
   updatePlayerSignalStatus,
@@ -626,6 +628,19 @@ function App() {
         setOnboardingModalOpen(false);
       }
     });
+  }, []);
+
+  useEffect(() => {
+    fetchServerAiConfig().then((cfg) => {
+      if (cfg.provider) {
+        setAiProvider(cfg.provider);
+        localStorage.setItem("insomnia-fpl-ai-provider", cfg.provider);
+      }
+      if (cfg.apiKey) {
+        setApiKey(cfg.apiKey);
+        localStorage.setItem("insomnia-fpl-ai-key", cfg.apiKey);
+      }
+    }).catch(() => {});
   }, []);
   useEffect(() => {
     if (!submittedQuestion) {
@@ -6700,12 +6715,14 @@ function AiKeyModal({
     setProvider(provInput);
     localStorage.setItem("insomnia-fpl-ai-key", cleanKey);
     localStorage.setItem("insomnia-fpl-ai-provider", provInput);
+    saveServerAiConfig(provInput, cleanKey);
     onClose();
   };
   const clear = () => {
     setApiKey("");
     localStorage.removeItem("insomnia-fpl-ai-key");
     localStorage.removeItem("fplgod-ai-key");
+    saveServerAiConfig(provInput, "");
     setKeyInput("");
     setAutoDetected(null);
     onClose();

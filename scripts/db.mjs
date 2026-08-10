@@ -4,13 +4,28 @@ import path from 'node:path'
 
 let dbInstance = null
 
+export function expandSqlParams(sql, params = []) {
+  const expanded = []
+  let usedNumberedParams = false
+  const querySql = sql
+    .replace(/\bNOW\(\)/gi, "datetime('now')")
+    .replace(/\$(\d+)/g, (_match, rawIndex) => {
+      usedNumberedParams = true
+      const index = Number(rawIndex) - 1
+      if (index < 0 || index >= params.length) throw new RangeError(`Missing SQL parameter $${rawIndex}`)
+      expanded.push(params[index])
+      return '?'
+    })
+  return { querySql, params: usedNumberedParams ? expanded : params }
+}
+
 function ensureEnvLoaded() {
   for (const envFile of ['.env.local', '.env']) {
     const fullEnvPath = path.resolve(process.cwd(), envFile)
     if (fs.existsSync(fullEnvPath)) {
       for (const line of fs.readFileSync(fullEnvPath, 'utf8').split(/\r?\n/)) {
         const match = line.match(/^([A-Z_][A-Z0-9_]*)=(.*)$/)
-        if (match) {
+        if (match && !process.env[match[1]]) {
           process.env[match[1]] = match[2].replace(/^"|"$/g, '')
         }
       }
@@ -37,10 +52,10 @@ export function getDb(customPath) {
   dbInstance = {
     sqlite,
     async query(sql, params = []) {
-      // Convert Postgres NOW() to SQLite datetime('now') and $1, $2 to ?
-      let querySql = sql
-        .replace(/\bNOW\(\)/gi, "datetime('now')")
-        .replace(/\$\d+/g, '?')
+      // Preserve numbered-parameter semantics, including repeated or
+      // out-of-order placeholders, while binding through SQLite.
+      const expanded = expandSqlParams(sql, params)
+      const querySql = expanded.querySql
 
       const trimmed = querySql.trim().toUpperCase()
       if (
@@ -56,7 +71,7 @@ export function getDb(customPath) {
         return { rows: [] }
       }
 
-      const boundParams = params.map(v => {
+      const boundParams = expanded.params.map(v => {
         if (typeof v === 'boolean') return v ? 1 : 0
         if (v instanceof Date) return v.toISOString()
         return v
