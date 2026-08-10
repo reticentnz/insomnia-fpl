@@ -56,6 +56,7 @@ import {
   challengeSquad,
   SquadChallengeError,
   updatePlayerSignalStatus,
+  updatePlayerSignalStatusesBatch,
   createManualPlayerSignal,
   fetchPlayerSignals,
   fetchLeagueDetails,
@@ -412,6 +413,8 @@ function App() {
         return null;
       }
     });
+  const [stagedSignalReviews, setStagedSignalReviews] = useState<Record<number, "VERIFIED" | "REJECTED">>({});
+  const [applyingBatch, setApplyingBatch] = useState(false);
   const [challengeLoading, setChallengeLoading] = useState(false);
   const [challengeError, setChallengeError] = useState<string | null>(null);
   const [challengeRawOutput, setChallengeRawOutput] = useState<string>("");
@@ -946,34 +949,69 @@ function App() {
       setChallengeLoading(false);
     }
   };
-  const reviewSquadSignal = async (
+  // Stage a signal review locally — no network call, no model recalculation
+  const reviewSquadSignal = (
     signal: PlayerSignal,
     status: "VERIFIED" | "REJECTED",
   ) => {
+    setStagedSignalReviews((prev) => {
+      // Toggling the same staged status = undo the stage
+      if (prev[signal.id] === status) {
+        const next = { ...prev };
+        delete next[signal.id];
+        return next;
+      }
+      return { ...prev, [signal.id]: status };
+    });
+  };
+
+  const unstageSignalReview = (signalId: number) => {
+    setStagedSignalReviews((prev) => {
+      const next = { ...prev };
+      delete next[signalId];
+      return next;
+    });
+  };
+
+  const applyBatchReview = async () => {
+    const updates = Object.entries(stagedSignalReviews).map(([id, status]) => ({
+      id: Number(id),
+      status,
+    }));
+    if (!updates.length) return;
+    setApplyingBatch(true);
     try {
-      const updated = await updatePlayerSignalStatus(String(signal.id), status);
+      const updatedSignals = await updatePlayerSignalStatusesBatch(updates);
+      // Apply the server-confirmed statuses back into local state
+      const statusMap = new Map(updatedSignals.map((s) => [s.id, s.status]));
       setSquadChallenge((current) =>
         current
           ? {
               ...current,
               signals: current.signals.map((item) =>
-                item.id === signal.id ? { ...item, status: updated.status } : item,
+                statusMap.has(item.id) ? { ...item, status: statusMap.get(item.id)! } : item,
               ),
             }
           : current,
       );
+      setStagedSignalReviews({});
       const data = await fetchLiveCatalog();
       setLivePlayers(data.players);
       setCapturedAt(data.capturedAt || null);
+      const approvedCount = updates.filter((u) => u.status === "VERIFIED").length;
+      const rejectedCount = updates.filter((u) => u.status === "REJECTED").length;
+      const parts = [];
+      if (approvedCount) parts.push(`${approvedCount} approved`);
+      if (rejectedCount) parts.push(`${rejectedCount} rejected`);
       setToast({
-        message: status === "VERIFIED"
-          ? "Evidence approved. Any explicit role or minutes claim is now reflected in projections."
-          : "Evidence removed and projections refreshed.",
+        message: `${parts.join(", ")} · Projections refreshed.`,
       });
     } catch (error) {
       setChallengeError(
-        error instanceof Error ? error.message : "Could not review evidence",
+        error instanceof Error ? error.message : "Could not apply evidence changes",
       );
+    } finally {
+      setApplyingBatch(false);
     }
   };
   const handleManualOverride = async (
@@ -1331,6 +1369,8 @@ function App() {
             challengeOutputTypes={challengeOutputTypes}
             onChallenge={runSquadChallenge}
             onReviewSignal={reviewSquadSignal}
+            stagedSignalReviews={stagedSignalReviews}
+            onUnstageSignal={unstageSignalReview}
             onManualOverride={handleManualOverride}
             weakest={weakest}
             decision={decision}
@@ -1362,6 +1402,10 @@ function App() {
             currentGameweek={currentGameweek ?? 1}
             onSelectPlayer={setPlayerDetail}
             onReviewSignal={reviewSquadSignal}
+            stagedSignalReviews={stagedSignalReviews}
+            onUnstageSignal={unstageSignalReview}
+            onApplyBatch={applyBatchReview}
+            applyingBatch={applyingBatch}
           />
         ) : tab === "Transfers" ? (
           <TransfersV2
@@ -1388,6 +1432,34 @@ function App() {
           >
             ×
           </button>
+        </div>
+      )}
+      {Object.keys(stagedSignalReviews).length > 0 && (
+        <div className="staged-review-bar" role="status" aria-live="polite">
+          <div className="staged-review-info">
+            <span className="staged-review-badge">{Object.keys(stagedSignalReviews).length}</span>
+            <span>
+              {Object.keys(stagedSignalReviews).length === 1 ? "review" : "reviews"} staged
+              {" · "}
+              <span style={{ color: "var(--text-muted)", fontWeight: 400, fontSize: "13px" }}>model not yet updated</span>
+            </span>
+          </div>
+          <div className="staged-review-actions">
+            <button
+              className="ghost-btn"
+              disabled={applyingBatch}
+              onClick={() => setStagedSignalReviews({})}
+            >
+              Discard
+            </button>
+            <button
+              className="apply-staged-btn"
+              disabled={applyingBatch}
+              onClick={applyBatchReview}
+            >
+              {applyingBatch ? "Applying…" : "Apply & Refresh Projections"}
+            </button>
+          </div>
         </div>
       )}
       {editing && (
@@ -3241,6 +3313,8 @@ function EvidencePanel({
   outputTypes,
   onChallenge,
   onReviewSignal,
+  stagedSignalReviews,
+  onUnstageSignal,
   onSelectPlayer,
   setTab,
   onManualOverride,
@@ -3259,6 +3333,8 @@ function EvidencePanel({
     signal: PlayerSignal,
     status: "VERIFIED" | "REJECTED",
   ) => void;
+  stagedSignalReviews: Record<number, "VERIFIED" | "REJECTED">>;
+  onUnstageSignal: (signalId: number) => void;
   onSelectPlayer?: (p: Player) => void;
   setTab?: (tab: string) => void;
   onManualOverride?: (playerId: number, startProbability: number, note?: string) => void;
@@ -3542,6 +3618,8 @@ function EvidencePanel({
               const rawProb = signal.value?.startProbability;
               const normProb = typeof rawProb === "number" ? (rawProb > 1 ? rawProb / 100 : rawProb) : null;
               const proposedProb = normProb !== null ? Math.round(normProb * 100) : null;
+              const stagedStatus = stagedSignalReviews[signal.id];
+              const effectiveStatus = stagedStatus || signal.status;
 
               return (
                 <article className="evidence-item" key={signal.id}>
@@ -3557,14 +3635,14 @@ function EvidencePanel({
                       )}
                       <span
                         className={`pill ${
-                          signal.status === "VERIFIED"
+                          effectiveStatus === "VERIFIED"
                             ? "green"
-                            : signal.status === "REJECTED"
+                            : effectiveStatus === "REJECTED"
                               ? "red"
                               : "amber"
                         }`}
                       >
-                        {signal.status === "VERIFIED" ? "✓ VERIFIED · PROJECTIONS UPDATED" : signal.status}
+                        {stagedStatus ? `STAGED: ${stagedStatus === "VERIFIED" ? "APPROVE" : "REJECT"}` : effectiveStatus === "VERIFIED" ? "✓ VERIFIED · PROJECTIONS UPDATED" : effectiveStatus}
                       </span>
                     </div>
 
@@ -3575,7 +3653,7 @@ function EvidencePanel({
                       {proposedProb !== null ? ` · proposed start chance ${proposedProb}%` : ""}
                     </small>
 
-                    {signal.status === "VERIFIED" && xPts !== null && (
+                    {effectiveStatus === "VERIFIED" && !stagedStatus && xPts !== null && (
                       <div className="evidence-impact-tag">
                         ✓ Applied to model: {proposedProb !== null ? `${proposedProb}% start chance` : "Role updated"} → {xPts.toFixed(1)} xPts over {horizon} GWs
                       </div>
@@ -3589,29 +3667,34 @@ function EvidencePanel({
                   </div>
 
                   <div className="evidence-actions">
-                    {signal.status === "PENDING" && (
+                    {stagedStatus ? (
+                      <div className="staged-signal-action">
+                        <span className={`staged-pill ${stagedStatus === "REJECTED" ? "rejected" : ""}`}>STAGED: {stagedStatus === "VERIFIED" ? "APPROVE" : "REJECT"}</span>
+                        <button className="undo-staged-btn" onClick={() => onUnstageSignal(signal.id)}>Undo</button>
+                      </div>
+                    ) : effectiveStatus === "PENDING" && (
                       <>
                         <button
                           className="dark-btn"
-                          disabled={reviewingSignalId === signal.id}
+                          disabled={false}
                           onClick={async () => {
                             setReviewingSignalId(signal.id);
                             try {
-                              await onReviewSignal(signal, "VERIFIED");
+                              onReviewSignal(signal, "VERIFIED");
                             } finally {
                               setReviewingSignalId(null);
                             }
                           }}
                         >
-                          {reviewingSignalId === signal.id ? "Updating…" : "Approve & Update"}
+                          Approve & Update
                         </button>
                         <button
                           className="ghost-btn"
-                          disabled={reviewingSignalId === signal.id}
+                          disabled={false}
                           onClick={async () => {
                             setReviewingSignalId(signal.id);
                             try {
-                              await onReviewSignal(signal, "REJECTED");
+                              onReviewSignal(signal, "REJECTED");
                             } finally {
                               setReviewingSignalId(null);
                             }
@@ -3621,7 +3704,7 @@ function EvidencePanel({
                         </button>
                       </>
                     )}
-                    {signal.status === "VERIFIED" && (
+                    {!stagedStatus && effectiveStatus === "VERIFIED" && (
                       <>
                         {setTab && (
                           <button

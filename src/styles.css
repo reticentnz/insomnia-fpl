@@ -5101,3 +5101,126 @@ h2 {
 }
 .trust-threshold-slider:disabled { opacity: 0.35; cursor: not-allowed; }
 .trust-threshold-label { font-size: 12px; color: #64748b; min-width: 32px; text-align: right; }
+
+/* Staged Batch Review Floating Action Bar */
+.staged-review-bar {
+  position: fixed;
+  bottom: 24px;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 999;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 20px;
+  width: min(680px, calc(100vw - 32px));
+  padding: 14px 20px;
+  background: rgba(13, 17, 23, 0.94);
+  border: 1px solid rgba(0, 255, 135, 0.4);
+  border-radius: var(--radius-lg, 16px);
+  backdrop-filter: blur(16px);
+  box-shadow: 0 16px 40px rgba(0, 0, 0, 0.6), 0 0 25px rgba(0, 255, 135, 0.15);
+  animation: slideUpFade 0.25s cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+@keyframes slideUpFade {
+  from {
+    opacity: 0;
+    transform: translate(-50%, 20px);
+  }
+  to {
+    opacity: 1;
+    transform: translate(-50%, 0);
+  }
+}
+
+.staged-review-info {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  color: #ffffff;
+  font-size: 14px;
+  font-weight: 600;
+}
+
+.staged-review-badge {
+  display: inline-grid;
+  place-items: center;
+  min-width: 26px;
+  height: 26px;
+  padding: 0 8px;
+  border-radius: 99px;
+  background: var(--accent-emerald, #00ff87);
+  color: #0d1117;
+  font-size: 13px;
+  font-weight: 800;
+  box-shadow: 0 0 12px rgba(0, 255, 135, 0.5);
+}
+
+.staged-review-actions {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.apply-staged-btn {
+  background: linear-gradient(135deg, #00ff87 0%, #059669 100%) !important;
+  color: #05140b !important;
+  font-weight: 800 !important;
+  box-shadow: 0 0 18px rgba(0, 255, 135, 0.35);
+  padding: 9px 18px !important;
+  border-radius: var(--radius-md, 10px) !important;
+  border: none !important;
+  cursor: pointer;
+  white-space: nowrap;
+  transition: all 0.15s ease;
+}
+
+.apply-staged-btn:hover:not(:disabled) {
+  transform: translateY(-1px) scale(1.02);
+  box-shadow: 0 0 24px rgba(0, 255, 135, 0.55);
+}
+
+.staged-pill {
+  border: 1px solid var(--accent-emerald) !important;
+  background: rgba(0, 255, 135, 0.12) !important;
+  color: var(--accent-emerald) !important;
+  font-weight: 700 !important;
+}
+
+.staged-pill.rejected {
+  border-color: #f87171 !important;
+  background: rgba(239, 68, 68, 0.12) !important;
+  color: #f87171 !important;
+}
+
+.undo-staged-btn {
+  background: rgba(255, 255, 255, 0.08);
+  border: 1px solid rgba(255, 255, 255, 0.2);
+  color: #cbd5e1;
+  font-size: 11px;
+  font-weight: 700;
+  padding: 4px 10px;
+  border-radius: 6px;
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+
+.undo-staged-btn:hover {
+  background: rgba(255, 255, 255, 0.18);
+  color: #ffffff;
+}
+
+@media (max-width: 640px) {
+  .staged-review-bar {
+    bottom: 80px;
+    width: calc(100vw - 24px);
+    padding: 12px 14px;
+    flex-direction: column;
+    align-items: stretch;
+    gap: 10px;
+  }
+  .staged-review-actions {
+    justify-content: flex-end;
+  }
+}

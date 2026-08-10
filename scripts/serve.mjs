@@ -408,8 +408,8 @@ async function refreshLiveData() {
   return { capturedAt: new Date().toISOString(), currentGameweek, deadline: gw.rows[0]?.deadline || null, modelVersion:'role-aware-v2.0', players }
 }
 
-async function materializePlayerOutlook(playerId) {
-  invalidateLiveDataCache()
+async function materializePlayerOutlook(playerId, { invalidate = true } = {}) {
+  if (invalidate) invalidateLiveDataCache()
   const db=await getDb()
   const current=await db.query('SELECT id FROM "Gameweek" WHERE "isCurrent"=true OR (finished=false AND deadline>=CURRENT_TIMESTAMP) ORDER BY "isCurrent" DESC,deadline ASC LIMIT 1')
   const currentGameweek=Number(current.rows[0]?.id)||1
@@ -960,6 +960,39 @@ function startServerOnAvailablePort(targetPort) {
         await materializePlayerOutlook(result.rows[0].playerId)
         sendJson(res,200,{signal:result.rows[0]})
       }catch(error){sendJson(res,400,{error:error instanceof Error?error.message:'Unable to update signal'})}
+      return
+    }
+
+    if(request==='/api/player-signals/batch-status'&&req.method==='POST'){
+      let transactionStarted=false
+      try{
+        const payload=await readRequestBody(req)
+        const updates=Array.isArray(payload.updates)?payload.updates:[]
+        if(!updates.length)throw new Error('updates array is required')
+        const allowed=new Set(['PENDING','VERIFIED','REJECTED'])
+        if(updates.some((item)=>!item||!Number.isInteger(Number(item.id))||Number(item.id)<=0||!allowed.has(item.status)))throw new Error('Each update must include a positive integer id and a valid status')
+        const db=await getDb()
+        const updatedSignals=[]
+        const affectedPlayerIds=new Set()
+        await db.query('BEGIN')
+        transactionStarted=true
+        for(const item of updates){
+          const result=await db.query('UPDATE "PlayerSignal" SET status=$1,"updatedAt"=CURRENT_TIMESTAMP WHERE id=$2 RETURNING *',[item.status,Number(item.id)])
+          if(!result.rows[0])throw new Error(`Signal ${item.id} not found`)
+          updatedSignals.push(result.rows[0])
+          affectedPlayerIds.add(result.rows[0].playerId)
+        }
+        await db.query('COMMIT')
+        transactionStarted=false
+        invalidateLiveDataCache()
+        for(const playerId of affectedPlayerIds){
+          await materializePlayerOutlook(playerId,{invalidate:false})
+        }
+        sendJson(res,200,{signals:updatedSignals,count:updatedSignals.length})
+      }catch(error){
+        if(transactionStarted)await getDb().query('ROLLBACK').catch(()=>{})
+        sendJson(res,400,{error:error instanceof Error?error.message:'Unable to batch update signals'})
+      }
       return
     }
 

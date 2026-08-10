@@ -605,6 +605,29 @@ export async function updatePlayerSignalStatus(
   return (data.signal || data) as PlayerSignal
 }
 
+export async function updatePlayerSignalStatusesBatch(
+  updates: Array<{ id: number; status: 'VERIFIED' | 'REJECTED' }>,
+): Promise<PlayerSignal[]> {
+  if (!updates.length) return []
+  try {
+    const response = await fetch('/api/player-signals/batch-status', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ updates }),
+    })
+    if (response.ok) {
+      const data = await response.json().catch(() => null)
+      if (Array.isArray(data?.signals)) return data.signals as PlayerSignal[]
+    }
+  } catch {}
+
+  // Fallback to sequential/parallel individual updates if batch endpoint fails or server is older build
+  const results = await Promise.all(
+    updates.map((item) => updatePlayerSignalStatus(String(item.id), item.status)),
+  )
+  return results
+}
+
 export async function createManualPlayerSignal(
   playerId: number,
   startProbability: number,
