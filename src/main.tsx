@@ -55,7 +55,6 @@ import {
   saveServerAiConfig,
   challengeSquad,
   SquadChallengeError,
-  updatePlayerSignalStatus,
   updatePlayerSignalStatusesBatch,
   createManualPlayerSignal,
   fetchPlayerSignals,
@@ -66,6 +65,7 @@ import {
   type LeagueRival,
   type SquadChallengeResult,
   fetchAllSignals,
+  fetchTeamMarketSnapshots,
   ingestSignalText,
   fetchCreatorClaims,
   resolveCreatorClaim,
@@ -80,6 +80,7 @@ import {
   completeOnboarding,
   resetOnboarding,
   type SystemStatus,
+  type TeamMarketSnapshot,
 } from "./integrations";
 import { type PlayerSignal, sanitizeExternalUrl } from "./player-signals";
 import { createToolContext } from "./intelligence";
@@ -1457,7 +1458,7 @@ function App() {
               disabled={applyingBatch}
               onClick={applyBatchReview}
             >
-              {applyingBatch ? "Applying…" : "Apply & Refresh Projections"}
+              {applyingBatch ? "Applying…" : "Apply Changes & Refresh Projections"}
             </button>
           </div>
         </div>
@@ -4177,6 +4178,7 @@ function SignalsTab({
   applyingBatch: boolean;
 }) {
   const [signals, setSignals] = useState<PlayerSignal[]>([]);
+  const [marketSnapshots, setMarketSnapshots] = useState<TeamMarketSnapshot[]>([]);
   const [creatorClaims, setCreatorClaims] = useState<CreatorClaim[]>([]);
   const [claimSelections, setClaimSelections] = useState<Record<string, number>>({});
   const [claimReviewingId, setClaimReviewingId] = useState<string | null>(null);
@@ -4189,7 +4191,6 @@ function SignalsTab({
   const [ingestUrl, setIngestUrl] = useState("");
   const [ingestLoading, setIngestLoading] = useState(false);
   const [ingestResult, setIngestResult] = useState<string | null>(null);
-  const [reviewingId, setReviewingId] = useState<string | number | null>(null);
   const [signalConfig, setSignalConfig] = useState<SignalSourceConfig>({ ...DEFAULT_SIGNAL_SOURCE_CONFIG });
   const [configSaving, setConfigSaving] = useState(false);
   const [trustOpen, setTrustOpen] = useState(false);
@@ -4219,6 +4220,7 @@ function SignalsTab({
   useEffect(() => {
     loadSignals();
     loadCreatorClaims();
+    fetchTeamMarketSnapshots().then(setMarketSnapshots).catch(() => {});
     fetchSignalConfig().then(setSignalConfig).catch(() => {});
   }, [loadSignals, loadCreatorClaims]);
 
@@ -4284,6 +4286,19 @@ function SignalsTab({
     if (status === "REJECTED") return "pill red";
     if (status === "EXPIRED") return "pill";
     return "pill amber";
+  }
+
+  function marketPercent(value: number | null) {
+    return value == null ? "—" : `${Math.round(value * 100)}%`;
+  }
+
+  function marketFavourite(snapshot: TeamMarketSnapshot) {
+    const options = [
+      { label: snapshot.homeTeam, value: snapshot.homeWinProb },
+      { label: "Draw", value: snapshot.drawProb },
+      { label: snapshot.awayTeam, value: snapshot.awayWinProb },
+    ].filter((option): option is { label: string; value: number } => option.value != null);
+    return options.sort((left, right) => right.value - left.value)[0];
   }
 
   function handleReview(signal: PlayerSignal, status: "VERIFIED" | "REJECTED") {
@@ -4377,6 +4392,43 @@ function SignalsTab({
           ))}
         </section>
       )}
+
+      <section className="market-context-panel">
+        <div className="market-context-heading">
+          <div>
+            <span className="eyebrow">MARKET CONTEXT</span>
+            <h2>Match outlook</h2>
+            <p>Read-only bookmaker consensus. This data is not part of the evidence approval queue.</p>
+          </div>
+          <span className="market-context-source">The Odds API · de-vigged</span>
+        </div>
+        {marketSnapshots.length ? (
+          <div className="market-context-grid">
+            {marketSnapshots.map((snapshot) => {
+              const favourite = marketFavourite(snapshot);
+              return (
+                <article className="market-context-card" key={`${snapshot.externalEventId}-${snapshot.capturedAt}`}>
+                  <div className="market-context-fixture">
+                    <b>{snapshot.homeTeam}</b><span>vs</span><b>{snapshot.awayTeam}</b>
+                  </div>
+                  <div className="market-context-kickoff">
+                    {snapshot.kickoff ? new Date(snapshot.kickoff).toLocaleString([], { weekday: "short", day: "numeric", month: "short", hour: "2-digit", minute: "2-digit" }) : "Kickoff pending"}
+                  </div>
+                  <div className="market-probabilities">
+                    <span><small>HOME</small><strong>{marketPercent(snapshot.homeWinProb)}</strong></span>
+                    <span><small>DRAW</small><strong>{marketPercent(snapshot.drawProb)}</strong></span>
+                    <span><small>AWAY</small><strong>{marketPercent(snapshot.awayWinProb)}</strong></span>
+                  </div>
+                  <div className="market-context-favourite">Favourite: <b>{favourite?.label || "Unavailable"}</b>{favourite ? ` · ${marketPercent(favourite.value)}` : ""}</div>
+                  <div className="market-context-updated">Updated {relativeTime(snapshot.capturedAt)}</div>
+                </article>
+              );
+            })}
+          </div>
+        ) : (
+          <p className="market-context-empty">No odds snapshots available. Run <code>npm run ingest:signals</code> with <code>ODDS_API_KEY</code> configured.</p>
+        )}
+      </section>
 
       {/* Filter bar */}
       <div className="signals-filter-bar">
@@ -4596,7 +4648,6 @@ function SignalsTab({
             const rawProb = signal.value?.startProbability;
             const normProb = typeof rawProb === "number" ? (rawProb > 1 ? rawProb / 100 : rawProb) : null;
             const proposedProb = normProb !== null ? Math.round(normProb * 100) : null;
-            const isReviewing = reviewingId === signal.id;
             const stagedStatus = stagedSignalReviews[signal.id];
             const effectiveStatus = stagedStatus || signal.status;
 
@@ -4668,14 +4719,14 @@ function SignalsTab({
                   <div className="signal-actions">
                     <button
                       className="dark-btn"
-                      disabled={applyingBatch || isReviewing}
+                      disabled={applyingBatch}
                       onClick={() => handleReview(signal, "VERIFIED")}
                     >
-                      {isReviewing ? "…" : "✓ Approve evidence"}
+                      ✓ Approve evidence
                     </button>
                     <button
                       className="ghost-btn"
-                      disabled={applyingBatch || isReviewing}
+                      disabled={applyingBatch}
                       onClick={() => handleReview(signal, "REJECTED")}
                     >
                       Reject
@@ -4686,7 +4737,7 @@ function SignalsTab({
                   <div className="signal-actions">
                     <button
                       className="ghost-btn"
-                      disabled={isReviewing}
+                      disabled={applyingBatch}
                       onClick={() => handleReview(signal, "REJECTED")}
                     >
                       Remove evidence

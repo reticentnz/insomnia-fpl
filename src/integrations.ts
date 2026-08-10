@@ -5,6 +5,18 @@ import type { PlayerSignal } from './player-signals'
 // ingestion job can use the same normalizer and persist snapshots later.
 export type RawFplBootstrap = { elements: Array<Record<string, unknown>>; teams: Array<Record<string, unknown>>; events: Array<Record<string, unknown>>; fixtures: Array<Record<string, unknown>> }
 export type ExplanationContext = { modelVersion:string; horizon:number; squad:Player[]; catalog:Player[]; captain:Player|null; transfers:Transfer[]; decision: { roll: boolean; transfer: Transfer | null; freeTransfers: number; reason: string }; bank:number; freeTransfers:number; startingXI?: Player[]; currentGameweek?: number }
+export type TeamMarketSnapshot = {
+  id: number;
+  source: string;
+  externalEventId: string;
+  capturedAt: string;
+  kickoff: string | null;
+  homeTeam: string;
+  awayTeam: string;
+  homeWinProb: number | null;
+  drawProb: number | null;
+  awayWinProb: number | null;
+};
 
 export function parseTeamId(input:string): number|null { const match=input.trim().match(/(?:entry\/|^)(\d+)/); return match?Number(match[1]):null }
 
@@ -679,6 +691,17 @@ export async function fetchAllSignals(filters?: {
     if (!response.ok) return []
     const data = await response.json().catch(() => null)
     return (data?.signals || []) as PlayerSignal[]
+  } catch {
+    return []
+  }
+}
+
+export async function fetchTeamMarketSnapshots(limit = 12): Promise<TeamMarketSnapshot[]> {
+  try {
+    const response = await fetch(`/api/team-market-snapshots?limit=${encodeURIComponent(String(limit))}`)
+    if (!response.ok) return []
+    const data = await response.json().catch(() => null)
+    return (data?.snapshots || []) as TeamMarketSnapshot[]
   } catch {
     return []
   }

@@ -330,9 +330,9 @@ async function createSignalForCreatorClaim(db,claimRow,source,gameweek){
   const confidence=Math.max(0,Math.min(1,Number(draft.confidence)||.65))
   const status=shouldAutoApprove('YOUTUBE_TRANSCRIPT',confidence,loadSignalConfig())?'VERIFIED':'PENDING'
   const observedAt=new Date().toISOString()
+  await expirePriorRoleSignals(db, Number(draft.playerId), draft.kind)
   const inserted=await db.query('INSERT INTO "PlayerSignal" ("playerId","gameweekId",kind,value,"sourceType","sourceUrl","evidenceSummary",confidence,"observedAt","validUntil",status) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11) RETURNING *',[draft.playerId,gameweek,draft.kind,JSON.stringify(draft.value),draft.sourceType,draft.sourceUrl,draft.evidenceSummary,confidence,observedAt,validityDeadline(claimRow.timeHorizon),status])
   const signal=inserted.rows[0]
-  await expirePriorRoleSignals(db, Number(draft.playerId), draft.kind)
   await db.query('UPDATE "CreatorClaim" SET "signalId"=$1,"updatedAt"=CURRENT_TIMESTAMP WHERE id=$2',[signal.id,claimRow.id])
   if(status==='VERIFIED')await materializePlayerOutlook(Number(claimRow.resolvedPlayerId))
   return {signal,created:true}
@@ -899,8 +899,8 @@ async function persistChallengeSignals(challenge,currentGameweek){
       stored.push({...signal,id:existing.rows[0].id,status:'PENDING',observedAt:existing.rows[0].observedAt})
       continue
     }
-    const result=await db.query('INSERT INTO "PlayerSignal" ("playerId","gameweekId",kind,value,"sourceType","sourceUrl","evidenceSummary",confidence,"observedAt","validUntil",status) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11) RETURNING id',[signal.playerId,currentGameweek,signal.kind,JSON.stringify(signal.value),signal.sourceType,signal.sourceUrl,signal.evidenceSummary,signal.confidence,observedAt,validUntil.toISOString(),'PENDING'])
     await expirePriorRoleSignals(db, Number(signal.playerId), signal.kind)
+    const result=await db.query('INSERT INTO "PlayerSignal" ("playerId","gameweekId",kind,value,"sourceType","sourceUrl","evidenceSummary",confidence,"observedAt","validUntil",status) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11) RETURNING id',[signal.playerId,currentGameweek,signal.kind,JSON.stringify(signal.value),signal.sourceType,signal.sourceUrl,signal.evidenceSummary,signal.confidence,observedAt,validUntil.toISOString(),'PENDING'])
     stored.push({...signal,id:result.rows[0].id,status:'PENDING',observedAt})
   }
   return {...challenge,signals:stored}
@@ -1004,6 +1004,16 @@ function startServerOnAvailablePort(targetPort) {
       return
     }
 
+    if(request==='/api/team-market-snapshots'&&req.method==='GET'){
+      try{
+        const db=await getDb(),params=new URL(req.url||'/',`http://${host}`).searchParams
+        const limit=Math.min(50,Math.max(1,Number(params.get('limit'))||12))
+        const result=await db.query('SELECT id,source,"externalEventId",capturedAt,kickoff,"homeTeam","awayTeam","homeWinProb","drawProb","awayWinProb" FROM "TeamMarketSnapshot" ORDER BY COALESCE(kickoff,capturedAt) ASC,capturedAt DESC LIMIT $1',[limit])
+        sendJson(res,200,{snapshots:result.rows.map(row=>({...row,id:Number(row.id),homeWinProb:row.homeWinProb==null?null:Number(row.homeWinProb),drawProb:row.drawProb==null?null:Number(row.drawProb),awayWinProb:row.awayWinProb==null?null:Number(row.awayWinProb)}))})
+      }catch(error){sendJson(res,500,{error:error instanceof Error?error.message:'Unable to read market snapshots'})}
+      return
+    }
+
     if(request==='/api/player-signals'&&req.method==='POST'){
       try{
         const payload=await readRequestBody(req),db=await getDb()
@@ -1011,8 +1021,8 @@ function startServerOnAvailablePort(targetPort) {
         const manual=payload.manualOverride===true
         const observedAt=new Date().toISOString(),validUntil=new Date(payload.validUntil||Date.now()+7*24*60*60*1000)
         if(!Number.isFinite(validUntil.getTime()))throw new Error('validUntil must be a valid timestamp')
-        const result=await db.query('INSERT INTO "PlayerSignal" ("playerId","gameweekId",kind,value,"sourceType","sourceUrl","evidenceSummary",confidence,"observedAt","validUntil",status) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11) RETURNING *',[payload.playerId,payload.gameweek||null,payload.kind,JSON.stringify(payload.value||{}),manual?'MANUAL_OVERRIDE':'USER_FEEDBACK',payload.sourceUrl||null,payload.evidenceSummary,manual?1:Math.max(0,Math.min(1,Number(payload.confidence)||.4)),observedAt,validUntil.toISOString(),manual?'VERIFIED':'PENDING'])
         await expirePriorRoleSignals(db, Number(payload.playerId), payload.kind)
+        const result=await db.query('INSERT INTO "PlayerSignal" ("playerId","gameweekId",kind,value,"sourceType","sourceUrl","evidenceSummary",confidence,"observedAt","validUntil",status) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11) RETURNING *',[payload.playerId,payload.gameweek||null,payload.kind,JSON.stringify(payload.value||{}),manual?'MANUAL_OVERRIDE':'USER_FEEDBACK',payload.sourceUrl||null,payload.evidenceSummary,manual?1:Math.max(0,Math.min(1,Number(payload.confidence)||.4)),observedAt,validUntil.toISOString(),manual?'VERIFIED':'PENDING'])
         invalidateLiveDataCache()
         if(manual)await materializePlayerOutlook(payload.playerId)
         sendJson(res,201,{signal:result.rows[0]})
@@ -1109,12 +1119,12 @@ function startServerOnAvailablePort(targetPort) {
           const observedAt=new Date().toISOString()
           const validUntil=new Date(Date.now()+7*24*60*60*1000).toISOString()
           const status='PENDING'
+          await expirePriorRoleSignals(db, Number(player.id), 'EXPECTED_ROLE')
           const result=await db.query(
             'INSERT INTO "PlayerSignal" ("playerId","gameweekId",kind,value,"sourceType","sourceUrl","evidenceSummary",confidence,"observedAt","validUntil",status) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11) RETURNING *',
             [player.id,gameweek,'EXPECTED_ROLE',JSON.stringify({note:summary}),sourceType,sourceUrl,`[${player.name}] ${summary}`,payloadConfidence,observedAt,validUntil,status]
           )
           if(result.rows[0]){
-            await expirePriorRoleSignals(db, Number(player.id), 'EXPECTED_ROLE')
             created.push({...result.rows[0],value:{note:summary},confidence:payloadConfidence,gameweek,autoApproved:false})
           }
         }
