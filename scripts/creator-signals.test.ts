@@ -18,7 +18,7 @@ describe('creator signal ingestion helpers',()=>{
   it('normalizes legacy n8n items into stable structured claims',()=>{
     const payload=normalizeCreatorPayload({creator:'PL Mate',videoUrl:'https://www.youtube.com/watch?v=abc123',videoTitle:'Hidden gems',items:[{rawPlayerName:'Kai Havt',club:'Arsenal',category:'Rotation',text:'Too risky for GW1',timestampSeconds:122,depthRole:'ROTATION'}]})
     expect(payload.source.externalId).toBe('abc123')
-    expect(payload.claims[0].externalClaimId).toContain('YOUTUBE:abc123:122:kai havt:ROTATION')
+    expect(payload.claims[0].externalClaimId).toBe('YOUTUBE:abc123:122:kai havt:ROTATION')
   })
 
   it('uses club hints and aliases while preserving ambiguous names for review',()=>{

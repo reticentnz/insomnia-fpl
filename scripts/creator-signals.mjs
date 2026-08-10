@@ -75,7 +75,7 @@ export function normalizeCreatorPayload(payload){
     const timestampSeconds=raw.timestampSeconds!==null&&raw.timestampSeconds!==undefined&&Number.isFinite(Number(raw.timestampSeconds))?Math.max(0,Math.round(Number(raw.timestampSeconds))):null
     const depthRole=allowedDepthRoles.has(String(raw.depthRole||'').toUpperCase())?String(raw.depthRole).toUpperCase():null
     const startProbability=typeof raw.startProbability==='number'?clamp(raw.startProbability):null
-    const externalClaimId=String(raw.externalClaimId||`${source.platform}:${source.externalId}:${timestampSeconds??index}:${normalizeEntityText(rawPlayerName)}:${category}:${hash(summary)}`).slice(0,300)
+    const externalClaimId=String(raw.externalClaimId||`${source.platform}:${source.externalId}:${timestampSeconds??index}:${normalizeEntityText(rawPlayerName)}:${category}`).slice(0,300)
     return {
       externalClaimId,rawPlayerName,clubHint:raw.clubHint||raw.club||null,positionHint:raw.positionHint||null,
       priceHint:raw.priceHint!==null&&raw.priceHint!==undefined&&Number.isFinite(Number(raw.priceHint))?Number(raw.priceHint):null,category,sentiment,summary,
