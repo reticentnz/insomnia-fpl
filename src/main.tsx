@@ -607,10 +607,16 @@ function App() {
       if (account) {
         setFplAccount(account);
         localStorage.setItem("insomnia-fpl-account", JSON.stringify(account));
+        if (account.managerName) {
+          setUserName(account.managerName);
+          localStorage.setItem("insomnia-fpl-user-name", account.managerName);
+        }
         if (serverIds && serverIds.length === 15) {
           setSelectedIds(serverIds);
           localStorage.setItem("insomnia-fpl-squad", JSON.stringify(serverIds));
         }
+        completeOnboarding();
+        setOnboardingModalOpen(false);
       }
     });
   }, []);
