@@ -807,6 +807,14 @@ function startServerOnAvailablePort(targetPort) {
 
     if (request === '/api/ai-config') {
       if (req.method === 'GET') {
+        try {
+          const db = await getDb()
+          const resDb = await db.query('SELECT "aiProvider", "apiKey" FROM "UserAccount" WHERE id=\'default\' LIMIT 1')
+          if (resDb.rows.length > 0 && resDb.rows[0].apiKey) {
+            sendJson(res, 200, { provider: resDb.rows[0].aiProvider || '', apiKey: resDb.rows[0].apiKey || '' })
+            return
+          }
+        } catch {}
         const stored = loadAiSettings()
         sendJson(res, 200, { provider: stored.provider || '', apiKey: stored.apiKey || '' })
         return
@@ -815,6 +823,10 @@ function startServerOnAvailablePort(targetPort) {
         try {
           const body = await readRequestBody(req)
           saveAiSettings({ provider: body.provider || '', apiKey: body.apiKey || '' })
+          try {
+            const db = await getDb()
+            await db.query('UPDATE "UserAccount" SET "aiProvider" = $1, "apiKey" = $2, "updatedAt" = NOW() WHERE id=\'default\'', [body.provider || '', body.apiKey || ''])
+          } catch {}
           sendJson(res, 200, { success: true, provider: body.provider || '', apiKey: body.apiKey || '' })
         } catch (err) {
           sendJson(res, 500, { error: err.message })
@@ -1285,6 +1297,8 @@ function startServerOnAvailablePort(targetPort) {
             eventTransfers: Number(row.eventTransfers),
             totalTransfers: Number(row.totalTransfers),
             currentGameweek: Number(row.currentGameweek),
+            aiProvider: row.aiProvider || undefined,
+            apiKey: row.apiKey || undefined,
             lastSynced: row.lastSynced ? new Date(row.lastSynced).toISOString() : new Date().toISOString()
           }
           res.writeHead(200, { 'content-type': 'application/json' }).end(JSON.stringify({ account, selectedIds }))
@@ -1307,8 +1321,8 @@ function startServerOnAvailablePort(targetPort) {
             const db = await getDb()
             const idsJson = JSON.stringify(Array.isArray(selectedIds) ? selectedIds : [])
             await db.query(
-              `INSERT INTO "UserAccount" ("id", "teamId", "teamName", "managerName", "totalPoints", "gameweekPoints", "squadValue", "bank", "overallRank", "transfersCost", "eventTransfers", "totalTransfers", "currentGameweek", "selectedIds", "lastSynced", "updatedAt")
-               VALUES ('default', $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, NOW(), NOW())
+              `INSERT INTO "UserAccount" ("id", "teamId", "teamName", "managerName", "totalPoints", "gameweekPoints", "squadValue", "bank", "overallRank", "transfersCost", "eventTransfers", "totalTransfers", "currentGameweek", "selectedIds", "aiProvider", "apiKey", "lastSynced", "updatedAt")
+               VALUES ('default', $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, NOW(), NOW())
                ON CONFLICT ("id") DO UPDATE SET
                  "teamId" = EXCLUDED."teamId",
                  "teamName" = EXCLUDED."teamName",
@@ -1323,6 +1337,8 @@ function startServerOnAvailablePort(targetPort) {
                  "totalTransfers" = EXCLUDED."totalTransfers",
                  "currentGameweek" = EXCLUDED."currentGameweek",
                  "selectedIds" = EXCLUDED."selectedIds",
+                 "aiProvider" = COALESCE(EXCLUDED."aiProvider", "UserAccount"."aiProvider"),
+                 "apiKey" = COALESCE(EXCLUDED."apiKey", "UserAccount"."apiKey"),
                  "lastSynced" = NOW(),
                  "updatedAt" = NOW()`,
               [
@@ -1338,7 +1354,9 @@ function startServerOnAvailablePort(targetPort) {
                 account.eventTransfers || 0,
                 account.totalTransfers || 0,
                 account.currentGameweek || 1,
-                idsJson
+                idsJson,
+                account.aiProvider || null,
+                account.apiKey || null
               ]
             )
             res.writeHead(200, { 'content-type': 'application/json' }).end(JSON.stringify({ success: true }))
@@ -1412,7 +1430,16 @@ function startServerOnAvailablePort(targetPort) {
     const file = path.join(process.cwd(), 'dist', request === '/' ? 'index.html' : request)
     if (!file.startsWith(path.join(process.cwd(), 'dist'))) return res.writeHead(403).end()
     fs.readFile(file, (error, data) => {
-      if (error) return res.writeHead(404).end('Not found')
+      if (error) {
+        if (!path.extname(request)) {
+          const indexPath = path.join(process.cwd(), 'dist', 'index.html')
+          return fs.readFile(indexPath, (err2, indexData) => {
+            if (err2) return res.writeHead(404).end('Not found')
+            res.writeHead(200, { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-store' }).end(indexData)
+          })
+        }
+        return res.writeHead(404).end('Not found')
+      }
       res.writeHead(200, { 'content-type': mime[path.extname(file)] || 'application/octet-stream', 'cache-control': 'no-store' }).end(data)
     })
   })

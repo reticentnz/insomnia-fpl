@@ -80,7 +80,7 @@ import {
   resetOnboarding,
   type SystemStatus,
 } from "./integrations";
-import type { PlayerSignal } from "./player-signals";
+import { type PlayerSignal, sanitizeExternalUrl } from "./player-signals";
 import { createToolContext } from "./intelligence";
 import { reviewDecision, type DecisionReview } from "./decision-review";
 import { projectionBreakdown } from "./model";
@@ -644,6 +644,14 @@ function App() {
         if (account.managerName) {
           setUserName(account.managerName);
           localStorage.setItem("insomnia-fpl-user-name", account.managerName);
+        }
+        if (account.aiProvider) {
+          setAiProvider(account.aiProvider);
+          localStorage.setItem("insomnia-fpl-ai-provider", account.aiProvider);
+        }
+        if (account.apiKey) {
+          setApiKey(account.apiKey);
+          localStorage.setItem("insomnia-fpl-ai-key", account.apiKey);
         }
         if (serverIds && serverIds.length === 15) {
           setSelectedIds(serverIds);
@@ -1490,6 +1498,9 @@ function App() {
           setApiKey={setApiKey}
           provider={aiProvider}
           setProvider={setAiProvider}
+          fplAccount={fplAccount}
+          setFplAccount={setFplAccount}
+          selectedIds={selectedIds}
           onClose={() => setAiModalOpen(false)}
         />
       )}
@@ -3102,17 +3113,17 @@ function Players({
           />
         </div>
       </div>
-      <div className="panel table">
-        <div className="tr th">
+      <div className="panel table shortlist-table">
+        <div className="tr th shortlist-tr">
           <span>PLAYER</span>
           <span>FIXTURES</span>
-          <span>FORM</span>
-          <span>MINUTES</span>
-          <span>{horizon}-GW PROJ.</span>
-          <span>VALUE</span>
+          <span className="th-right">FORM</span>
+          <span className="th-right">MINUTES</span>
+          <span className="th-right">{horizon}-GW PROJ.</span>
+          <span className="th-right">VALUE</span>
         </div>
         {filtered.map((p) => (
-          <div className="tr" key={p.id}>
+          <div className="tr shortlist-tr" key={p.id}>
             <div className="name-cell">
               <span className="mini-shirt" style={{ background: p.colour }}>
                 {p.position}
@@ -3135,12 +3146,12 @@ function Players({
                 </span>
               ))}
             </span>
-            <span>{p.form.toFixed(1)}</span>
-            <span>{p.minutes}%</span>
-            <span>
+            <span className="col-numeric">{p.form.toFixed(1)}</span>
+            <span className="col-numeric">{p.minutes}%</span>
+            <span className="col-numeric col-proj">
               <b>{horizonProjection(p, horizon)}</b> pts
             </span>
-            <span className="value">{(p.projection / p.price).toFixed(2)}</span>
+            <span className="value col-numeric">{(p.projection / p.price).toFixed(2)}</span>
           </div>
         ))}
       </div>
@@ -3571,8 +3582,8 @@ function EvidencePanel({
                       </div>
                     )}
 
-                    {signal.sourceUrl && (
-                      <a href={signal.sourceUrl} target="_blank" rel="noreferrer">
+                    {sanitizeExternalUrl(signal.sourceUrl) && (
+                      <a href={sanitizeExternalUrl(signal.sourceUrl)!} target="_blank" rel="noreferrer">
                         Open source ↗
                       </a>
                     )}
@@ -3983,21 +3994,21 @@ function MyTeamV2({
         onManualOverride={onManualOverride}
         onReplacePlayer={onReplacePlayer}
       />
-      <div className="panel table" style={{ marginTop: "20px" }}>
+      <div className="panel table squad-table" style={{ marginTop: "20px" }}>
         <div className="panel-head" style={{ padding: "16px 20px 0" }}>
           <div>
             <h2>Full Squad Roster ({squad.length}/15)</h2>
             <p>Click any player to view detailed breakdown & projections</p>
           </div>
         </div>
-        <div className="tr th" style={{ marginTop: "12px" }}>
+        <div className="tr th squad-roster-tr" style={{ marginTop: "12px" }}>
           <span>PLAYER</span>
           <span>SQUAD ROLE</span>
           <span>FIXTURES</span>
-          <span>FORM</span>
-          <span>MINUTES</span>
-          <span>{horizon}-GW PROJ.</span>
-          <span>VALUE</span>
+          <span className="th-right">FORM</span>
+          <span className="th-right">MINUTES</span>
+          <span className="th-right">{horizon}-GW PROJ.</span>
+          <span className="th-right">VALUE</span>
         </div>
         {squad.map((p) => {
           const isStarter = starters.has(p.id);
@@ -4005,7 +4016,7 @@ function MyTeamV2({
           const isVice = p.id === vice?.id;
           return (
             <button
-              className="tr player-row"
+              className="tr player-row squad-roster-tr"
               onClick={() => onSelectPlayer(p)}
               key={p.id}
             >
@@ -4020,7 +4031,7 @@ function MyTeamV2({
                   </small>
                 </div>
               </div>
-              <span>
+              <span className="role-cell">
                 {isCapt ? (
                   <span className="price-pill green">Captain (C)</span>
                 ) : isVice ? (
@@ -4042,12 +4053,12 @@ function MyTeamV2({
                   </span>
                 ))}
               </span>
-              <span>{p.form.toFixed(1)}</span>
-              <span>{p.minutes}%</span>
-              <span>
+              <span className="col-numeric">{p.form.toFixed(1)}</span>
+              <span className="col-numeric">{p.minutes}%</span>
+              <span className="col-numeric col-proj">
                 <b>{horizonProjection(p, horizon)}</b> pts
               </span>
-              <span className="value">
+              <span className="value col-numeric">
                 {(horizonProjection(p, horizon) / p.price).toFixed(2)}
               </span>
             </button>
@@ -4546,9 +4557,9 @@ function SignalsTab({
                       {proposedProb !== null ? ` · proposed start chance ${proposedProb}%` : ""}
                       {signal.gameweek ? ` · GW${signal.gameweek}` : ""}
                     </span>
-                    {signal.sourceUrl && (
+                    {sanitizeExternalUrl(signal.sourceUrl) && (
                       <a
-                        href={signal.sourceUrl}
+                        href={sanitizeExternalUrl(signal.sourceUrl)!}
                         target="_blank"
                         rel="noreferrer"
                         className="signal-source-link"
@@ -6149,18 +6160,18 @@ function PlayersV2({
         )}
       </div>
       <div className="panel table player-table">
-        <div className="tr th">
+        <div className="tr th player-table-tr">
           <span>PLAYER</span>
           <span>OWNED</span>
           <span>FIXTURES</span>
-          <span>FORM</span>
-          <span>MINUTES</span>
-          <span>{horizon}-GW PROJ.</span>
-          <span>VALUE</span>
+          <span className="th-right">FORM</span>
+          <span className="th-right">MINUTES</span>
+          <span className="th-right">{horizon}-GW PROJ.</span>
+          <span className="th-right">VALUE</span>
         </div>
         {paginated.map((p) => (
           <button
-            className={`tr player-row ${isPlayerInjured(p) ? "injured-row" : ""}`}
+            className={`tr player-row player-table-tr ${isPlayerInjured(p) ? "injured-row" : ""}`}
             onClick={() => onSelect(p)}
             key={p.id}
           >
@@ -6190,12 +6201,12 @@ function PlayersV2({
                 </span>
               ))}
             </span>
-            <span data-label="Form">{p.form.toFixed(1)}</span>
-            <span data-label="Minutes">{p.minutes}%</span>
-            <span data-label={`${horizon}-GW projection`}>
+            <span data-label="Form" className="col-numeric">{p.form.toFixed(1)}</span>
+            <span data-label="Minutes" className="col-numeric">{p.minutes}%</span>
+            <span data-label={`${horizon}-GW projection`} className="col-numeric col-proj">
               <b>{horizonProjection(p, horizon)}</b> pts
             </span>
-            <span data-label="Value" className="value">
+            <span data-label="Value" className="value col-numeric">
               {(horizonProjection(p, horizon) / p.price).toFixed(2)}
             </span>
           </button>
@@ -6768,12 +6779,18 @@ function AiKeyModal({
   setApiKey,
   provider,
   setProvider,
+  fplAccount,
+  setFplAccount,
+  selectedIds,
   onClose,
 }: {
   apiKey: string;
   setApiKey: (k: string) => void;
   provider: string;
   setProvider: (p: string) => void;
+  fplAccount?: FplAccount | null;
+  setFplAccount?: (a: FplAccount | null) => void;
+  selectedIds?: number[];
   onClose: () => void;
 }) {
   const [keyInput, setKeyInput] = useState(apiKey);
@@ -6809,6 +6826,11 @@ function AiKeyModal({
     localStorage.setItem("insomnia-fpl-ai-key", cleanKey);
     localStorage.setItem("insomnia-fpl-ai-provider", provInput);
     saveServerAiConfig(provInput, cleanKey);
+    if (fplAccount) {
+      const nextAcc = { ...fplAccount, aiProvider: provInput, apiKey: cleanKey };
+      if (setFplAccount) setFplAccount(nextAcc);
+      saveUserProfile(nextAcc, selectedIds);
+    }
     onClose();
   };
   const clear = () => {
@@ -6816,6 +6838,11 @@ function AiKeyModal({
     localStorage.removeItem("insomnia-fpl-ai-key");
     localStorage.removeItem("fplgod-ai-key");
     saveServerAiConfig(provInput, "");
+    if (fplAccount) {
+      const nextAcc = { ...fplAccount, apiKey: "" };
+      if (setFplAccount) setFplAccount(nextAcc);
+      saveUserProfile(nextAcc, selectedIds);
+    }
     setKeyInput("");
     setAutoDetected(null);
     onClose();
@@ -6898,8 +6925,7 @@ function AiKeyModal({
             )}
           </label>
           <p className="import-note">
-            <Shield size={14} /> Keys are stored locally in your browser and
-            used to fetch grounded insights.
+            <Shield size={14} /> Keys are saved in your app configuration and used to fetch grounded AI insights.
           </p>
         </div>
         <div className="modal-foot">

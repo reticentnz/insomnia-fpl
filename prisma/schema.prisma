@@ -306,6 +306,8 @@ model UserAccount {
   totalTransfers  Int      @default(0)
   currentGameweek Int      @default(1)
   selectedIds     String   @default("[]")
+  aiProvider      String?
+  apiKey          String?
   lastSynced      DateTime @default(now())
   updatedAt       DateTime @updatedAt
 }

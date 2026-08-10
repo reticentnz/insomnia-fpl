@@ -4,7 +4,7 @@ import { createToolContext, getBestTransfers, simulateTransfers } from './intell
 import { allocateBonusPoints, scorePlayerMatch } from './model'
 import { evaluateCalibration } from './backtest'
 import { buildExplanationContext, resolvePlayerMention, resolveMultiplePlayerMentions } from './integrations'
-import { expectedRoleMinutes, resolvePlayerRole, type PlayerRoleProfile, type PlayerSignal } from './player-signals'
+import { expectedRoleMinutes, resolvePlayerRole, sanitizeExternalUrl, type PlayerRoleProfile, type PlayerSignal } from './player-signals'
 
 describe('player evidence signals',()=>{
   const base:PlayerRoleProfile={startProbability:.75,minutesIfStarting:86,substituteProbabilityWhenBenched:.2,minutesIfSubstitute:18,confidence:'MEDIUM',derivedFromSignalIds:[]}
@@ -36,6 +36,17 @@ describe('player evidence signals',()=>{
   it('keeps accepted opinion-only evidence out of role projections',()=>{
     const opinion=signal({id:5,kind:'VALUE_OPINION',sourceType:'YOUTUBE_TRANSCRIPT',value:{note:'Good value at this price'},confidence:.85})
     expect(resolvePlayerRole(base,[opinion],{now:new Date('2026-08-10T12:00:00Z'),gameweek:1})).toEqual(base)
+  })
+
+  it('sanitizes external source URLs preventing invalid relative redirects to untitled pages',()=>{
+    expect(sanitizeExternalUrl('untitled')).toBeNull()
+    expect(sanitizeExternalUrl('Untitled source')).toBeNull()
+    expect(sanitizeExternalUrl('n/a')).toBeNull()
+    expect(sanitizeExternalUrl('#')).toBeNull()
+    expect(sanitizeExternalUrl('')).toBeNull()
+    expect(sanitizeExternalUrl(null)).toBeNull()
+    expect(sanitizeExternalUrl('bbc.co.uk/sport')).toBe('https://bbc.co.uk/sport')
+    expect(sanitizeExternalUrl('https://fantasy.premierleague.com')).toBe('https://fantasy.premierleague.com/')
   })
 })
 

@@ -63,6 +63,35 @@ export type PlayerRoleProfile = {
 const clamp = (value: number, min = 0, max = 1) =>
   Math.min(max, Math.max(min, Number.isFinite(value) ? value : min));
 
+export function sanitizeExternalUrl(url?: string | null): string | null {
+  if (!url || typeof url !== "string") return null;
+  const trimmed = url.trim();
+  if (
+    !trimmed ||
+    trimmed === "#" ||
+    /^(untitled(\s+source)?|n\/a|none|null|undefined|about:blank)$/i.test(trimmed)
+  ) {
+    return null;
+  }
+  let target = trimmed;
+  if (!/^(https?:\/\/)/i.test(target)) {
+    if (/^([a-zA-Z0-9-]+\.)+[a-zA-Z]{2,}(\/.*)?$/.test(target)) {
+      target = `https://${target}`;
+    } else {
+      return null;
+    }
+  }
+  try {
+    const parsed = new URL(target);
+    if (parsed.protocol === "http:" || parsed.protocol === "https:") {
+      return parsed.toString();
+    }
+  } catch {
+    return null;
+  }
+  return null;
+}
+
 export function normalizeRoleProfile(profile: PlayerRoleProfile): PlayerRoleProfile {
   return {
     ...profile,

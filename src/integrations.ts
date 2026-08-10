@@ -282,6 +282,8 @@ export interface FplAccount {
   eventTransfers: number;
   totalTransfers: number;
   currentGameweek: number;
+  aiProvider?: string;
+  apiKey?: string;
   lastSynced: string;
   leagues?: {
     classic: FplLeagueSummary[];

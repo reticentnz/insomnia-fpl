@@ -33,7 +33,7 @@ const statements = [
   `CREATE TABLE IF NOT EXISTS "ModelCalibration" ("modelVersion" TEXT NOT NULL, "position" TEXT NOT NULL, "sampleSize" INTEGER NOT NULL, "factor" REAL NOT NULL, "mae" REAL NOT NULL, "rmse" REAL NOT NULL, "bias" REAL NOT NULL, "updatedAt" DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP, PRIMARY KEY ("modelVersion", "position"));`,
   `CREATE TABLE IF NOT EXISTS "Squad" ("id" TEXT PRIMARY KEY, "bank" REAL NOT NULL, "freeTransfers" INTEGER NOT NULL DEFAULT 1, "updatedAt" DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP);`,
   `CREATE TABLE IF NOT EXISTS "SquadPlayer" ("squadId" TEXT NOT NULL, "playerId" INTEGER NOT NULL, "position" TEXT NOT NULL, PRIMARY KEY ("squadId", "playerId"));`,
-  `CREATE TABLE IF NOT EXISTS "UserAccount" ("id" TEXT PRIMARY KEY DEFAULT 'default', "teamId" INTEGER NOT NULL, "teamName" TEXT NOT NULL, "managerName" TEXT NOT NULL DEFAULT '', "totalPoints" INTEGER NOT NULL DEFAULT 0, "gameweekPoints" INTEGER NOT NULL DEFAULT 0, "squadValue" REAL NOT NULL DEFAULT 100, "bank" REAL NOT NULL DEFAULT 0, "overallRank" INTEGER, "transfersCost" INTEGER NOT NULL DEFAULT 0, "eventTransfers" INTEGER NOT NULL DEFAULT 0, "totalTransfers" INTEGER NOT NULL DEFAULT 0, "currentGameweek" INTEGER NOT NULL DEFAULT 1, "selectedIds" TEXT NOT NULL DEFAULT '[]', "lastSynced" DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP, "updatedAt" DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP);`
+  `CREATE TABLE IF NOT EXISTS "UserAccount" ("id" TEXT PRIMARY KEY DEFAULT 'default', "teamId" INTEGER NOT NULL, "teamName" TEXT NOT NULL, "managerName" TEXT NOT NULL DEFAULT '', "totalPoints" INTEGER NOT NULL DEFAULT 0, "gameweekPoints" INTEGER NOT NULL DEFAULT 0, "squadValue" REAL NOT NULL DEFAULT 100, "bank" REAL NOT NULL DEFAULT 0, "overallRank" INTEGER, "transfersCost" INTEGER NOT NULL DEFAULT 0, "eventTransfers" INTEGER NOT NULL DEFAULT 0, "totalTransfers" INTEGER NOT NULL DEFAULT 0, "currentGameweek" INTEGER NOT NULL DEFAULT 1, "selectedIds" TEXT NOT NULL DEFAULT '[]', "aiProvider" TEXT, "apiKey" TEXT, "lastSynced" DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP, "updatedAt" DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP);`
 ]
 
 export async function ensureDatabaseSchema() {
@@ -45,6 +45,12 @@ export async function ensureDatabaseSchema() {
     }
     const claimSchema=await db.query(`SELECT sql FROM sqlite_master WHERE type='table' AND name='CreatorClaim'`)
     if(!String(claimSchema.rows[0]?.sql||'').includes('"signalValue"'))await db.query(`ALTER TABLE "CreatorClaim" ADD COLUMN "signalValue" TEXT NOT NULL DEFAULT '{}'`)
+    
+    const userAccSchema=await db.query(`SELECT sql FROM sqlite_master WHERE type='table' AND name='UserAccount'`)
+    const userAccSql = String(userAccSchema.rows[0]?.sql||'')
+    if(!userAccSql.includes('"aiProvider"')) await db.query(`ALTER TABLE "UserAccount" ADD COLUMN "aiProvider" TEXT`)
+    if(!userAccSql.includes('"apiKey"')) await db.query(`ALTER TABLE "UserAccount" ADD COLUMN "apiKey" TEXT`)
+    
     await db.query('COMMIT')
     const result = await db.query(`SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%' ORDER BY name`)
     console.log(`database schema ready: ${result.rows.map(row => row.name).join(', ')}`)
