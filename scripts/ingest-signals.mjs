@@ -33,6 +33,7 @@ function decodeSingleQuotedJs(value) {
     else if (next === 't') output += '\t'
     else if (next === 'b') output += '\b'
     else if (next === 'f') output += '\f'
+    else if (next === 'x') { output += String.fromCharCode(parseInt(value.slice(index + 1, index + 3), 16)); index += 2 }
     else if (next === 'u') { output += String.fromCharCode(parseInt(value.slice(index + 1, index + 5), 16)); index += 4 }
     else output += next
   }
@@ -40,9 +41,37 @@ function decodeSingleQuotedJs(value) {
 }
 
 function extractUnderstatJson(html, variable) {
-  const match = html.match(new RegExp(`${variable}\\s*=\\s*JSON\\.parse\\('((?:\\\\.|[^'])*)'\\)`))
-  if (!match) throw new Error(`Understat response did not contain ${variable}`)
-  return JSON.parse(decodeSingleQuotedJs(match[1]))
+  const prefix = `(?:var|let|const)?\\s*${variable}\\s*=\\s*`
+  const single = html.match(new RegExp(`${prefix}JSON\\.parse\\(\\s*'((?:\\\\.|[^'])*)'\\s*\\)`, 'i'))
+  const double = html.match(new RegExp(`${prefix}JSON\\.parse\\(\\s*"((?:\\\\.|[^"])*)"\\s*\\)`, 'i'))
+  const match = single || double
+  if (match) return JSON.parse(decodeSingleQuotedJs(match[1]))
+
+  // Some cached/alternate Understat responses assign the decoded array
+  // directly rather than wrapping it in JSON.parse().
+  const direct = html.match(new RegExp(`${prefix}([\\[]|[\\{])`, 'i'))
+  if (direct) {
+    const start = direct.index + direct[0].length - 1
+    const opening = html[start]
+    const closing = opening === '[' ? ']' : '}'
+    let depth = 0
+    let quoted = false
+    let escaped = false
+    for (let index = start; index < html.length; index += 1) {
+      const char = html[index]
+      if (quoted) {
+        if (escaped) escaped = false
+        else if (char === '\\') escaped = true
+        else if (char === '"') quoted = false
+        continue
+      }
+      if (char === '"') { quoted = true; continue }
+      if (char === opening) depth += 1
+      if (char === closing && --depth === 0) return JSON.parse(html.slice(start, index + 1))
+    }
+  }
+  const pageHint = /cloudflare|captcha|access denied|just a moment/i.test(html) ? ' (the page appears to be a bot-protection challenge)' : ''
+  throw new Error(`Understat response did not contain ${variable}${pageHint}`)
 }
 
 async function fetchJson(url, options = {}) {
@@ -90,6 +119,7 @@ async function ingestUnderstat(db, index) {
   const url = `https://understat.com/league/EPL/${seasonStart}`
   const html = await withCache(`understat-epl-${seasonStart}.json`, () => fetchText(url))
   const rows = extractUnderstatJson(html, 'playersData')
+  if (!Array.isArray(rows)) throw new Error('Understat playersData was not an array')
   const capturedAt = new Date().toISOString()
   let inserted = 0
   let unmatched = 0
@@ -152,7 +182,11 @@ try {
   const teams = bootstrap.teams.map(team => ({ id: team.id, name: team.name, shortName: team.short_name }))
   const players = bootstrap.elements.map(player => ({ id: player.id, name: player.web_name || `${player.first_name} ${player.second_name}`, clubId: player.team }))
   const index = playerIndex(players, teams)
-  await ingestUnderstat(db, index)
+  try {
+    await ingestUnderstat(db, index)
+  } catch (error) {
+    console.warn(`Understat: skipped; ${error.message}`)
+  }
   await ingestOdds(db)
 } catch (error) {
   console.error(`signal ingestion failed: ${error.stack || error.message}`)
