@@ -52,7 +52,7 @@ const allowedDepthRoles=new Set(['FIRST_CHOICE','ROTATION','BACKUP','OUT'])
 export function normalizeCreatorPayload(payload){
   if(!payload||typeof payload!=='object')throw new Error('JSON object payload is required')
   const rawSource=payload.source&&typeof payload.source==='object'?payload.source:{}
-  const url=String(rawSource.url||payload.sourceUrl||'').trim()
+  const url=String(rawSource.url||payload.sourceUrl||payload.videoUrl||'').trim()
   const externalId=String(rawSource.externalId||payload.videoId||youtubeExternalId(url)||hash(url||JSON.stringify(payload).slice(0,1000))).trim()
   const platform=String(rawSource.platform||'YOUTUBE').toUpperCase().slice(0,30)
   const source={
@@ -114,7 +114,8 @@ export function matchCreatorClaim(claim,catalog,aliases=[]){
     return {player,confidence,reasons}
   }).filter(candidate=>candidate.confidence>=.42).sort((a,b)=>b.confidence-a.confidence||String(a.player.name).localeCompare(String(b.player.name))).slice(0,5)
   const best=candidates[0],runnerUp=candidates[1]
-  if(best&&best.confidence>=.72&&(!runnerUp||best.confidence-runnerUp.confidence>=.1))return {status:'MATCHED',player:best.player,confidence:best.confidence,candidates}
+  const requiredGap = clubHint ? 0.1 : 0.15
+  if(best&&best.confidence>=.72&&(!runnerUp||best.confidence-runnerUp.confidence>=requiredGap))return {status:'MATCHED',player:best.player,confidence:best.confidence,candidates}
   if(best&&best.confidence>=.5)return {status:'AMBIGUOUS',player:null,confidence:best.confidence,candidates}
   return {status:'UNRESOLVED',player:null,confidence:best?.confidence||0,candidates}
 }
