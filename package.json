@@ -12,6 +12,7 @@
     "verify:intelligence": "node --no-warnings --experimental-strip-types scripts/verify-intelligence.mjs",
     "db:push": "node --no-warnings scripts/db-push.mjs",
     "ingest:fpl": "node --no-warnings --experimental-strip-types scripts/ingest-fpl.mjs",
+    "ingest:signals": "node --no-warnings scripts/ingest-signals.mjs",
     "backtest": "node --no-warnings --experimental-strip-types scripts/backtest-projections.mjs",
     "verify:db": "node --no-warnings scripts/verify-db.mjs",
     "db:pull": "prisma db pull --schema prisma/schema.prisma",

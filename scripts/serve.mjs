@@ -308,6 +308,7 @@ async function refreshLiveData() {
   const gw = await db.query('SELECT id, deadline FROM "Gameweek" WHERE "isCurrent"=true OR ("finished"=false AND "deadline" >= NOW()) ORDER BY "isCurrent" DESC, "deadline" ASC NULLS LAST, id ASC LIMIT 1')
   const currentGameweek=gw.rows[0]?.id||1
   const result=await db.query(`SELECT p.*,t."shortName" AS club,t.name AS "clubName" FROM "Player" p JOIN "Team" t ON t.id=p."clubId" WHERE p.active=true AND p.status!='u' ORDER BY p.id`)
+  const underlyingResult=await db.query(`SELECT s.* FROM "PlayerUnderlyingSnapshot" s JOIN (SELECT "playerId", MAX("capturedAt") AS capturedAt FROM "PlayerUnderlyingSnapshot" WHERE "source"='UNDERSTAT' GROUP BY "playerId") latest ON latest."playerId"=s."playerId" AND latest.capturedAt=s."capturedAt"`).catch(()=>({rows:[]}))
   const fixtureResult=await db.query(`SELECT f."gameweekId" AS gameweek,f."homeTeamId",f."awayTeamId",f."difficultyHome",f."difficultyAway",home."shortName" AS home,away."shortName" AS away FROM "Fixture" f JOIN "Gameweek" g ON g.id=f."gameweekId" JOIN "Team" home ON home.id=f."homeTeamId" JOIN "Team" away ON away.id=f."awayTeamId" WHERE g.finished=false AND f."gameweekId">=$1 ORDER BY f."gameweekId",f.kickoff NULLS LAST`,[currentGameweek])
   const calibrationResult=await db.query('SELECT position,factor FROM "ModelCalibration" WHERE "modelVersion"=$1',['role-aware-v2.0']).catch(()=>({rows:[]}))
   const signalResult=await db.query('SELECT * FROM "PlayerSignal" WHERE status=$1 AND "validUntil">=NOW() AND ("gameweekId" IS NULL OR "gameweekId"=$2) ORDER BY "observedAt" DESC',['VERIFIED',currentGameweek]).catch(()=>({rows:[]}))
@@ -330,8 +331,10 @@ async function refreshLiveData() {
     signalsByPlayer.set(signal.playerId,existing)
   }
   const outlookByPlayer=new Map(outlookResult.rows.map(row=>[Number(row.playerId),row]))
+  const underlyingByPlayer=new Map(underlyingResult.rows.map(row=>[Number(row.playerId),row]))
   const staleOutlookPlayerIds=new Set()
   const players = result.rows.map(p => {
+    const underlying=underlyingByPlayer.get(Number(p.id))
     const availability = p.chanceOfPlaying ?? (p.status === 'i'||p.status === 'u' ? 0 : p.status === 'd' ? 75 : 100)
     const completedGameweeks=Math.max(0,currentGameweek-1)
     const historicalMinutes=Number(p.minutes)||0
@@ -396,7 +399,7 @@ async function refreshLiveData() {
       dataConfidence:coldStart?'LOW':historicalMinutes>=900?'HIGH':'MEDIUM',
       calibrationFactor:calibration[p.position]||1,
       upcomingFixtures,
-      stats:{minutes:Number(p.minutes)||0,starts:Number(p.starts)||0,totalPoints:Number(p.totalPoints)||0,goals:Number(p.goals)||0,assists:Number(p.assists)||0,cleanSheets:Number(p.cleanSheets)||0,goalsConceded:Number(p.goalsConceded)||0,saves:Number(p.saves)||0,bonus:Number(p.bonus)||0,bps:Number(p.bps)||0,yellowCards:Number(p.yellowCards)||0,redCards:Number(p.redCards)||0,ownGoals:Number(p.ownGoals)||0,penaltiesMissed:Number(p.penaltiesMissed)||0,penaltiesSaved:Number(p.penaltiesSaved)||0,expectedGoals:Number(p.expectedGoals)||0,expectedAssists:Number(p.expectedAssists)||0,expectedGoalsConceded:Number(p.expectedGC)||0,expectedGoalsPer90:Number(p.expectedGoalsPer90)||0,expectedAssistsPer90:Number(p.expectedAssistsPer90)||0,expectedGoalsConcededPer90:Number(p.expectedGCPer90)||0,savesPer90:Number(p.savesPer90)||0,clearancesBlocksInterceptions:Number(p.clearancesBlocksInterceptions)||0,tackles:Number(p.tackles)||0,recoveries:Number(p.recoveries)||0,defensiveContribution:Number(p.defensiveContribution)||0,defensiveContributionPer90:Number(p.defensiveContributionPer90)||0}
+      stats:{minutes:Number(p.minutes)||0,starts:Number(p.starts)||0,totalPoints:Number(p.totalPoints)||0,goals:Number(p.goals)||0,assists:Number(p.assists)||0,cleanSheets:Number(p.cleanSheets)||0,goalsConceded:Number(p.goalsConceded)||0,saves:Number(p.saves)||0,bonus:Number(p.bonus)||0,bps:Number(p.bps)||0,yellowCards:Number(p.yellowCards)||0,redCards:Number(p.redCards)||0,ownGoals:Number(p.ownGoals)||0,penaltiesMissed:Number(p.penaltiesMissed)||0,penaltiesSaved:Number(p.penaltiesSaved)||0,expectedGoals:Number(p.expectedGoals)||0,expectedAssists:Number(p.expectedAssists)||0,expectedGoalsConceded:Number(p.expectedGC)||0,expectedGoalsPer90:Number(underlying?.xgPer90 ?? p.expectedGoalsPer90)||0,expectedAssistsPer90:Number(underlying?.xaPer90 ?? p.expectedAssistsPer90)||0,expectedGoalsConcededPer90:Number(p.expectedGCPer90)||0,savesPer90:Number(p.savesPer90)||0,clearancesBlocksInterceptions:Number(p.clearancesBlocksInterceptions)||0,tackles:Number(p.tackles)||0,recoveries:Number(p.recoveries)||0,defensiveContribution:Number(p.defensiveContribution)||0,defensiveContributionPer90:Number(p.defensiveContributionPer90)||0}
     }
   })
   for(const playerId of staleOutlookPlayerIds){

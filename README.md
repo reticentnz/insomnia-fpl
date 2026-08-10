@@ -98,6 +98,14 @@ npm run ingest:fpl
 npm run verify:db
 ```
 
+To refresh the optional underlying-performance and market feeds:
+
+```bash
+ODDS_API_KEY=replace-with-your-key npm run ingest:signals
+```
+
+`ingest:signals` pulls Understat EPL player aggregates into auditable historical snapshots and imports de-vigged EPL match-winner probabilities from The Odds API. Understat is used as the attacking-rate input when a snapshot exists; odds are retained for later team-strength adjustments. Both feeds retain the raw response, use a local cache when a refresh fails, and never create verified injury or role overrides. Set `FPL_SEASON_START_YEAR` when ingesting a season other than the current calendar-year season.
+
 The local server exposes the refreshed catalog at `/api/fpl-data`. The React UI reads players, fixtures, prices, form and availability from that endpoint and falls back to the demo catalog if the database is temporarily unavailable. The rules-aware model uses individual fixtures (including blanks and doubles), expected minutes, shrunk per-90 attacking rates, expected goals conceded, saves, cards, penalties, bonus history and 2026/27 defensive-contribution inputs.
 
 The server keeps the latest successful `/api/fpl-data` response in `.cache/fpl-data.json`. After the first successful load, restarts serve that snapshot immediately and refresh it from SQLite in the background. The in-memory freshness window defaults to 60 seconds and the restart cache to 24 hours; set `FPL_DATA_CACHE_TTL_MS`, `FPL_DATA_CACHE_MAX_STALE_MS`, or `FPL_DATA_CACHE_FILE` to override them. The example Docker deployment stores the database and cache together under `/app/data`.

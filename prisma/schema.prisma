@@ -66,6 +66,7 @@ model Player {
   snapshots                   PlayerSnapshot[]
   matchHistory                PlayerMatchStat[]
   projections                 PlayerProjection[]
+  underlyingSnapshots         PlayerUnderlyingSnapshot[]
   signals                     PlayerSignal[]
   outlooks                    PlayerOutlook[]
 }
@@ -254,6 +255,49 @@ model PlayerSnapshot {
   player       Player   @relation(fields: [playerId], references: [id])
 
   @@index([playerId, capturedAt])
+}
+
+model PlayerUnderlyingSnapshot {
+  id                 Int      @id @default(autoincrement())
+  playerId           Int
+  source             String
+  sourcePlayerId     String
+  capturedAt         DateTime @default(now())
+  games              Int      @default(0)
+  minutes            Int      @default(0)
+  goals              Int      @default(0)
+  assists            Int      @default(0)
+  expectedGoals      Float    @default(0)
+  expectedAssists    Float    @default(0)
+  nonPenaltyExpectedGoals Float @default(0)
+  shots              Int      @default(0)
+  keyPasses          Int      @default(0)
+  xgPer90            Float    @default(0)
+  xaPer90            Float    @default(0)
+  rawPayload         Json
+  player             Player   @relation(fields: [playerId], references: [id])
+
+  @@unique([playerId, source, sourcePlayerId, capturedAt])
+  @@index([playerId, source, capturedAt])
+}
+
+model TeamMarketSnapshot {
+  id             Int      @id @default(autoincrement())
+  source         String
+  externalEventId String
+  capturedAt     DateTime @default(now())
+  kickoff        DateTime?
+  homeTeam       String
+  awayTeam       String
+  homeWinProb    Float?
+  drawProb       Float?
+  awayWinProb    Float?
+  homeGoals      Float?
+  awayGoals      Float?
+  rawPayload     Json
+
+  @@unique([source, externalEventId, capturedAt])
+  @@index([homeTeam, awayTeam, kickoff])
 }
 
 model PlayerProjection {
