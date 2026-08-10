@@ -1,0 +1,22 @@
+services:
+  insomnia-fpl:
+    build:
+      context: .
+    image: insomnia-fpl:local
+    container_name: insomnia-fpl
+    restart: unless-stopped
+    environment:
+      HOST: 0.0.0.0
+      PORT: 4173
+      DATABASE_URL: file:/app/data/fplgod.db
+      FPL_DATA_CACHE_FILE: /app/data/cache/fpl-data.json
+    ports:
+      - "4173:4173"
+    volumes:
+      - ./data:/app/data
+    healthcheck:
+      test: ["CMD", "wget", "--quiet", "--spider", "http://127.0.0.1:4173/api/health"]
+      interval: 30s
+      timeout: 5s
+      start_period: 15s
+      retries: 3

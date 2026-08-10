@@ -1,0 +1,32 @@
+{
+  "name": "insomnia-fpl",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "scripts": {
+    "dev": "node --no-warnings scripts/dev.mjs",
+    "build": "npm run verify:domain && node --no-warnings scripts/build.mjs",
+    "test": "npm run verify:domain && npm run verify:intelligence && npm run test:vitest",
+    "test:vitest": "vitest run --no-file-parallelism --maxWorkers=1",
+    "verify:domain": "node --no-warnings --experimental-strip-types scripts/verify-domain.mjs",
+    "verify:intelligence": "node --no-warnings --experimental-strip-types scripts/verify-intelligence.mjs",
+    "db:push": "node --no-warnings scripts/db-push.mjs",
+    "ingest:fpl": "node --no-warnings --experimental-strip-types scripts/ingest-fpl.mjs",
+    "backtest": "node --no-warnings --experimental-strip-types scripts/backtest-projections.mjs",
+    "verify:db": "node --no-warnings scripts/verify-db.mjs",
+    "db:pull": "prisma db pull --schema prisma/schema.prisma",
+    "preview": "node --no-warnings --experimental-strip-types scripts/serve.mjs"
+  },
+  "dependencies": {
+    "esbuild": "^0.25.12",
+    "react": "^19.0.0",
+    "react-dom": "^19.0.0",
+    "typescript": "^5.8.3"
+  },
+  "devDependencies": {
+    "@types/react": "^19.2.18",
+    "@types/react-dom": "^19.2.4",
+    "prisma": "^6.19.0",
+    "vitest": "^4.1.10"
+  }
+}

@@ -1,0 +1,11 @@
+const { createToolContext, getBestTransfers, getMySquad, getTeamConstraints, simulateTransfer } = await import('../src/intelligence.ts')
+const { reviewDecision } = await import('../src/decision-review.ts')
+const ctx=createToolContext()
+if(getMySquad(ctx).data.players.length!==15) throw new Error('tool squad output invalid')
+if(getTeamConstraints(ctx).data.maxPerClub.value!==3) throw new Error('constraints missing')
+const ranked=getBestTransfers(5,10,ctx).data.transfers
+if(!ranked.length) throw new Error('transfer tool returned no candidates')
+if(!simulateTransfer(ranked[0].out.id,ranked[0].in.id,5,ctx).data.legal) throw new Error('simulation rejected ranked legal move')
+const review=await reviewDecision('What should I do this week?',5,ctx)
+if(review.rounds!==3||!review.toolTrace.length) throw new Error('bounded review trace missing')
+console.log(`intelligence verification passed: ${review.arbiter.decision} ${review.arbiter.confidence}`)

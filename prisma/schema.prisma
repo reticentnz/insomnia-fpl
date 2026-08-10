@@ -1,0 +1,253 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "sqlite"
+  url      = env("DATABASE_URL")
+}
+
+model Team {
+  id        Int      @id
+  name      String
+  shortName String
+  players   Player[]
+}
+
+model Player {
+  id                          Int                @id
+  name                        String
+  clubId                      Int
+  previousClubId              Int?
+  clubChangedAt               DateTime?
+  team                        Team               @relation(fields: [clubId], references: [id])
+  position                    String
+  price                       Float
+  status                      String?
+  active                      Boolean            @default(true)
+  season                      String             @default("2026/27")
+  chanceOfPlaying             Int?
+  minutes                     Int                @default(0)
+  starts                      Int                @default(0)
+  totalPoints                 Int                @default(0)
+  pointsPerGame               Float              @default(0)
+  form                        Float              @default(0)
+  epNext                      Float              @default(0)
+  goals                       Int                @default(0)
+  assists                     Int                @default(0)
+  cleanSheets                 Int                @default(0)
+  goalsConceded               Int                @default(0)
+  saves                       Int                @default(0)
+  bonus                       Int                @default(0)
+  bps                         Int                @default(0)
+  yellowCards                 Int                @default(0)
+  redCards                    Int                @default(0)
+  ownGoals                    Int                @default(0)
+  penaltiesMissed             Int                @default(0)
+  penaltiesSaved              Int                @default(0)
+  clearancesBlocksInterceptions Int              @default(0)
+  tackles                     Int                @default(0)
+  recoveries                  Int                @default(0)
+  defensiveContribution       Float              @default(0)
+  defensiveContributionPer90  Float              @default(0)
+  expectedGoalsPer90          Float              @default(0)
+  expectedAssistsPer90        Float              @default(0)
+  expectedGCPer90             Float              @default(0)
+  savesPer90                  Float              @default(0)
+  ownership                   Float              @default(0)
+  transfersIn                 Int                @default(0)
+  transfersOut                Int                @default(0)
+  expectedGoals               Float              @default(0)
+  expectedAssists             Float              @default(0)
+  expectedGI                  Float              @default(0)
+  expectedGC                  Float              @default(0)
+  createdAt                   DateTime           @default(now())
+  updatedAt                   DateTime           @updatedAt
+  snapshots                   PlayerSnapshot[]
+  matchHistory                PlayerMatchStat[]
+  projections                 PlayerProjection[]
+  signals                     PlayerSignal[]
+  outlooks                    PlayerOutlook[]
+}
+
+model PlayerMatchStat {
+  id                    Int      @id @default(autoincrement())
+  playerId              Int
+  fixtureId             Int
+  gameweek              Int
+  opponentTeamId        Int
+  wasHome               Boolean
+  kickoff               DateTime?
+  minutes               Int      @default(0)
+  totalPoints           Int      @default(0)
+  goals                 Int      @default(0)
+  assists               Int      @default(0)
+  cleanSheets           Int      @default(0)
+  goalsConceded         Int      @default(0)
+  saves                 Int      @default(0)
+  bonus                 Int      @default(0)
+  bps                   Int      @default(0)
+  yellowCards           Int      @default(0)
+  redCards              Int      @default(0)
+  ownGoals              Int      @default(0)
+  penaltiesMissed       Int      @default(0)
+  penaltiesSaved        Int      @default(0)
+  expectedGoals         Float    @default(0)
+  expectedAssists       Float    @default(0)
+  expectedGoalsConceded Float    @default(0)
+  defensiveContribution Float    @default(0)
+  clearancesBlocksInterceptions Int @default(0)
+  tackles               Int      @default(0)
+  recoveries            Int      @default(0)
+  player                Player   @relation(fields: [playerId], references: [id])
+
+  @@unique([playerId, fixtureId])
+  @@index([playerId, gameweek])
+}
+
+model ModelCalibration {
+  modelVersion String
+  position     String
+  sampleSize   Int
+  factor       Float
+  mae          Float
+  rmse         Float
+  bias         Float
+  updatedAt    DateTime @updatedAt
+
+  @@id([modelVersion, position])
+}
+
+model Gameweek {
+  id          Int                @id
+  season      String             @default("2026/27")
+  deadline    DateTime?
+  finished    Boolean            @default(false)
+  isCurrent   Boolean            @default(false)
+  isFuture    Boolean            @default(true)
+  fixtures    Fixture[]
+  projections PlayerProjection[]
+  signals     PlayerSignal[]
+  outlooks    PlayerOutlook[]
+}
+
+model PlayerSignal {
+  id              Int      @id @default(autoincrement())
+  playerId        Int
+  gameweekId      Int?
+  kind            String
+  value           Json
+  sourceType      String
+  sourceUrl       String?
+  evidenceSummary String
+  confidence      Float
+  observedAt      DateTime
+  validUntil      DateTime
+  status          String   @default("PENDING")
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+  player          Player   @relation(fields: [playerId], references: [id])
+  gameweek        Gameweek? @relation(fields: [gameweekId], references: [id])
+
+  @@index([playerId, status, validUntil])
+  @@index([gameweekId])
+}
+
+model PlayerOutlook {
+  playerId                        Int
+  gameweekId                      Int
+  startProbability                Float
+  minutesIfStarting               Float
+  substituteProbabilityWhenBenched Float
+  minutesIfSubstitute             Float
+  confidence                      String
+  derivedSignalIds                Json
+  updatedAt                       DateTime @updatedAt
+  player                          Player   @relation(fields: [playerId], references: [id])
+  gameweek                        Gameweek @relation(fields: [gameweekId], references: [id])
+
+  @@id([playerId, gameweekId])
+  @@index([gameweekId])
+}
+
+model Fixture {
+  id             Int       @id
+  season         String    @default("2026/27")
+  gameweekId     Int
+  homeTeamId     Int
+  awayTeamId     Int
+  kickoff        DateTime?
+  difficultyHome Int?
+  difficultyAway Int?
+  gameweek       Gameweek  @relation(fields: [gameweekId], references: [id])
+}
+
+model PlayerSnapshot {
+  id           Int      @id @default(autoincrement())
+  playerId     Int
+  capturedAt   DateTime @default(now())
+  totalPoints  Int?
+  form         Float?
+  minutes      Int?
+  ownership    Float?
+  transfersIn  Int?
+  transfersOut Int?
+  price        Float?
+  player       Player   @relation(fields: [playerId], references: [id])
+
+  @@index([playerId, capturedAt])
+}
+
+model PlayerProjection {
+  id                    Int      @id @default(autoincrement())
+  playerId              Int
+  gameweekId            Int
+  modelVersion          String
+  expectedMinutes       Float
+  expectedGoals         Float
+  expectedAssists       Float
+  cleanSheetProbability Float
+  expectedBonus         Float
+  expectedCardDeduction Float
+  expectedPoints        Float
+  player                Player   @relation(fields: [playerId], references: [id])
+  gameweek              Gameweek @relation(fields: [gameweekId], references: [id])
+
+  @@unique([playerId, gameweekId, modelVersion])
+}
+
+model Squad {
+  id            String        @id
+  bank          Float
+  freeTransfers Int           @default(1)
+  updatedAt     DateTime      @updatedAt
+  players       SquadPlayer[]
+}
+
+model SquadPlayer {
+  squadId  String
+  playerId Int
+  position String
+  squad    Squad  @relation(fields: [squadId], references: [id])
+
+  @@id([squadId, playerId])
+}
+
+model UserAccount {
+  id              String   @id @default("default")
+  teamId          Int
+  teamName        String
+  managerName     String   @default("")
+  totalPoints     Int      @default(0)
+  gameweekPoints  Int      @default(0)
+  squadValue      Float    @default(100)
+  bank            Float    @default(0)
+  overallRank     Int?
+  transfersCost   Int      @default(0)
+  eventTransfers  Int      @default(0)
+  totalTransfers  Int      @default(0)
+  currentGameweek Int      @default(1)
+  selectedIds     String   @default("[]")
+  lastSynced      DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+}
