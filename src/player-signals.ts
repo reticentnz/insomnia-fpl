@@ -5,7 +5,11 @@ export type SignalKind =
   | "EXPECTED_ROLE"
   | "PENALTIES"
   | "SET_PIECES"
-  | "PRESEASON_MINUTES";
+  | "PRESEASON_MINUTES"
+  | "TACTICAL_ROLE"
+  | "VALUE_OPINION"
+  | "STATISTICAL_CLAIM"
+  | "TRANSFER_OPINION";
 
 export type SignalSourceType =
   | "OFFICIAL_FPL"
@@ -114,13 +118,24 @@ export function resolvePlayerRole(
   );
   if (!eligible.length) return normalizeRoleProfile(base);
 
-  const overrides = eligible
+  const roleInputs = eligible.filter((signal) => {
+    const value = signalRole(signal);
+    return (
+      typeof value.startProbability === "number" ||
+      typeof value.minutesIfStarting === "number" ||
+      typeof value.substituteProbabilityWhenBenched === "number" ||
+      typeof value.minutesIfSubstitute === "number" ||
+      Boolean(value.depthRole)
+    );
+  });
+  if (!roleInputs.length) return normalizeRoleProfile(base);
+  const overrides = roleInputs
     .filter((signal) => signal.sourceType === "MANUAL_OVERRIDE")
     .sort(
       (a, b) =>
         new Date(b.observedAt).getTime() - new Date(a.observedAt).getTime(),
     );
-  const inputs = overrides.length ? [overrides[0]] : eligible;
+  const inputs = overrides.length ? [overrides[0]] : roleInputs;
   const weighted = <K extends keyof RoleSignalValue>(key: K, fallback: number) => {
     const values: { value: number; weight: number }[] = [];
     inputs.forEach((signal) => {

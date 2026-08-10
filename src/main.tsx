@@ -66,6 +66,10 @@ import {
   type SquadChallengeResult,
   fetchAllSignals,
   ingestSignalText,
+  fetchCreatorClaims,
+  resolveCreatorClaim,
+  dismissCreatorClaim,
+  type CreatorClaim,
   fetchSignalConfig,
   saveSignalConfig,
   type SignalSourceConfig,
@@ -519,8 +523,11 @@ function App() {
   players = catalog;
   useEffect(() => {
     let active = true;
-    fetchLiveCatalog()
-      .then((data) => {
+    let pollTimer: ReturnType<typeof setTimeout> | null = null;
+
+    const loadCatalog = async () => {
+      try {
+        const data = await fetchLiveCatalog(3);
         if (!active) return;
         setLivePlayers(data.players);
         setCapturedAt(data.capturedAt || null);
@@ -550,13 +557,31 @@ function App() {
             setSelectedIds(legalPicks.map((p) => p.id));
           }
         }
-      })
-      .catch(() => {
-        setLivePlayers([]);
-        setCatalogMode("demo-offline");
-      });
+      } catch {
+        if (!active) return;
+        fetchSystemStatus()
+          .then((sys) => {
+            if (!active) return;
+            setSystemStatus(sys);
+            if (sys.isSeeding || sys.status === "initializing" || sys.status === "seeding") {
+              pollTimer = setTimeout(loadCatalog, 3000);
+            } else {
+              setLivePlayers([]);
+              setCatalogMode("demo-offline");
+            }
+          })
+          .catch(() => {
+            if (!active) return;
+            setLivePlayers([]);
+            setCatalogMode("demo-offline");
+          });
+      }
+    };
+
+    loadCatalog();
     return () => {
       active = false;
+      if (pollTimer) clearTimeout(pollTimer);
     };
   }, []);
 
@@ -929,15 +954,14 @@ function App() {
             }
           : current,
       );
-      if (status === "VERIFIED") {
-        const data = await fetchLiveCatalog();
-        setLivePlayers(data.players);
-        setCapturedAt(data.capturedAt || null);
-        setToast({
-          message:
-            "Evidence approved and projections recalculated. Demoted players moved to bench; check Transfers to replace them.",
-        });
-      }
+      const data = await fetchLiveCatalog();
+      setLivePlayers(data.players);
+      setCapturedAt(data.capturedAt || null);
+      setToast({
+        message: status === "VERIFIED"
+          ? "Evidence approved. Any explicit role or minutes claim is now reflected in projections."
+          : "Evidence removed and projections refreshed.",
+      });
     } catch (error) {
       setChallengeError(
         error instanceof Error ? error.message : "Could not review evidence",
@@ -4029,6 +4053,9 @@ function SignalsTab({
   onReviewSignal: (signal: PlayerSignal, status: "VERIFIED" | "REJECTED") => void;
 }) {
   const [signals, setSignals] = useState<PlayerSignal[]>([]);
+  const [creatorClaims, setCreatorClaims] = useState<CreatorClaim[]>([]);
+  const [claimSelections, setClaimSelections] = useState<Record<string, number>>({});
+  const [claimReviewingId, setClaimReviewingId] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
   const [sourceFilter, setSourceFilter] = useState("");
   const [statusFilter, setStatusFilter] = useState("");
@@ -4058,10 +4085,18 @@ function SignalsTab({
       .finally(() => setLoading(false));
   }, []);
 
+  const loadCreatorClaims = useCallback(() => {
+    fetchCreatorClaims().then((claims) => {
+      setCreatorClaims(claims);
+      setClaimSelections(Object.fromEntries(claims.map((claim) => [claim.id, claim.matchCandidates[0]?.playerId || 0])));
+    }).catch(() => {});
+  }, []);
+
   useEffect(() => {
     loadSignals();
+    loadCreatorClaims();
     fetchSignalConfig().then(setSignalConfig).catch(() => {});
-  }, [loadSignals]);
+  }, [loadSignals, loadCreatorClaims]);
 
   async function handleSaveConfig(updated: SignalSourceConfig) {
     setConfigSaving(true);
@@ -4147,7 +4182,6 @@ function SignalsTab({
       const result = await ingestSignalText({
         text: ingestText,
         sourceUrl: ingestUrl || undefined,
-        sourceType: "JOURNALIST",
       });
       if (result.created === 0) {
         setIngestResult("No players found in that text. Try including player names.");
@@ -4169,6 +4203,24 @@ function SignalsTab({
   }
 
   const pendingCount = signals.filter((s) => s.status === "PENDING").length;
+  const unresolvedClaims = creatorClaims.filter((claim) => claim.matchStatus === "UNRESOLVED" || claim.matchStatus === "AMBIGUOUS");
+
+  async function handleResolveClaim(claim: CreatorClaim) {
+    const playerId=claimSelections[claim.id];
+    if(!playerId)return;
+    setClaimReviewingId(claim.id);
+    try {
+      await resolveCreatorClaim(claim.id,playerId,true);
+      loadCreatorClaims();loadSignals();
+    } finally { setClaimReviewingId(null); }
+  }
+
+  async function handleDismissClaim(claim: CreatorClaim) {
+    setClaimReviewingId(claim.id);
+    try { await dismissCreatorClaim(claim.id); loadCreatorClaims(); }
+    finally { setClaimReviewingId(null); }
+  }
+
 
   return (
     <div className="content signals-page">
@@ -4183,6 +4235,32 @@ function SignalsTab({
           </span>
         )}
       </div>
+
+      {unresolvedClaims.length > 0 && (
+        <section className="claim-review-panel">
+          <div className="claim-review-heading">
+            <div><b>Names needing review</b><p>{unresolvedClaims.length} transcript claim{unresolvedClaims.length === 1 ? "" : "s"} could not be linked safely.</p></div>
+          </div>
+          {unresolvedClaims.map((claim) => (
+            <article className="claim-review-row" key={claim.id}>
+              <div className="claim-review-copy">
+                <span className="pill amber">{claim.matchStatus}</span>
+                <b>“{claim.rawPlayerName}”</b>
+                <span>{claim.creator} · {claim.category}{claim.clubHint ? ` · club hint ${claim.clubHint}` : ""}</span>
+                <p>{claim.summary}</p>
+              </div>
+              <div className="claim-review-actions">
+                <select value={claimSelections[claim.id] || 0} onChange={(event)=>setClaimSelections((current)=>({...current,[claim.id]:Number(event.target.value)}))}>
+                  <option value={0}>Choose player…</option>
+                  {catalog.map((player)=><option key={player.id} value={player.id}>{player.name} · {player.club} · {player.position}</option>)}
+                </select>
+                <button className="dark-btn" disabled={!claimSelections[claim.id] || claimReviewingId===claim.id} onClick={()=>handleResolveClaim(claim)}>Link & create evidence</button>
+                <button className="ghost-btn" disabled={claimReviewingId===claim.id} onClick={()=>handleDismissClaim(claim)}>Dismiss</button>
+              </div>
+            </article>
+          ))}
+        </section>
+      )}
 
       {/* Filter bar */}
       <div className="signals-filter-bar">
@@ -4205,7 +4283,7 @@ function SignalsTab({
           ))}
         </div>
         <div className="filter-chips">
-          {(["", "PENDING", "VERIFIED", "REJECTED"] as const).map((s) => (
+          {(["", "PENDING", "VERIFIED", "REJECTED", "EXPIRED"] as const).map((s) => (
             <button
               key={s}
               className={`filter-chip${statusFilter === s ? " active" : ""}`}
@@ -4230,11 +4308,9 @@ function SignalsTab({
       <div className="n8n-info-card">
         <div className="n8n-info-icon">📡</div>
         <div>
-          <b>n8n YouTube Transcription Webhook</b>
+          <b>n8n creator-signal ingestion</b>
           <p>
-            Point your n8n HTTP Request node to this endpoint. Send{" "}
-            <code>{"{ text, sourceUrl, sourceType: \"YOUTUBE_TRANSCRIPT\", playerHints?, confidence? }"}</code>
-            . Player names are auto-resolved and signals are created as{" "}
+            Send structured creator/video metadata and a <code>claims[]</code> array from n8n. The request requires <code>Authorization: Bearer $SIGNAL_INGEST_TOKEN</code>. Names are linked using club, position, price, and remembered aliases; evidence is created as{" "}
             <span className="pill amber" style={{ fontSize: "11px", padding: "1px 6px" }}>PENDING</span>{" "}
             unless the source is set to auto-approve below.
           </p>
@@ -4425,7 +4501,7 @@ function SignalsTab({
                   <div className="signal-meta-right">
                     <span className="signal-time">{relativeTime(signal.observedAt)}</span>
                     <span className={statusClass(signal.status)}>
-                      {signal.status === "VERIFIED" ? "✓ APPLIED" : signal.status}
+                      {signal.status === "VERIFIED" ? "✓ APPROVED" : signal.status}
                     </span>
                   </div>
                 </div>
@@ -4473,7 +4549,7 @@ function SignalsTab({
                       disabled={isReviewing}
                       onClick={() => handleReview(signal, "VERIFIED")}
                     >
-                      {isReviewing ? "…" : "✓ Approve & apply"}
+                      {isReviewing ? "…" : "✓ Approve evidence"}
                     </button>
                     <button
                       className="ghost-btn"
@@ -4491,7 +4567,7 @@ function SignalsTab({
                       disabled={isReviewing}
                       onClick={() => handleReview(signal, "REJECTED")}
                     >
-                      Reset
+                      Remove evidence
                     </button>
                   </div>
                 )}

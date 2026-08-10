@@ -32,6 +32,11 @@ describe('player evidence signals',()=>{
     expect(resolved.minutesIfStarting).toBe(90)
     expect(resolved.derivedFromSignalIds).toEqual([4])
   })
+
+  it('keeps accepted opinion-only evidence out of role projections',()=>{
+    const opinion=signal({id:5,kind:'VALUE_OPINION',sourceType:'YOUTUBE_TRANSCRIPT',value:{note:'Good value at this price'},confidence:.85})
+    expect(resolvePlayerRole(base,[opinion],{now:new Date('2026-08-10T12:00:00Z'),gameweek:1})).toEqual(base)
+  })
 })
 
 describe('FPL domain rules', () => {

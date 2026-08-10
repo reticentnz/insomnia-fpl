@@ -24,6 +24,8 @@ docker run -d \
   --restart unless-stopped \
   -p 4173:4173 \
   -e DATABASE_URL='file:/app/data/insomnia-fpl.db' \
+  -e SIGNAL_INGEST_TOKEN='replace-with-a-long-random-token' \
+  -e SIGNAL_CONFIG_FILE='/app/data/signal-config.json' \
   -e FPL_DATA_CACHE_FILE='/app/data/cache/fpl-data.json' \
   -v "$PWD/data:/app/data" \
   insomnia-fpl:local
@@ -32,6 +34,35 @@ docker run -d \
 Alternatively, copy `compose.example.yaml` to `compose.yaml`, then run `docker compose up -d --build`. The bind-mounted `./data` directory retains the SQLite database, WAL files and restart cache when the container is stopped or replaced. Ensure it is writable by container UID 1000 before the first start.
 
 The container exposes a liveness check at `/api/health`. From n8n, use `http://insomnia-fpl:4173` when both containers share a user-defined Docker network. Otherwise use the Unraid server's fixed LAN address and mapped port.
+
+The creator-signal endpoint is `POST /api/signals/ingest`. It requires `Authorization: Bearer <SIGNAL_INGEST_TOKEN>` and an `application/json` body. n8n should send one stable video ID plus structured claims; retrying the same payload is idempotent:
+
+```json
+{
+  "schemaVersion": 1,
+  "source": {
+    "platform": "YOUTUBE",
+    "externalId": "JmJBKn7Zurk",
+    "creator": "PL Mate",
+    "title": "Ranking your FPL hidden gems",
+    "url": "https://www.youtube.com/watch?v=JmJBKn7Zurk"
+  },
+  "claims": [
+    {
+      "rawPlayerName": "Kai Havt",
+      "clubHint": "Arsenal",
+      "category": "ROTATION",
+      "sentiment": "NEGATIVE",
+      "summary": "Too risky for GW1 due to competition for striker minutes.",
+      "timestampSeconds": 122,
+      "depthRole": "ROTATION",
+      "confidence": 0.8
+    }
+  ]
+}
+```
+
+Uncertain names stay in the Signals tab for manual linking. Confirmed links are remembered as aliases. General opinions remain evidence only; projections change only when a claim includes explicit role/minutes fields.
 
 GitHub is optional. The image can be built directly on Unraid from a copied or cloned working tree. For repeatable updates, push the repository to GitHub and publish an image to GitHub Container Registry; Unraid can then pull `ghcr.io/<owner>/<repository>:latest`. Keep database URLs and ingestion tokens in Unraid/n8n secrets, never in GitHub or the image.
 

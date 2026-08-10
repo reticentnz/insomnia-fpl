@@ -1,8 +1,9 @@
 import http from 'node:http'
 import fs from 'node:fs'
 import path from 'node:path'
-import { randomUUID } from 'node:crypto'
+import { randomUUID, timingSafeEqual } from 'node:crypto'
 import { resolvePlayerRole } from '../src/player-signals.ts'
+import { matchCreatorClaim, normalizeCreatorPayload, normalizeEntityText, signalDraftFromClaim } from './creator-signals.mjs'
 
 const port = Number(process.env.PORT || 4173)
 const host = process.env.HOST || '127.0.0.1'
@@ -164,6 +165,89 @@ function shouldAutoApprove(sourceType, confidence, config) {
   return entry.autoApprove && confidence >= (entry.confidenceThreshold ?? 0)
 }
 
+function bearerToken(req){
+  const match=String(req.headers.authorization||'').match(/^Bearer\s+(.+)$/i)
+  return match?.[1]||''
+}
+
+function tokenMatches(actual,expected){
+  if(!actual||!expected)return false
+  const left=Buffer.from(actual),right=Buffer.from(expected)
+  return left.length===right.length&&timingSafeEqual(left,right)
+}
+
+function requireIngestToken(req,res){
+  const expected=process.env.SIGNAL_INGEST_TOKEN||''
+  if(!expected){sendJson(res,503,{error:'SIGNAL_INGEST_TOKEN is not configured'});return false}
+  if(!tokenMatches(bearerToken(req),expected)){sendJson(res,401,{error:'Invalid ingestion token'});return false}
+  return true
+}
+
+const parseJson=(value,fallback)=>{
+  if(value==null)return fallback
+  if(typeof value!=='string')return value
+  try{return JSON.parse(value)}catch{return fallback}
+}
+
+function compactCandidates(candidates){
+  return candidates.map(({player,confidence,reasons})=>({
+    playerId:Number(player.id),name:player.name,club:player.club,position:player.position,
+    price:Number(player.price),confidence:Number(confidence),reasons,
+  }))
+}
+
+function validityDeadline(timeHorizon){
+  const days={GW1:7,SHORT_TERM:14,MEDIUM_TERM:42,SEASON:120,UNKNOWN:14}[String(timeHorizon||'').toUpperCase()]||14
+  return new Date(Date.now()+days*24*60*60*1000).toISOString()
+}
+
+async function createSignalForCreatorClaim(db,claimRow,source,gameweek){
+  if(claimRow.signalId){
+    const existing=await db.query('SELECT * FROM "PlayerSignal" WHERE id=$1',[claimRow.signalId])
+    if(existing.rows[0])return {signal:existing.rows[0],created:false}
+  }
+  const signalValue=parseJson(claimRow.signalValue,{})
+  const draft=signalDraftFromClaim({...claimRow,...signalValue,numericClaims:parseJson(claimRow.numericClaims,[]),relatedMentions:parseJson(claimRow.relatedMentions,[])},Number(claimRow.resolvedPlayerId),source)
+  const confidence=Math.max(0,Math.min(1,Number(draft.confidence)||.65))
+  const status=shouldAutoApprove('YOUTUBE_TRANSCRIPT',confidence,loadSignalConfig())?'VERIFIED':'PENDING'
+  const observedAt=new Date().toISOString()
+  const inserted=await db.query('INSERT INTO "PlayerSignal" ("playerId","gameweekId",kind,value,"sourceType","sourceUrl","evidenceSummary",confidence,"observedAt","validUntil",status) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11) RETURNING *',[draft.playerId,gameweek,draft.kind,JSON.stringify(draft.value),draft.sourceType,draft.sourceUrl,draft.evidenceSummary,confidence,observedAt,validityDeadline(claimRow.timeHorizon),status])
+  const signal=inserted.rows[0]
+  await db.query('UPDATE "CreatorClaim" SET "signalId"=$1,"updatedAt"=CURRENT_TIMESTAMP WHERE id=$2',[signal.id,claimRow.id])
+  if(status==='VERIFIED')await materializePlayerOutlook(Number(claimRow.resolvedPlayerId))
+  return {signal,created:true}
+}
+
+async function processCreatorPayload(rawPayload){
+  const payload=normalizeCreatorPayload(rawPayload),db=await getDb(),data=await liveData()
+  const contentId=`${payload.source.platform}:${payload.source.externalId}`
+  const aliases=(await db.query('SELECT * FROM "PlayerAlias"')).rows
+  const receivedAt=new Date().toISOString()
+  await db.query(`INSERT INTO "CreatorContent" (id,platform,"externalId",creator,title,url,"publishedAt",payload,status,"receivedAt") VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10) ON CONFLICT (id) DO UPDATE SET creator=EXCLUDED.creator,title=EXCLUDED.title,url=EXCLUDED.url,"publishedAt"=EXCLUDED."publishedAt",payload=EXCLUDED.payload`,[contentId,payload.source.platform,payload.source.externalId,payload.source.creator,payload.source.title,payload.source.url,payload.source.publishedAt,JSON.stringify(payload),'PENDING',receivedAt])
+  const results=[]
+  for(const claim of payload.claims){
+    const existing=(await db.query('SELECT * FROM "CreatorClaim" WHERE id=$1',[claim.externalClaimId])).rows[0]
+    const match=existing?.signalId
+      ? {status:existing.matchStatus,player:data.players.find(player=>player.id===Number(existing.resolvedPlayerId))||null,confidence:Number(existing.matchConfidence),candidates:parseJson(existing.matchCandidates,[])}
+      : matchCreatorClaim(claim,data.players,aliases)
+    const resolvedPlayerId=match.player?.id||existing?.resolvedPlayerId||null
+    const signalValue=Object.fromEntries(['startProbability','minutesIfStarting','substituteProbabilityWhenBenched','minutesIfSubstitute','depthRole','confidence'].filter(key=>claim[key]!=null).map(key=>[key,claim[key]]))
+    const candidates=Array.isArray(match.candidates)&&match.candidates[0]?.player?compactCandidates(match.candidates):match.candidates||[]
+    await db.query(`INSERT INTO "CreatorClaim" (id,"contentId","rawPlayerName","normalizedPlayerName","resolvedPlayerId","clubHint","positionHint","priceHint",category,sentiment,summary,"evidenceText","timestampSeconds","timeHorizon","numericClaims","relatedMentions","signalValue","matchStatus","matchConfidence","matchCandidates","signalId") VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21) ON CONFLICT (id) DO UPDATE SET "rawPlayerName"=EXCLUDED."rawPlayerName","clubHint"=EXCLUDED."clubHint","positionHint"=EXCLUDED."positionHint","priceHint"=EXCLUDED."priceHint",category=EXCLUDED.category,sentiment=EXCLUDED.sentiment,summary=EXCLUDED.summary,"evidenceText"=EXCLUDED."evidenceText","timestampSeconds"=EXCLUDED."timestampSeconds","timeHorizon"=EXCLUDED."timeHorizon","numericClaims"=EXCLUDED."numericClaims","relatedMentions"=EXCLUDED."relatedMentions","signalValue"=EXCLUDED."signalValue","resolvedPlayerId"=COALESCE("CreatorClaim"."resolvedPlayerId",EXCLUDED."resolvedPlayerId"),"matchStatus"=CASE WHEN "CreatorClaim"."signalId" IS NULL THEN EXCLUDED."matchStatus" ELSE "CreatorClaim"."matchStatus" END,"matchConfidence"=CASE WHEN "CreatorClaim"."signalId" IS NULL THEN EXCLUDED."matchConfidence" ELSE "CreatorClaim"."matchConfidence" END,"matchCandidates"=CASE WHEN "CreatorClaim"."signalId" IS NULL THEN EXCLUDED."matchCandidates" ELSE "CreatorClaim"."matchCandidates" END`,[claim.externalClaimId,contentId,claim.rawPlayerName,normalizeEntityText(claim.rawPlayerName),resolvedPlayerId,claim.clubHint,claim.positionHint,claim.priceHint,claim.category,claim.sentiment,claim.summary,claim.evidenceText,claim.timestampSeconds,claim.timeHorizon,JSON.stringify(claim.numericClaims),JSON.stringify(claim.relatedMentions),JSON.stringify(signalValue),match.status,match.confidence,JSON.stringify(candidates),existing?.signalId||null])
+    let signalResult=null
+    if(match.status==='MATCHED'&&resolvedPlayerId){
+      const stored=(await db.query('SELECT * FROM "CreatorClaim" WHERE id=$1',[claim.externalClaimId])).rows[0]
+      signalResult=await createSignalForCreatorClaim(db,stored,payload.source,data.currentGameweek)
+    }
+    results.push({id:claim.externalClaimId,rawPlayerName:claim.rawPlayerName,matchStatus:match.status,resolvedPlayerId,confidence:match.confidence,candidates,signalId:signalResult?.signal?.id||existing?.signalId||null,created:Boolean(signalResult?.created)})
+  }
+  const unresolved=results.filter(row=>row.matchStatus!=='MATCHED').length
+  await db.query('UPDATE "CreatorContent" SET status=$1,"processedAt"=CURRENT_TIMESTAMP,"processingError"=NULL WHERE id=$2',[unresolved?'NEEDS_REVIEW':'PROCESSED',contentId])
+  invalidateLiveDataCache()
+  return {contentId,created:results.filter(row=>row.created).length,matched:results.length-unresolved,unresolved,claims:results}
+}
+
+
 async function liveData() {
   return refreshLiveData()
 }
@@ -172,7 +256,7 @@ async function refreshLiveData() {
   const db = await getDb()
   const gw = await db.query('SELECT id, deadline FROM "Gameweek" WHERE "isCurrent"=true OR ("finished"=false AND "deadline" >= NOW()) ORDER BY "isCurrent" DESC, "deadline" ASC NULLS LAST, id ASC LIMIT 1')
   const currentGameweek=gw.rows[0]?.id||1
-  const result=await db.query(`SELECT p.*,t."shortName" AS club FROM "Player" p JOIN "Team" t ON t.id=p."clubId" WHERE p.active=true AND p.status!='u' ORDER BY p.id`)
+  const result=await db.query(`SELECT p.*,t."shortName" AS club,t.name AS "clubName" FROM "Player" p JOIN "Team" t ON t.id=p."clubId" WHERE p.active=true AND p.status!='u' ORDER BY p.id`)
   const fixtureResult=await db.query(`SELECT f."gameweekId" AS gameweek,f."homeTeamId",f."awayTeamId",f."difficultyHome",f."difficultyAway",home."shortName" AS home,away."shortName" AS away FROM "Fixture" f JOIN "Gameweek" g ON g.id=f."gameweekId" JOIN "Team" home ON home.id=f."homeTeamId" JOIN "Team" away ON away.id=f."awayTeamId" WHERE g.finished=false AND f."gameweekId">=$1 ORDER BY f."gameweekId",f.kickoff NULLS LAST`,[currentGameweek])
   const calibrationResult=await db.query('SELECT position,factor FROM "ModelCalibration" WHERE "modelVersion"=$1',['role-aware-v2.0']).catch(()=>({rows:[]}))
   const signalResult=await db.query('SELECT * FROM "PlayerSignal" WHERE status=$1 AND "validUntil">=NOW() AND ("gameweekId" IS NULL OR "gameweekId"=$2) ORDER BY "observedAt" DESC',['VERIFIED',currentGameweek]).catch(()=>({rows:[]}))
@@ -793,17 +877,28 @@ function startServerOnAvailablePort(targetPort) {
       return
     }
 
-    // n8n / external webhook: resolve free text to player signals
+    // Secured n8n webhook. Source identity is assigned here, never by the caller.
     if(request==='/api/signals/ingest'&&req.method==='POST'){
+      if(!requireIngestToken(req,res))return
+      try{
+        const payload=await readRequestBody(req)
+        const result=await processCreatorPayload(payload)
+        sendJson(res,201,result)
+      }catch(error){sendJson(res,400,{error:error instanceof Error?error.message:'Ingest failed'})}
+      return
+    }
+
+    // Local UI helper for ad-hoc notes. It cannot impersonate a trusted source.
+    if(request==='/api/signals/manual'&&req.method==='POST'){
       try{
         const payload=await readRequestBody(req)
         if(!payload.text||typeof payload.text!=='string')throw new Error('text field is required')
         const data=await liveData()
         const text=String(payload.text).slice(0,8000)
-        const sourceType=payload.sourceType||'SCRAPE'
+        const sourceType='USER_FEEDBACK'
         const sourceUrl=payload.sourceUrl||null
         const gameweek=payload.gameweek||data.currentGameweek||null
-        const payloadConfidence=typeof payload.confidence==='number'?Math.max(0,Math.min(1,payload.confidence)):0.6
+        const payloadConfidence=.4
         // Resolve player mentions from text using the same fuzzy matcher as the Ask tab
         const { resolveMultiplePlayerMentions } = await import('../src/integrations.ts')
         let mentionedPlayers=resolveMultiplePlayerMentions(text,data.players)
@@ -818,26 +913,58 @@ function startServerOnAvailablePort(targetPort) {
         }
         if(!mentionedPlayers.length){sendJson(res,200,{created:0,signals:[],message:'No players resolved from text'});return}
         const db=await getDb()
-        const signalConfig=loadSignalConfig()
-        const autoApprove=shouldAutoApprove(sourceType,payloadConfidence,signalConfig)
         const created=[]
         for(const player of mentionedPlayers.slice(0,10)){
           const summary=(text.slice(0,300)+(text.length>300?'…':'')).replace(/\s+/g,' ').trim()
           const observedAt=new Date().toISOString()
           const validUntil=new Date(Date.now()+7*24*60*60*1000).toISOString()
-          const status=autoApprove?'VERIFIED':'PENDING'
+          const status='PENDING'
           const result=await db.query(
             'INSERT INTO "PlayerSignal" ("playerId","gameweekId",kind,value,"sourceType","sourceUrl","evidenceSummary",confidence,"observedAt","validUntil",status) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11) RETURNING *',
             [player.id,gameweek,'EXPECTED_ROLE',JSON.stringify({note:summary}),sourceType,sourceUrl,`[${player.name}] ${summary}`,payloadConfidence,observedAt,validUntil,status]
           )
           if(result.rows[0]){
-            created.push({...result.rows[0],value:{note:summary},confidence:payloadConfidence,gameweek,autoApproved:autoApprove})
-            if(autoApprove)await materializePlayerOutlook(player.id)
+            created.push({...result.rows[0],value:{note:summary},confidence:payloadConfidence,gameweek,autoApproved:false})
           }
         }
         invalidateLiveDataCache()
-        sendJson(res,201,{created:created.length,signals:created,autoApproved:autoApprove})
+        sendJson(res,201,{created:created.length,signals:created,autoApproved:false})
       }catch(error){sendJson(res,400,{error:error instanceof Error?error.message:'Ingest failed'})}
+      return
+    }
+
+    if(request==='/api/creator-claims'&&req.method==='GET'){
+      try{
+        const db=await getDb(),params=new URL(req.url||'/',`http://${host}`).searchParams
+        const matchStatus=params.get('matchStatus')||null,limit=Math.min(300,Math.max(1,Number(params.get('limit'))||100))
+        const result=await db.query(`SELECT claim.*,content.creator,content.title AS "contentTitle",content.url AS "contentUrl",content.platform FROM "CreatorClaim" claim JOIN "CreatorContent" content ON content.id=claim."contentId" WHERE ($1 IS NULL OR claim."matchStatus"=$1) ORDER BY claim."createdAt" DESC LIMIT $2`,[matchStatus,limit])
+        sendJson(res,200,{claims:result.rows.map(row=>({...row,numericClaims:parseJson(row.numericClaims,[]),relatedMentions:parseJson(row.relatedMentions,[]),signalValue:parseJson(row.signalValue,{}),matchCandidates:parseJson(row.matchCandidates,[])}))})
+      }catch(error){sendJson(res,500,{error:error instanceof Error?error.message:'Unable to read creator claims'})}
+      return
+    }
+
+    const creatorClaimMatch=request.match(/^\/api\/creator-claims\/(.+)$/)
+    if(creatorClaimMatch&&req.method==='PATCH'){
+      try{
+        const claimId=decodeURIComponent(creatorClaimMatch[1]),payload=await readRequestBody(req),db=await getDb()
+        const joined=(await db.query(`SELECT claim.*,content.platform,content."externalId",content.creator,content.title,content.url,content."publishedAt" FROM "CreatorClaim" claim JOIN "CreatorContent" content ON content.id=claim."contentId" WHERE claim.id=$1`,[claimId])).rows[0]
+        if(!joined)return sendJson(res,404,{error:'Creator claim not found'})
+        if(payload.dismiss===true){
+          await db.query('UPDATE "CreatorClaim" SET "matchStatus"=$1,"updatedAt"=CURRENT_TIMESTAMP WHERE id=$2',['DISMISSED',claimId])
+          sendJson(res,200,{claim:{...joined,matchStatus:'DISMISSED'}});return
+        }
+        const playerId=Number(payload.playerId),data=await liveData(),player=data.players.find(candidate=>candidate.id===playerId)
+        if(!player)throw new Error('A valid playerId is required')
+        await db.query('UPDATE "CreatorClaim" SET "resolvedPlayerId"=$1,"matchStatus"=$2,"matchConfidence"=1,"updatedAt"=CURRENT_TIMESTAMP WHERE id=$3',[playerId,'MATCHED',claimId])
+        if(payload.rememberAlias!==false){
+          const alias=normalizeEntityText(joined.rawPlayerName)
+          await db.query(`INSERT INTO "PlayerAlias" (alias,"playerId","canonicalName") VALUES ($1,$2,$3) ON CONFLICT (alias) DO UPDATE SET "playerId"=EXCLUDED."playerId","canonicalName"=EXCLUDED."canonicalName","updatedAt"=CURRENT_TIMESTAMP`,[alias,playerId,player.name])
+        }
+        const updated={...joined,resolvedPlayerId:playerId,matchStatus:'MATCHED',matchConfidence:1}
+        const source={platform:joined.platform,externalId:joined.externalId,creator:joined.creator,title:joined.title,url:joined.url,publishedAt:joined.publishedAt}
+        const signalResult=await createSignalForCreatorClaim(db,updated,source,data.currentGameweek)
+        sendJson(res,200,{claim:{...updated,signalId:signalResult.signal.id},signal:signalResult.signal,created:signalResult.created})
+      }catch(error){sendJson(res,400,{error:error instanceof Error?error.message:'Unable to resolve creator claim'})}
       return
     }
 

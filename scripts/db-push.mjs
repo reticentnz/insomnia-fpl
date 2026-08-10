@@ -5,7 +5,7 @@ for (const envFile of ['.env.local', '.env']) {
   if (!fs.existsSync(envFile)) continue
   for (const line of fs.readFileSync(envFile, 'utf8').split(/\r?\n/)) {
     const match = line.match(/^([A-Z_][A-Z0-9_]*)=(.*)$/)
-    if (match) process.env[match[1]] = match[2].replace(/^"|"$/g, '')
+    if (match && !process.env[match[1]]) process.env[match[1]] = match[2].replace(/^"|"$/g, '')
   }
 }
 
@@ -43,8 +43,8 @@ export async function ensureDatabaseSchema() {
     for (const statement of statements) {
       await db.query(statement)
     }
-    const claimColumns=await db.query('PRAGMA table_info("CreatorClaim")')
-    if(!claimColumns.rows.some(row=>row.name==='signalValue'))await db.query(`ALTER TABLE "CreatorClaim" ADD COLUMN "signalValue" TEXT NOT NULL DEFAULT '{}'`)
+    const claimSchema=await db.query(`SELECT sql FROM sqlite_master WHERE type='table' AND name='CreatorClaim'`)
+    if(!String(claimSchema.rows[0]?.sql||'').includes('"signalValue"'))await db.query(`ALTER TABLE "CreatorClaim" ADD COLUMN "signalValue" TEXT NOT NULL DEFAULT '{}'`)
     await db.query('COMMIT')
     const result = await db.query(`SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%' ORDER BY name`)
     console.log(`database schema ready: ${result.rows.map(row => row.name).join(', ')}`)

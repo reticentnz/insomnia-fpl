@@ -458,16 +458,27 @@ export async function fetchPublicSquad(teamId:number, gameweek?:number):Promise<
     return { picks: data.picks, gameweek: gw }
   }
 }
-export async function fetchLiveCatalog():Promise<{capturedAt:string;currentGameweek:number|null;deadline:string|null;players:Player[]}> {
-  const controller = new AbortController()
-  const timeoutId = window.setTimeout(() => controller.abort(), 4000)
-  try {
-    const response=await fetch('/api/fpl-data',{signal:controller.signal})
-    if(!response.ok) throw new Error(`Live FPL data unavailable: ${response.status}`)
-    return await response.json() as {capturedAt:string;currentGameweek:number|null;deadline:string|null;players:Player[]}
-  } finally {
-    window.clearTimeout(timeoutId)
+export async function fetchLiveCatalog(retries = 3): Promise<{capturedAt:string;currentGameweek:number|null;deadline:string|null;players:Player[]}> {
+  let lastError: Error | null = null
+  for (let attempt = 0; attempt <= retries; attempt++) {
+    const controller = new AbortController()
+    const timeoutId = window.setTimeout(() => controller.abort(), 12000)
+    try {
+      const response = await fetch('/api/fpl-data', { signal: controller.signal })
+      if (response.ok) {
+        return await response.json() as {capturedAt:string;currentGameweek:number|null;deadline:string|null;players:Player[]}
+      }
+      lastError = new Error(`Live FPL data unavailable: ${response.status}`)
+    } catch (err) {
+      lastError = err instanceof Error ? err : new Error('Fetch failed')
+    } finally {
+      window.clearTimeout(timeoutId)
+    }
+    if (attempt < retries) {
+      await new Promise((resolve) => setTimeout(resolve, 2000))
+    }
   }
+  throw lastError || new Error('Live FPL data unavailable')
 }
 export async function fetchLLMExplanation(question:string, context:ExplanationContext, config?:{apiKey?:string; provider?:string; model?:string}):Promise<{answer:string|null; provider:string; error?:string}|null> {
   const controller = new AbortController()
@@ -651,11 +662,10 @@ export async function fetchAllSignals(filters?: {
 export async function ingestSignalText(payload: {
   text: string;
   sourceUrl?: string;
-  sourceType?: string;
   playerHints?: string[];
   gameweek?: number;
 }): Promise<{ created: number; signals: PlayerSignal[] }> {
-  const response = await fetch('/api/signals/ingest', {
+  const response = await fetch('/api/signals/manual', {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
     body: JSON.stringify(payload),
@@ -663,6 +673,59 @@ export async function ingestSignalText(payload: {
   const data = await response.json().catch(() => null)
   if (!response.ok) throw new Error(data?.error || `Ingest failed: HTTP ${response.status}`)
   return data as { created: number; signals: PlayerSignal[] }
+}
+
+export type CreatorClaimCandidate = {
+  playerId: number;
+  name: string;
+  club: string;
+  position: string;
+  price: number;
+  confidence: number;
+  reasons: string[];
+};
+
+export type CreatorClaim = {
+  id: string;
+  rawPlayerName: string;
+  clubHint?: string | null;
+  positionHint?: string | null;
+  category: string;
+  sentiment: string;
+  summary: string;
+  matchStatus: 'MATCHED' | 'AMBIGUOUS' | 'UNRESOLVED' | 'DISMISSED';
+  matchConfidence: number;
+  matchCandidates: CreatorClaimCandidate[];
+  creator: string;
+  contentTitle: string;
+  contentUrl: string;
+  timestampSeconds?: number | null;
+  signalId?: number | null;
+};
+
+export async function fetchCreatorClaims(): Promise<CreatorClaim[]> {
+  const response=await fetch('/api/creator-claims?limit=200')
+  const data=await response.json().catch(()=>null)
+  if(!response.ok)throw new Error(data?.error||`Could not load creator claims: HTTP ${response.status}`)
+  return (data?.claims||[]) as CreatorClaim[]
+}
+
+export async function resolveCreatorClaim(claimId:string,playerId:number,rememberAlias=true){
+  const response=await fetch(`/api/creator-claims/${encodeURIComponent(claimId)}`,{
+    method:'PATCH',headers:{'content-type':'application/json'},body:JSON.stringify({playerId,rememberAlias}),
+  })
+  const data=await response.json().catch(()=>null)
+  if(!response.ok)throw new Error(data?.error||`Could not resolve creator claim: HTTP ${response.status}`)
+  return data
+}
+
+export async function dismissCreatorClaim(claimId:string){
+  const response=await fetch(`/api/creator-claims/${encodeURIComponent(claimId)}`,{
+    method:'PATCH',headers:{'content-type':'application/json'},body:JSON.stringify({dismiss:true}),
+  })
+  const data=await response.json().catch(()=>null)
+  if(!response.ok)throw new Error(data?.error||`Could not dismiss creator claim: HTTP ${response.status}`)
+  return data
 }
 
 export async function fetchLeagueDetails(leagueId: number, gameweek?: number): Promise<LeagueDetailsResponse> {
@@ -778,4 +841,3 @@ export async function saveServerAiConfig(provider: string, apiKey: string): Prom
     return false
   }
 }
-

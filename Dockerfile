@@ -20,6 +20,7 @@ ENV NODE_ENV=production \
     HOST=0.0.0.0 \
     PORT=4173 \
     DATABASE_URL=file:/app/data/insomnia-fpl.db \
+    SIGNAL_CONFIG_FILE=/app/data/signal-config.json \
     FPL_DATA_CACHE_FILE=/app/data/cache/fpl-data.json
 
 WORKDIR /app
