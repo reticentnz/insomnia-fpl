@@ -277,16 +277,6 @@ function App() {
   const [importModalOpen, setImportModalOpen] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [importing, setImporting] = useState(false);
-  const [onboardingModalOpen, setOnboardingModalOpen] = useState<boolean>(() => {
-    return !hasCompletedOnboarding() && !fplAccount;
-  });
-  const [systemStatus, setSystemStatus] = useState<SystemStatus | null>(null);
-  const [teamInput, setTeamInput] = useState("");
-  const [teamMessage, setTeamMessage] = useState("");
-  const [toast, setToast] = useState<ToastState>(null);
-  const [previousSquad, setPreviousSquad] = useState<number[] | null>(null);
-  const [pendingTransfer, setPendingTransfer] = useState<Transfer | null>(null);
-  const [comparison, setComparison] = useState<Transfer | null>(null);
   const [fplAccount, setFplAccount] = useState<FplAccount | null>(() => {
     try {
       const stored =
@@ -296,6 +286,9 @@ function App() {
     } catch {
       return null;
     }
+  });
+  const [onboardingModalOpen, setOnboardingModalOpen] = useState<boolean>(() => {
+    return !hasCompletedOnboarding() && !fplAccount;
   });
   const [syncingAccount, setSyncingAccount] = useState(false);
   const [userName, setUserName] = useState<string>(() => {
