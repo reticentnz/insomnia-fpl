@@ -31,9 +31,18 @@ docker run -d \
 
 Alternatively, copy `compose.example.yaml` to `compose.yaml`, then run `docker compose up -d --build`. The bind-mounted `./data` directory retains the SQLite database, WAL files and restart cache when the container is stopped or replaced. Ensure it is writable by container UID 1000 before the first start.
 
-The container exposes a liveness check at `/api/health`. From n8n, use `http://fpl-god:4173` when both containers share a user-defined Docker network. Otherwise use the Unraid server's fixed LAN address and mapped port. Do not expose port 4173 through the router.
+The container exposes a liveness check at `/api/health`. From n8n, use `http://insomnia-fpl:4173` when both containers share a user-defined Docker network. Otherwise use the Unraid server's fixed LAN address and mapped port.
 
 GitHub is optional. The image can be built directly on Unraid from a copied or cloned working tree. For repeatable updates, push the repository to GitHub and publish an image to GitHub Container Registry; Unraid can then pull `ghcr.io/<owner>/<repository>:latest`. Keep database URLs and ingestion tokens in Unraid/n8n secrets, never in GitHub or the image.
+
+## Security & Network Access
+
+> [!WARNING]
+> **No Built-in Authentication**: Insomnia FPL does not include user authentication or access controls. It is designed to be executed in a private environment (localhost, home LAN, or secure VPN/Tailscale).
+
+* **Local LAN / VPN Only**: Access the app over your home network (e.g. `http://unraid-ip:4173`) or via Tailscale / WireGuard when remote.
+* **Do Not Port-Forward**: Never expose port `4173` directly to the public internet. Anyone with access to the URL can view/edit squad plans and consume any configured LLM API keys.
+* **Remote Access via Reverse Proxy**: If you must access it outside your home network, place it behind an authenticating reverse proxy such as **Authelia**, **Authentik**, **Cloudflare Access**, or **Nginx Proxy Manager** with access control enabled.
 
 ## Building a GW1 draft
 
