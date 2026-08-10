@@ -357,7 +357,7 @@ async function refreshLiveData() {
 async function materializePlayerOutlook(playerId) {
   invalidateLiveDataCache()
   const db=await getDb()
-  const current=await db.query('SELECT id FROM "Gameweek" WHERE "isCurrent"=1 OR (finished=0 AND deadline>=CURRENT_TIMESTAMP) ORDER BY "isCurrent" DESC,deadline ASC LIMIT 1')
+  const current=await db.query('SELECT id FROM "Gameweek" WHERE "isCurrent"=true OR (finished=false AND deadline>=CURRENT_TIMESTAMP) ORDER BY "isCurrent" DESC,deadline ASC LIMIT 1')
   const currentGameweek=Number(current.rows[0]?.id)||1
   await db.query('DELETE FROM "PlayerOutlook" WHERE "playerId"=$1 AND "gameweekId"=$2',[playerId,currentGameweek])
   const data=await liveData()

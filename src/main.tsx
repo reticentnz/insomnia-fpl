@@ -3254,6 +3254,7 @@ function EvidencePanel({
   onReplacePlayer?: (p: Player) => void;
 }) {
   const [elapsedSeconds, setElapsedSeconds] = useState(0);
+  const [reviewingSignalId, setReviewingSignalId] = useState<string | number | null>(null);
   const [activeOverridePlayerId, setActiveOverridePlayerId] = useState<number | null>(null);
 
   useEffect(() => {
@@ -3582,13 +3583,29 @@ function EvidencePanel({
                       <>
                         <button
                           className="dark-btn"
-                          onClick={() => onReviewSignal(signal, "VERIFIED")}
+                          disabled={reviewingSignalId === signal.id}
+                          onClick={async () => {
+                            setReviewingSignalId(signal.id);
+                            try {
+                              await onReviewSignal(signal, "VERIFIED");
+                            } finally {
+                              setReviewingSignalId(null);
+                            }
+                          }}
                         >
-                          Approve & Update
+                          {reviewingSignalId === signal.id ? "Updating…" : "Approve & Update"}
                         </button>
                         <button
                           className="ghost-btn"
-                          onClick={() => onReviewSignal(signal, "REJECTED")}
+                          disabled={reviewingSignalId === signal.id}
+                          onClick={async () => {
+                            setReviewingSignalId(signal.id);
+                            try {
+                              await onReviewSignal(signal, "REJECTED");
+                            } finally {
+                              setReviewingSignalId(null);
+                            }
+                          }}
                         >
                           Reject
                         </button>
