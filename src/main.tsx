@@ -3333,7 +3333,7 @@ function EvidencePanel({
     signal: PlayerSignal,
     status: "VERIFIED" | "REJECTED",
   ) => void;
-  stagedSignalReviews: Record<number, "VERIFIED" | "REJECTED">>;
+  stagedSignalReviews: Record<number, "VERIFIED" | "REJECTED">;
   onUnstageSignal: (signalId: number) => void;
   onSelectPlayer?: (p: Player) => void;
   setTab?: (tab: string) => void;
@@ -3754,6 +3754,8 @@ function MyTeamV2({
   challengeOutputTypes,
   onChallenge,
   onReviewSignal,
+  stagedSignalReviews,
+  onUnstageSignal,
   onManualOverride,
   weakest,
   decision,
@@ -3782,6 +3784,8 @@ function MyTeamV2({
     signal: PlayerSignal,
     status: "VERIFIED" | "REJECTED",
   ) => void;
+  stagedSignalReviews: Record<number, "VERIFIED" | "REJECTED">;
+  onUnstageSignal: (signalId: number) => void;
   onManualOverride?: (
     playerId: number,
     startProbability: number,
@@ -4071,6 +4075,8 @@ function MyTeamV2({
         outputTypes={challengeOutputTypes}
         onChallenge={onChallenge}
         onReviewSignal={onReviewSignal}
+        stagedSignalReviews={stagedSignalReviews}
+        onUnstageSignal={onUnstageSignal}
         onSelectPlayer={onSelectPlayer}
         setTab={setTab}
         onManualOverride={onManualOverride}
@@ -4156,11 +4162,19 @@ function SignalsTab({
   currentGameweek,
   onSelectPlayer,
   onReviewSignal,
+  stagedSignalReviews,
+  onUnstageSignal,
+  onApplyBatch,
+  applyingBatch,
 }: {
   catalog: Player[];
   currentGameweek: number;
   onSelectPlayer: (p: Player) => void;
   onReviewSignal: (signal: PlayerSignal, status: "VERIFIED" | "REJECTED") => void;
+  stagedSignalReviews: Record<number, "VERIFIED" | "REJECTED">;
+  onUnstageSignal: (signalId: number) => void;
+  onApplyBatch: () => void;
+  applyingBatch: boolean;
 }) {
   const [signals, setSignals] = useState<PlayerSignal[]>([]);
   const [creatorClaims, setCreatorClaims] = useState<CreatorClaim[]>([]);
@@ -4272,16 +4286,8 @@ function SignalsTab({
     return "pill amber";
   }
 
-  async function handleReview(signal: PlayerSignal, status: "VERIFIED" | "REJECTED") {
-    setReviewingId(signal.id);
-    try {
-      await onReviewSignal(signal, status);
-      setSignals((prev) =>
-        prev.map((s) => (s.id === signal.id ? { ...s, status } : s))
-      );
-    } finally {
-      setReviewingId(null);
-    }
+  function handleReview(signal: PlayerSignal, status: "VERIFIED" | "REJECTED") {
+    onReviewSignal(signal, status);
   }
 
   async function handleIngest() {
@@ -4591,9 +4597,11 @@ function SignalsTab({
             const normProb = typeof rawProb === "number" ? (rawProb > 1 ? rawProb / 100 : rawProb) : null;
             const proposedProb = normProb !== null ? Math.round(normProb * 100) : null;
             const isReviewing = reviewingId === signal.id;
+            const stagedStatus = stagedSignalReviews[signal.id];
+            const effectiveStatus = stagedStatus || signal.status;
 
             return (
-              <article key={signal.id} className={`signal-card status-${signal.status.toLowerCase()}`}>
+              <article key={signal.id} className={`signal-card status-${effectiveStatus.toLowerCase()}${stagedStatus ? " is-staged" : ""}`}>
                 <div className="signal-card-header">
                   <div className="signal-source-group">
                     <span className={sourceBadgeClass(signal.sourceType)}>
@@ -4609,8 +4617,8 @@ function SignalsTab({
                   </div>
                   <div className="signal-meta-right">
                     <span className="signal-time">{relativeTime(signal.observedAt)}</span>
-                    <span className={statusClass(signal.status)}>
-                      {signal.status === "VERIFIED" ? "✓ APPROVED" : signal.status}
+                    <span className={stagedStatus ? `staged-pill ${stagedStatus === "REJECTED" ? "rejected" : ""}` : statusClass(effectiveStatus)}>
+                      {stagedStatus ? `STAGED: ${stagedStatus === "VERIFIED" ? "APPROVE" : "REJECT"}` : effectiveStatus === "VERIFIED" ? "✓ APPROVED" : effectiveStatus}
                     </span>
                   </div>
                 </div>
@@ -4651,25 +4659,30 @@ function SignalsTab({
                   </div>
                 </div>
 
-                {signal.status === "PENDING" && (
+                {stagedStatus ? (
+                  <div className="signal-actions">
+                    <span className={`staged-pill ${stagedStatus === "REJECTED" ? "rejected" : ""}`}>STAGED: {stagedStatus === "VERIFIED" ? "APPROVE" : "REJECT"}</span>
+                    <button className="undo-staged-btn" onClick={() => onUnstageSignal(signal.id)}>Undo</button>
+                  </div>
+                ) : effectiveStatus === "PENDING" && (
                   <div className="signal-actions">
                     <button
                       className="dark-btn"
-                      disabled={isReviewing}
+                      disabled={applyingBatch || isReviewing}
                       onClick={() => handleReview(signal, "VERIFIED")}
                     >
                       {isReviewing ? "…" : "✓ Approve evidence"}
                     </button>
                     <button
                       className="ghost-btn"
-                      disabled={isReviewing}
+                      disabled={applyingBatch || isReviewing}
                       onClick={() => handleReview(signal, "REJECTED")}
                     >
                       Reject
                     </button>
                   </div>
                 )}
-                {signal.status === "VERIFIED" && (
+                {!stagedStatus && effectiveStatus === "VERIFIED" && (
                   <div className="signal-actions">
                     <button
                       className="ghost-btn"
