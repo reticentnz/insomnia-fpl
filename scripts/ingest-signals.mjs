@@ -230,9 +230,17 @@ export async function ingestMarketEvents(db, { season, events, capturedAt = new 
   }
 }
 
+export async function resolveSignalSeason(db, { season, env = process.env } = {}) {
+  const configured = season || env.FPL_SEASON
+  if (configured) return String(configured)
+  const result = await db.query(`SELECT "season" FROM "Gameweek" ORDER BY "created_at" DESC, "fpl_id" DESC LIMIT 1`)
+  const stored = result.rows[0]?.season
+  if (stored) return String(stored)
+  throw new Error('No active FPL season is available; run Sync FPL data first or set FPL_SEASON')
+}
+
 export async function ingestSignalFeeds({ db, season, fetchImpl = fetch, cacheDir = process.env.SIGNAL_CACHE_DIR || defaultCacheDir, understatRows, marketEvents } = {}) {
-  const activeSeason = season || process.env.FPL_SEASON
-  if (!activeSeason) throw new Error('FPL_SEASON is required for optional-feed ingestion')
+  const activeSeason = await resolveSignalSeason(db, { season })
   const underlying = understatRows === undefined
     ? await withCache(`understat-epl-${activeSeason.slice(0, 4)}.json`, async () => extractUnderstatJson(await fetchText(`https://understat.com/league/EPL/${activeSeason.slice(0, 4)}`, fetchImpl), 'playersData'), cacheDir)
     : { payload: understatRows, usedCache: false, cacheCapturedAt: null }
@@ -247,8 +255,7 @@ export async function ingestSignalFeeds({ db, season, fetchImpl = fetch, cacheDi
 }
 
 export async function refreshBettingOdds({ db, season, fetchImpl = fetch, cacheDir = process.env.SIGNAL_CACHE_DIR || defaultCacheDir } = {}) {
-  const activeSeason = season || process.env.FPL_SEASON
-  if (!activeSeason) throw new Error('FPL_SEASON is required for betting-odds ingestion')
+  const activeSeason = await resolveSignalSeason(db, { season })
   if (!process.env.ODDS_API_KEY) throw new Error('ODDS_API_KEY is not configured')
   const url = `https://api.the-odds-api.com/v4/sports/soccer_epl/odds?regions=${encodeURIComponent(process.env.ODDS_API_REGIONS || 'uk')}&markets=h2h,totals,btts&oddsFormat=decimal&dateFormat=iso&apiKey=${encodeURIComponent(process.env.ODDS_API_KEY)}`
   const market = await withCache('odds-epl.json', () => fetchJson(url, fetchImpl), cacheDir)

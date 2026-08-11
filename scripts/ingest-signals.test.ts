@@ -4,7 +4,7 @@ import path from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
 import { closeDb, getDb } from './db.mjs'
 import { ingestOfficialFpl } from './ingest-fpl.mjs'
-import { deriveExpectedGoals, ingestMarketEvents, ingestUnderlyingRows, matchUnderlyingPlayer } from './ingest-signals.mjs'
+import { deriveExpectedGoals, ingestMarketEvents, ingestUnderlyingRows, matchUnderlyingPlayer, resolveSignalSeason } from './ingest-signals.mjs'
 
 const directories: string[] = []
 const fixtureDirectory = path.resolve('scripts', 'fixtures')
@@ -33,6 +33,11 @@ afterEach(async () => {
 })
 
 describe('WP-07 optional source ingestion', () => {
+  it('resolves the season from official data when no environment override exists', async () => {
+    const db = await seed()
+    expect(await resolveSignalSeason(db, { env: {} })).toBe('2026/27')
+  })
+
   it('does not derive expected goals from H2H-only markets', () => {
     expect(deriveExpectedGoals({ homeWin: .5, draw: .25, awayWin: .25, over25: null, btts: null })).toBeNull()
   })
