@@ -1625,14 +1625,7 @@ function App() {
             <button onClick={repairLiveSquad}>Create live starter squad</button>
           </div>
         )}
-        {catalogMode === "demo-live" && (
-          <div className="validation-warning conflict-banner">
-            <Shield size={16} />
-            <span>
-              <b>Demo exploration is active.</b> This squad is generated from the live catalogue and is not an imported official squad.
-            </span>
-          </div>
-        )}
+
         {catalogMode === "demo-offline" && catalog.length === 0 && (
           <div className="validation-warning conflict-banner">
             <Shield size={16} />
