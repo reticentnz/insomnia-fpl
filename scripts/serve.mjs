@@ -686,6 +686,22 @@ function parseStructuredOutput(data){
   return null
 }
 
+function mergeGroundedResponses(primary,followup){
+  const firstUsage=primary?.usage||{},secondUsage=followup?.usage||{}
+  const firstDetails=firstUsage.input_tokens_details||{},secondDetails=secondUsage.input_tokens_details||{}
+  return {
+    ...followup,
+    output:[...(Array.isArray(primary?.output)?primary.output:[]),...(Array.isArray(followup?.output)?followup.output:[])],
+    output_text:followup?.output_text||primary?.output_text,
+    usage:{
+      input_tokens:(Number(firstUsage.input_tokens)||0)+(Number(secondUsage.input_tokens)||0),
+      output_tokens:(Number(firstUsage.output_tokens)||0)+(Number(secondUsage.output_tokens)||0),
+      total_tokens:(Number(firstUsage.total_tokens)||0)+(Number(secondUsage.total_tokens)||0),
+      input_tokens_details:{cached_tokens:(Number(firstDetails.cached_tokens)||0)+(Number(secondDetails.cached_tokens)||0)}
+    }
+  }
+}
+
 function groundedResponseFailure(data,model,webSearchCalls,provider='openai'){
   const status=typeof data?.status==='string'?data.status:'unknown'
   const reason=data?.incomplete_details?.reason
@@ -782,7 +798,7 @@ async function callGroundedSquadChallenge(players,gameweek,deadline,customConfig
     'Search the live web. Challenge only factual assumptions that materially affect expected starts, minutes, position/role, injuries, penalties, set pieces, or preseason hierarchy.',
     'Use a maximum of one focused web search per priority player and stop searching once that player has a credible current source. Do not repeat broad squad-wide searches or paste long source text into the response.',
     'Prefer official club and Premier League sources, then reputable current journalists or established predicted-lineup publications. Do not create signals from fan opinion, squad-structure preferences, or another site merely preferring one player. Note: Preseason friendly lineups alone are high-rotation and low-confidence unless backed by manager comments.',
-    'Every signal must have a directly supporting source URL you actually opened. Copy sourceUrl verbatim from a URL returned by web search; do not reconstruct or rewrite it. If evidence is conflicting, lower confidence and explain the conflict. Start probabilities are calibrated estimates between 0.0 and 1.0 (e.g. 0.05 for 5%, 0.15 for 15%), NOT percentages over 1.0.',
+    'Every signal must have a directly supporting source URL returned by web search. A URL present in the search results is sufficient: do not spend another tool call opening or re-finding it. Copy sourceUrl verbatim; do not reconstruct or rewrite it. If evidence is conflicting, lower confidence and explain the conflict. Start probabilities are calibrated estimates between 0.0 and 1.0 (e.g. 0.05 for 5%, 0.15 for 15%), NOT percentages over 1.0.',
     'You must return exactly one audits entry for every player in Priority audit. Do not spend searches proving routine low-risk starters are safe. For a budget goalkeeper, explicitly establish whether they are first choice, competition, or backup. For a recent transfer, explicitly establish their expected new-team role rather than carrying forward old-club minutes.',
     'Use outcome MATERIAL_RISK whenever the evidence implies a meaningful projection change, and include a matching signal for that player. NO_MATERIAL_RISK requires a supporting searched source. Use INSUFFICIENT_EVIDENCE only after searching; its sourceUrl may be an empty string.',
     'Keep the overall summary under 180 words and each audit or signal evidenceSummary under 80 words. Return only the requested JSON object—no preamble, no markdown, and no conversational explanation before or after it.',
@@ -813,12 +829,34 @@ async function callGroundedSquadChallenge(players,gameweek,deadline,customConfig
       throw new Error('Grounded research exceeded the 8-minute server limit and was cancelled.')
     }
     await waitFor(2500)
-    response=await fetch(`https://api.openai.com/v1/responses/${encodeURIComponent(data.id)}`,{headers:{'authorization':`Bearer ${openaiKey}`}})
+    response=await fetch(`https://api.openai.com/v1/responses/${encodeURIComponent(data.id)}`,{headers:{'authorization':`Bearer ${apiKey}`}})
     if(!response.ok)throw new Error(`Unable to poll OpenAI research ${response.status}: ${(await response.text()).slice(0,500)}`)
     data=await response.json()
   }
+  let parsed=parseStructuredOutput(data)
+  // A web-enabled response can occasionally finish after its search/reasoning
+  // turns without emitting the required final message. Continue the stored
+  // response once with tools removed so it must synthesize the JSON it already
+  // researched instead of discarding the entire audit.
+  if(!parsed&&data?.id){
+    const synthesisBody={
+      model,previous_response_id:data.id,
+      input:'Stop researching. Using only the evidence already gathered, emit the requested final JSON object now. Do not call tools, explain your process, or add markdown.',
+      max_output_tokens:6000,
+      text:{format:isDeepSeek?{type:'json_object'}:{type:'json_schema',name:'fpl_squad_challenge',strict:true,schema:challengeSchema}}
+    }
+    if(isDeepSeek)synthesisBody.reasoning={effort:'low'}
+    const synthesisResponse=await fetch(endpoint,{
+      method:'POST',headers:{'content-type':'application/json','authorization':`Bearer ${apiKey}`},
+      body:JSON.stringify(synthesisBody)
+    })
+    if(synthesisResponse.ok){
+      const synthesis=await synthesisResponse.json()
+      data=mergeGroundedResponses(data,synthesis)
+      parsed=parseStructuredOutput(data)
+    }
+  }
   const webSearchCalls=data.output?.filter(item=>item.type==='web_search_call').length||0
-  const parsed=parseStructuredOutput(data)
   if(!parsed)throw groundedOutputError(`Grounded research returned malformed structured output (no parseable JSON object). Usage: ${(Number(data.usage?.total_tokens)||0).toLocaleString()} tokens (${(Number(data.usage?.input_tokens)||0).toLocaleString()} input, ${(Number(data.usage?.output_tokens)||0).toLocaleString()} output).`,data)
   const searchSourceUrls=data.output?.filter(item=>item.type==='web_search_call').flatMap(item=>item.action?.sources||item.sources||item.action?.results||[]).map(source=>typeof source==='string'?source:source.url||source.link).filter(Boolean)||[]
   const citationUrls=data.output?.filter(item=>item.type==='message').flatMap(item=>item.content||[]).flatMap(content=>content.annotations||[]).filter(annotation=>annotation.type==='url_citation').map(annotation=>annotation.url)||[]
