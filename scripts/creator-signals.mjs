@@ -6,7 +6,20 @@ const compact=value=>normalizeEntityText(value).replace(/\s+/g,'')
 const clubCodes={arsenal:'ars','aston villa':'avl',bournemouth:'bou',brentford:'bre',brighton:'bha','brighton and hove albion':'bha',burnley:'bur',chelsea:'che','crystal palace':'cry',everton:'eve',fulham:'ful',ipswich:'ips','ipswich town':'ips',leeds:'lee','leeds united':'lee',liverpool:'liv','man city':'mci','manchester city':'mci','man united':'mun','manchester united':'mun',newcastle:'new','newcastle united':'new',sunderland:'sun',spurs:'tot',tottenham:'tot','tottenham hotspur':'tot','west ham':'whu','west ham united':'whu',wolves:'wol',wolverhampton:'wol'}
 const clubKeys=value=>{
   const normalized=normalizeEntityText(value)
-  return new Set([normalized,clubCodes[normalized]].filter(Boolean))
+  const withoutSuffix=normalized.replace(/\s+(city|united|fc)$/,'').trim()
+  return new Set([normalized,withoutSuffix,clubCodes[normalized],clubCodes[withoutSuffix]].filter(Boolean))
+}
+
+function clubScore(hint,value){
+  const hintKeys=clubKeys(hint),valueKeys=clubKeys(value)
+  if([...valueKeys].some(key=>hintKeys.has(key)))return 1
+  let best=0
+  for(const hintKey of hintKeys){
+    for(const valueKey of valueKeys){
+      if(hintKey.length>=4&&valueKey.length>=4)best=Math.max(best,similarity(hintKey,valueKey))
+    }
+  }
+  return best
 }
 
 function editDistance(left,right){
@@ -104,23 +117,27 @@ export function matchCreatorClaim(claim,catalog,aliases=[]){
     const player=catalog.find(candidate=>Number(candidate.id)===Number(alias.playerId))
     if(player)return {status:'MATCHED',player,confidence:1,candidates:[{player,confidence:1,reasons:['verified alias']}]}
   }
-  const clubHint=normalizeEntityText(claim.clubHint),clubHintKeys=clubKeys(claim.clubHint),positionHint=String(claim.positionHint||'').toUpperCase()
+  const clubHint=normalizeEntityText(claim.clubHint),positionHint=String(claim.positionHint||'').toUpperCase()
   const priceHint=Number(claim.priceHint)
   const candidates=catalog.map(player=>{
     const base=nameScore(claim.rawPlayerName,player.name)
-    const clubMatches=clubHint&&[player.club,player.clubName,player.teamName].some(value=>[...clubKeys(value)].some(key=>clubHintKeys.has(key)))
+    const bestClubScore=clubHint?Math.max(0,...[player.club,player.clubName,player.teamName].map(value=>clubScore(claim.clubHint,value))):0
+    const clubMatches=bestClubScore>=.82
     const positionMatches=positionHint&&String(player.position||'').toUpperCase()===positionHint
     const priceMatches=Number.isFinite(priceHint)&&Math.abs(Number(player.price)-priceHint)<=.1
-    const confidence=clamp(base+(clubMatches?.18:0)+(positionMatches?.06:0)+(priceMatches?.05:0))
+    const rankScore=base+(clubMatches?.18:0)+(positionMatches?.06:0)+(priceMatches?.05:0)
+    const confidence=clamp(rankScore)
     const reasons=[`name ${Math.round(base*100)}%`]
     if(clubMatches)reasons.push('club matched')
     if(positionMatches)reasons.push('position matched')
     if(priceMatches)reasons.push('price matched')
-    return {player,confidence,reasons}
-  }).filter(candidate=>candidate.confidence>=.42).sort((a,b)=>b.confidence-a.confidence||String(a.player.name).localeCompare(String(b.player.name))).slice(0,5)
+    return {player,confidence,rankScore,reasons}
+  }).filter(candidate=>candidate.confidence>=.42).sort((a,b)=>b.rankScore-a.rankScore||String(a.player.name).localeCompare(String(b.player.name))).slice(0,5)
   const best=candidates[0],runnerUp=candidates[1]
-  const margin=!runnerUp?1:best.confidence-runnerUp.confidence
-  const strongContext=best?.reasons.includes('club matched')&&best.confidence>=.65&&margin>=.12
+  const margin=!runnerUp?1:best.rankScore-runnerUp.rankScore
+  const clubMatched=best?.reasons.includes('club matched')
+  const positionMatched=best?.reasons.includes('position matched')
+  const strongContext=clubMatched&&best.confidence>=.65&&margin>=(positionMatched?.1:.12)
   if(best&&(strongContext||(best.confidence>=.72&&margin>=(clubHint?.1:.15))))return {status:'MATCHED',player:best.player,confidence:best.confidence,candidates}
   if(best&&best.confidence>=.5)return {status:'AMBIGUOUS',player:null,confidence:best.confidence,candidates}
   return {status:'UNRESOLVED',player:null,confidence:best?.confidence||0,candidates}

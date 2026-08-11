@@ -21,6 +21,20 @@ describe('creator signal ingestion helpers',()=>{
     expect(payload.claims[0].externalClaimId).toBe('YOUTUBE:abc123:122:kai havt:ROTATION')
   })
 
+  it('uses fuzzy club context and uncapped ranking to resolve transcript misspellings',()=>{
+    const catalog=[
+      {id:1,name:'Sangaré',club:'Brentford',position:'MID',price:5},
+      {id:2,name:'Sangaré',club:"Nott'm Forest",position:'MID',price:5},
+      {id:3,name:'Thomas',club:'Coventry City',position:'DEF',price:4.5},
+      {id:4,name:'Thomas-Asante',club:'Coventry City',position:'FWD',price:5.5},
+      {id:5,name:'Mosquera',club:'Arsenal',position:'DEF',price:5.5},
+      {id:6,name:'M.Sarr',club:'Chelsea',position:'DEF',price:4.5},
+    ]
+    expect(matchCreatorClaim({rawPlayerName:'Sangare',clubHint:'Brenford'},catalog).player?.id).toBe(1)
+    expect(matchCreatorClaim({rawPlayerName:'Thomas',clubHint:'Coventry',positionHint:'DEF'},catalog).player?.id).toBe(3)
+    expect(matchCreatorClaim({rawPlayerName:'Mascara',clubHint:'Arsenal',positionHint:'DEF'},catalog).player?.id).toBe(5)
+  })
+
   it('uses club hints and aliases while preserving ambiguous names for review',()=>{
     const matched=matchCreatorClaim({rawPlayerName:'Kai Havt',clubHint:'Arsenal'},catalog,[])
     expect(matched.status).toBe('MATCHED')
