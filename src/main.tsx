@@ -1538,34 +1538,7 @@ function App() {
             <small>Team planner</small>
           </div>
         </div>
-        {fplAccount && (
-          <div className="patch-sidebar-compact">
-            <div className="patch-sidebar-top">
-              <span className="patch-sidebar-name" title={fplAccount.teamName}>
-                ⚽ {fplAccount.teamName}
-              </span>
-              <button
-                className="ghost-btn icon-only"
-                style={{ padding: "2px 6px", fontSize: "11px" }}
-                onClick={() => syncAccount()}
-                disabled={syncingAccount}
-                title="Sync FPL Account"
-              >
-                <span className={syncingAccount ? "spin" : ""}>↻</span>
-              </button>
-            </div>
-            <div className="patch-sidebar-stats">
-              <div className="patch-sidebar-stat-item">
-                <small>Total</small>
-                <b>{fplAccount.totalPoints} pts</b>
-              </div>
-              <div className="patch-sidebar-stat-item">
-                <small>GW{fplAccount.currentGameweek}</small>
-                <b>{fplAccount.gameweekPoints} pts</b>
-              </div>
-            </div>
-          </div>
-        )}
+
         <nav aria-label="Primary navigation">
           {Object.entries(icons).map(([label, Icon]) => (
             <button
@@ -3354,25 +3327,7 @@ function FplAccountPatch({
             </div>
           </div>
         </div>
-        <div className="patch-header-actions">
-          <button
-            className={`sync-btn ${isSyncing ? "syncing" : ""}`}
-            onClick={onSync}
-            disabled={isSyncing}
-            title="Sync latest FPL team stats and squad"
-          >
-            <span className={`sync-icon ${isSyncing ? "spin" : ""}`}>↻</span>
-            <span>{isSyncing ? "Syncing..." : "Sync Account"}</span>
-          </button>
-          <button
-            className="ghost-btn"
-            onClick={onChangeAccount}
-            title="Change or update saved account"
-            style={{ fontSize: "12px", padding: "7px 12px" }}
-          >
-            Manage Account
-          </button>
-        </div>
+
       </div>
 
       <div className="patch-grid">
