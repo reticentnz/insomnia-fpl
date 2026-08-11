@@ -32,9 +32,9 @@ describe('canonical HTTP API smoke', () => {
     const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'insomnia-fpl-api-'))
     directories.push(directory)
     const databasePath = path.join(directory, 'database.sqlite')
-    await ingestOfficialFpl({ dbPath: databasePath, season: '2026/27', observedAt: '2026-08-10T12:00:00Z', bootstrap: fixture('wp02-bootstrap.json'), fixtures: fixture('wp02-fixtures.json'), elementSummaries: {} })
+    await ingestOfficialFpl({ dbPath: databasePath, season: '2026/27', observedAt: '2026-08-10T12:00:00Z', finishedAt: '2026-08-10T12:01:00Z', bootstrap: fixture('wp02-bootstrap.json'), fixtures: fixture('wp02-fixtures.json'), elementSummaries: {} })
     const port = 43000 + Math.floor(Math.random() * 1000)
-    const server = spawn(process.execPath, ['--experimental-strip-types', 'scripts/serve.mjs'], { cwd: process.cwd(), env: { ...process.env, PORT: String(port), HOST: '127.0.0.1', DATABASE_URL: `file:${databasePath}`, FPL_SEASON: '2026/27', FPL_INGEST_INTERVAL_HOURS: '0', FPL_CATALOG_CACHE_FILE: path.join(directory, 'catalog-cache.json'), SIGNAL_CONFIG_FILE: path.join(directory, 'signal-config.json'), AI_SETTINGS_FILE: path.join(directory, 'ai-settings.json') }, stdio: ['ignore', 'pipe', 'pipe'] })
+    const server = spawn(process.execPath, ['--experimental-strip-types', 'scripts/serve.mjs'], { cwd: process.cwd(), env: { ...process.env, PORT: String(port), HOST: '127.0.0.1', DATABASE_URL: `file:${databasePath}`, FPL_SEASON: '2026/27', FPL_INGEST_INTERVAL_HOURS: '876000', ADMIN_TOKEN: 'fixture-admin-token', FPL_CATALOG_CACHE_FILE: path.join(directory, 'catalog-cache.json'), SIGNAL_CONFIG_FILE: path.join(directory, 'signal-config.json'), AI_SETTINGS_FILE: path.join(directory, 'ai-settings.json') }, stdio: ['ignore', 'pipe', 'pipe'] })
     processes.push(server)
     const baseUrl = `http://127.0.0.1:${port}`
     await waitForServer(server, baseUrl)
@@ -42,6 +42,20 @@ describe('canonical HTTP API smoke', () => {
     const health = await fetch(`${baseUrl}/api/health`)
     expect(health.status).toBe(200)
     expect(await health.json()).toMatchObject({ status: 'ok', database: 'ready', playerCount: 2 })
+    const scheduling = await fetch(`${baseUrl}/api/system-status`).then(response => response.json())
+    expect(scheduling).toMatchObject({
+      lastIngestedAt: '2026-08-10T12:01:00.000Z',
+      nextIngestAt: '2126-07-17T12:01:00.000Z',
+      ingestIntervalHours: 876000,
+    })
+    const admin = await fetch(`${baseUrl}/api/admin/status`).then(response => response.json())
+    expect(admin).toMatchObject({ authenticationRequired: true, season: '2026/27', oddsConfigured: false, unresolved: { players: 0, fixtures: 0 } })
+    expect(admin.operations).toHaveLength(4)
+    expect(admin.feedRuns[0]).toMatchObject({ source: 'OFFICIAL_FPL', status: 'SUCCEEDED' })
+    const unauthorizedAdminWrite = await fetch(`${baseUrl}/api/admin/actions/not-real`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: '{}' })
+    expect(unauthorizedAdminWrite.status).toBe(401)
+    const authorizedUnknownAdminWrite = await fetch(`${baseUrl}/api/admin/actions/not-real`, { method: 'POST', headers: { 'content-type': 'application/json', authorization: 'Bearer fixture-admin-token' }, body: '{}' })
+    expect(authorizedUnknownAdminWrite.status).toBe(404)
     const catalog = await fetch(`${baseUrl}/api/catalog`).then(response => response.json())
     expect(catalog.players).toHaveLength(2)
     expect(catalog.inputHash).toMatch(/^[a-f0-9]{64}$/)

@@ -21,6 +21,26 @@ async function seeded() {
 afterEach(async () => { await closeDb(); while (directories.length) fs.rmSync(directories.pop()!, { recursive: true, force: true }) })
 
 describe('WP-08 immutable forecast ledger', () => {
+  it('treats a null FPL chance-of-playing value as healthy in GW1 forecasts', async () => {
+    const databasePath = temporaryDatabase()
+    const bootstrap = fixture<any>('wp02-bootstrap.json')
+    bootstrap.elements[0].chance_of_playing_next_round = null
+    bootstrap.elements[0].chance_of_playing_this_round = null
+    await ingestOfficialFpl({ bootstrap, fixtures: fixture<any[]>('wp02-fixtures.json'), elementSummaries: { '10': fixture<any>('wp02-element-summary-10.json'), '11': fixture<any>('wp02-element-summary-11.json') }, dbPath: databasePath, season: '2026/27', observedAt: '2026-08-15T12:00:00Z', finishedAt: '2026-08-15T12:01:00Z' })
+    const db = getDb(databasePath)
+
+    const run = await createForecastRun(db, { asOf: '2026-08-15T12:00:00Z' })
+    expect(run.status).toBe('SUCCEEDED')
+    const role = (await db.query(`SELECT forecast."start_probability", forecast."no_show_probability", forecast."mean_points"
+      FROM "PlayerFixtureForecast" forecast
+      JOIN "Player" player ON player."id"=forecast."player_id"
+      WHERE forecast."forecast_run_id"=$1 AND player."fpl_id"=10
+      LIMIT 1`, [run.id])).rows[0]
+    expect(Number(role.start_probability)).toBeGreaterThan(.5)
+    expect(Number(role.no_show_probability)).toBeLessThan(.5)
+    expect(Number(role.mean_points)).toBeGreaterThan(1)
+  })
+
   it('creates immutable runs, marks deadline eligibility, and selects the latest eligible baseline', async () => {
     const db = await seeded()
     const first = await createForecastRun(db, { asOf: '2026-08-15T12:00:00Z', createdAt: '2026-08-20T12:00:00Z' })

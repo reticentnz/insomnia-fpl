@@ -110,6 +110,8 @@ ODDS_API_KEY=replace-with-your-key npm run ingest:signals
 
 `ingest:signals` pulls Understat EPL player aggregates into auditable historical snapshots and imports de-vigged EPL match-winner probabilities from The Odds API. Understat is used as the attacking-rate input when a snapshot exists; odds are retained for later team-strength adjustments. Both feeds retain the raw response, use a local cache when a refresh fails, and never create verified injury or role overrides.
 
+The in-app **Admin** page exposes the official FPL sync, an odds-only sync, linked-manager-team refresh, and a player-to-club relink workflow. It also shows live operation state and recent `FeedRun` audit records. Set `ADMIN_TOKEN` to require a bearer token for admin commands; when it is unset, commands remain available for local/self-hosted use. The odds action requires `ODDS_API_KEY`.
+
 In Docker, the signal cache defaults to `/app/data/cache/signal-feeds`, which is inside the persistent writable volume. Override it with `SIGNAL_CACHE_DIR` if needed.
 
 The local server exposes the projection-input catalogue at `/api/catalog`. It includes source-specific freshness timestamps, provenance and a cache status. The shared model uses individual fixtures (including blanks and doubles), explicit start/substitute/no-show role probabilities, expected minutes, shrunk per-90 attacking rates, expected goals conceded, saves, cards, penalties, bonus history and 2026/27 defensive-contribution inputs.

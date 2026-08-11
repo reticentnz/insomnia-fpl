@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { bestXI, bestXIForGameweek, buildDraftImprovementPlan, buildLegalDefaultSquad, buildLegalRemainingSquad, computeDraftFingerprint, computeDraftPlayerFingerprint, draftSquadScore, evaluateModeTransition, findTransferRoutesToTarget, getSquad, groupLegalChangeBundles, horizonProjection, initialSquadBank, isInitialDraftPeriod, isLegalTransfer, isPlayerInjured, isPlayerFlagged, optimizeInitialSquad, players, resolvePlanningMode, resolveSquadSaveTarget, transferDecision, transfers, validateInitialSquad, validateSquad, CLUB_FIXTURES, getPlayerUpcomingFixtures, INITIAL_SQUAD_BUDGET, TRANSFER_GAIN_THRESHOLDS, calculateChipImpact, generateSquadExportText, getPlayerFixtureTicker, getDifferentialsAndEnablers, getCaptaincyBreakdown, calculateRivalEO } from './domain'
+import { bestXI, bestXIForGameweek, buildDraftImprovementPlan, buildLegalDefaultSquad, buildLegalRemainingSquad, computeDraftFingerprint, computeDraftPlayerFingerprint, draftSquadScore, evaluateModeTransition, findTransferRoutesToTarget, getSquad, groupLegalChangeBundles, horizonProjection, initialSquadBank, isInitialDraftPeriod, isLegalTransfer, isPlayerInjured, isPlayerFlagged, optimizeInitialSquad, players, resolvePlanningMode, resolveSquadSaveTarget, transferDecision, transfers, validateInitialSquad, validateSquad, CLUB_FIXTURES, getPlayerUpcomingFixtures, INITIAL_SQUAD_BUDGET, TRANSFER_GAIN_THRESHOLDS, calculateChipImpact, generateSquadExportText, getPlayerFixtureTicker, getDifferentialsAndEnablers, getCaptaincyBreakdown, calculateRivalEO, getTeamColor, getPlayerShirtColor } from './domain'
 
 import { createToolContext, getBestTransfers, simulateTransfers } from './intelligence'
 import { allocateBonusPoints, scorePlayerMatch } from './model'
@@ -450,7 +450,7 @@ describe('GW1 locked-core squad optimisation',()=>{
     expect(evaluateModeTransition({ currentMode: 'SEASON', hasOfficialSquad: true, isEditorDirty: true })).toEqual({ targetMode: 'SEASON', requiresPrompt: false })
   })
 
-  it('groups legal budget-linked change bundles from draft improvement changes',()=>{
+  it('groups legal budget-linked change bundles from draft improvement changes', () => {
     const squad = getSquad()
     const plan = buildDraftImprovementPlan(squad, players, { horizon: 5 })
     if (plan && plan.changes.length > 0) {
@@ -461,6 +461,18 @@ describe('GW1 locked-core squad optimisation',()=>{
         expect(b.netGain).toBeGreaterThan(0)
       })
     }
+  }, 15000)
+
+  it('maps team short names and player objects to primary team colors', () => {
+    expect(getTeamColor('ARS')).toBe('#e74c3c')
+    expect(getTeamColor('MCI')).toBe('#60a5fa')
+    expect(getTeamColor('LIV')).toBe('#ef4444')
+    expect(getTeamColor('UNKNOWN')).toBe('#64748b')
+
+    expect(getPlayerShirtColor({ colour: '#ef0107', club: 'ARS' })).toBe('#ef0107')
+    expect(getPlayerShirtColor({ colour: '#64748b', club: 'MCI' })).toBe('#60a5fa')
+    expect(getPlayerShirtColor({ club: 'LIV' })).toBe('#ef4444')
+    expect(getPlayerShirtColor(null)).toBe('#64748b')
   })
 
   it('changes its selected structure when the planning horizon changes',()=>{

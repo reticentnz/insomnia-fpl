@@ -246,14 +246,28 @@ export async function ingestSignalFeeds({ db, season, fetchImpl = fetch, cacheDi
   return results
 }
 
+export async function refreshBettingOdds({ db, season, fetchImpl = fetch, cacheDir = process.env.SIGNAL_CACHE_DIR || defaultCacheDir } = {}) {
+  const activeSeason = season || process.env.FPL_SEASON
+  if (!activeSeason) throw new Error('FPL_SEASON is required for betting-odds ingestion')
+  if (!process.env.ODDS_API_KEY) throw new Error('ODDS_API_KEY is not configured')
+  const url = `https://api.the-odds-api.com/v4/sports/soccer_epl/odds?regions=${encodeURIComponent(process.env.ODDS_API_REGIONS || 'uk')}&markets=h2h,totals,btts&oddsFormat=decimal&dateFormat=iso&apiKey=${encodeURIComponent(process.env.ODDS_API_KEY)}`
+  const market = await withCache('odds-epl.json', () => fetchJson(url, fetchImpl), cacheDir)
+  return ingestMarketEvents(db, { season: activeSeason, events: market.payload, feedDetails: market })
+}
+
 async function main() {
   let db
   try {
     await migrateDatabase()
     db = getDb()
-    const result = await ingestSignalFeeds({ db })
-    console.log(`Understat: saved ${result.underlying.inserted} observations (${result.underlying.unmatched} reviewable unmatched/ambiguous)`)
-    if (result.market) console.log(`Odds: saved ${result.market.inserted} market observations (${result.market.unmatched} unresolved fixtures)`)
+    if (process.argv.includes('--market-only')) {
+      const market = await refreshBettingOdds({ db })
+      console.log(`Odds: saved ${market.inserted} market observations (${market.unmatched} unresolved fixtures)`)
+    } else {
+      const result = await ingestSignalFeeds({ db })
+      console.log(`Understat: saved ${result.underlying.inserted} observations (${result.underlying.unmatched} reviewable unmatched/ambiguous)`)
+      if (result.market) console.log(`Odds: saved ${result.market.inserted} market observations (${result.market.unmatched} unresolved fixtures)`)
+    }
   } finally {
     await closeDb()
   }

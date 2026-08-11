@@ -1,4 +1,4 @@
-import { findTransferRoutesToTarget, horizonProjection, type Player, type Transfer } from './domain.ts'
+import { findTransferRoutesToTarget, getTeamColor, horizonProjection, type Player, type Transfer } from './domain.ts'
 import type { PlayerSignal } from './player-signals'
 import type { ProjectionInputCatalog } from './core/types'
 
@@ -426,7 +426,10 @@ export async function fetchFplAccount(teamId: number, gameweek?: number): Promis
       eventTransfers: Number(account.eventTransfers) || 0,
       totalTransfers: Number(account.totalTransfers) || 0,
       currentGameweek: Number(account.currentGameweek) || gameweek || 1,
-      leagues: { classic: [], h2h: [] },
+      leagues: {
+        classic: Array.isArray(account.leagues?.classic) ? account.leagues.classic : [],
+        h2h: Array.isArray(account.leagues?.h2h) ? account.leagues.h2h : [],
+      },
       lastSynced: account.lastSynced || new Date().toISOString(),
     },
     picks: (Array.isArray(data.squad) ? data.squad : []).map((player: any) => ({
@@ -588,7 +591,7 @@ function playerFromProjectionCatalog(item: ProjectionInputCatalog['players'][num
     fixture: fixture ? `${fixture.opponent.shortName} (${fixture.difficulty || '-'})` : 'BLANK',
     difficulty: fixture?.difficulty || 5,
     projection: Number(official.ep_next || 0),
-    colour: '#64748b',
+    colour: getTeamColor(item.team.shortName),
     status: String(official.status || 'a'),
     chanceOfPlaying: official.chance_of_playing == null ? undefined : Number(official.chance_of_playing),
     news: official.news == null ? undefined : String(official.news),
@@ -1029,6 +1032,36 @@ export async function fetchSystemStatus(): Promise<SystemStatus> {
   } catch {
     return { reachable: false, status: 'error', isSeeding: false, isIngesting: false, message: 'Server status unavailable', playerCount: 0 }
   }
+}
+
+export type AdminOperation = { id: string; status: 'IDLE' | 'RUNNING' | 'SUCCEEDED' | 'FAILED'; startedAt: string | null; finishedAt: string | null; message: string | null; error: string | null };
+export type AdminFeedRun = { id: string; source: string; status: string; startedAt: string; finishedAt: string | null; insertedCount: number; updatedCount: number; unmatchedCount: number; usedCache: boolean; error: string | null };
+export type AdminStatus = {
+  authenticationRequired: boolean;
+  operations: AdminOperation[];
+  feedRuns: AdminFeedRun[];
+  unresolved: { players: number; fixtures: number };
+  manager: { teamId: number; teamName: string; lastSynced: string | null; playerCount: number } | null;
+  oddsConfigured: boolean;
+  season: string;
+};
+
+export async function fetchAdminStatus(): Promise<AdminStatus> {
+  const response = await fetch('/api/admin/status')
+  const data = await response.json()
+  if (!response.ok) throw new Error(data?.error?.message || 'Admin status unavailable')
+  return data
+}
+
+export async function runAdminOperation(action: string, token = ''): Promise<AdminOperation> {
+  const response = await fetch(`/api/admin/actions/${encodeURIComponent(action)}`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json', ...(token ? { authorization: `Bearer ${token}` } : {}) },
+    body: '{}',
+  })
+  const data = await response.json()
+  if (!response.ok) throw new Error(data?.error?.message || 'Could not start admin operation')
+  return data.operation
 }
 
 export type ServerAiConfig = {

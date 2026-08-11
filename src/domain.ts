@@ -70,6 +70,47 @@ export type Player = {
   storedForecast?: { runId: string; horizon: number; meanPoints: number; standardDeviation: number; p10Points: number; p50Points: number; p90Points: number; fixtureCount: number };
 };
 
+export const TEAM_COLORS: Record<string, string> = {
+  ARS: "#e74c3c",
+  AVL: "#8b5cf6",
+  BOU: "#ef4444",
+  BRE: "#dc2626",
+  BHA: "#3b82f6",
+  CHE: "#60a5fa",
+  COV: "#38bdf8",
+  CRY: "#2563eb",
+  EVE: "#3b82f6",
+  FUL: "#334155",
+  HUL: "#f59e0b",
+  IPS: "#3b82f6",
+  LEE: "#eab308",
+  LEI: "#2563eb",
+  LIV: "#ef4444",
+  LUT: "#f97316",
+  MCI: "#60a5fa",
+  MUN: "#ef4444",
+  NEW: "#334155",
+  NFO: "#e31b23",
+  SHU: "#ef4444",
+  SOU: "#ef4444",
+  SUN: "#ef4444",
+  TOT: "#1e3a8a",
+  WHU: "#7c3aed",
+  WOL: "#f59e0b",
+};
+
+export function getTeamColor(club: string | undefined | null): string {
+  if (!club) return "#64748b";
+  const key = club.toUpperCase().trim();
+  return TEAM_COLORS[key] || "#64748b";
+}
+
+export function getPlayerShirtColor(p: { colour?: string; club?: string } | undefined | null): string {
+  if (!p) return "#64748b";
+  if (p.colour && p.colour !== "#64748b" && p.colour !== "") return p.colour;
+  return getTeamColor(p.club);
+}
+
 export function isPlayerInjured(p: Player): boolean {
   return p.status === "i" || p.minutes === 0 || p.chanceOfPlaying === 0;
 }

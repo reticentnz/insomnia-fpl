@@ -45,6 +45,8 @@ import { CatalogueCache, catalogueCacheKey, catalogueRequestKey } from '../src/s
 import { ConcurrencyLimiter, TtlCache } from '../src/server/upstream-control.ts'
 import { HttpRequestError, MAX_JSON_BODY_BYTES, readJsonBody, sanitizeError } from '../src/server/http-security.mjs'
 import { createPlayerSignal, listPlayerSignals, updatePlayerSignalStatuses } from '../src/server/signal-service.ts'
+import { latestSuccessfulFeedRun } from './feed-run.mjs'
+import { nextIngestSchedule, parseIngestIntervalHours } from '../src/server/ingest-scheduler.ts'
 
 let systemStatus = {
   status: 'initializing',
@@ -58,31 +60,95 @@ let systemStatus = {
 }
 
 let scheduledIngestTimer = null
+const INGEST_RETRY_DELAY_MS = 15 * 60 * 1000
+const MAX_TIMER_DELAY_MS = 2_147_483_647
+
+const adminOperations = Object.fromEntries(['fpl-sync', 'odds-sync', 'team-refresh', 'relink-player-teams'].map(id => [id, {
+  id, status: 'IDLE', startedAt: null, finishedAt: null, message: null, error: null,
+}]))
+
+function adminOperationRunning() {
+  return Object.values(adminOperations).some(operation => operation.status === 'RUNNING')
+}
+
+function publicAdminOperations() {
+  return Object.values(adminOperations).map(operation => ({ ...operation }))
+}
+
+function setAdminOperation(id, update) {
+  Object.assign(adminOperations[id], update)
+}
+
+function runChildScript(script, args = [], environment = {}) {
+  return new Promise((resolve, reject) => {
+    import('node:child_process').then(({ execFile }) => {
+      execFile(process.execPath, ['--experimental-strip-types', path.resolve(script), ...args], { env: { ...process.env, ...environment } }, (error, stdout, stderr) => {
+        if (error) reject(new Error(sanitizeError(stderr || stdout || error)))
+        else resolve(String(stdout || '').trim())
+      })
+    }).catch(reject)
+  })
+}
+
+function startAdminOperation(id, work) {
+  if (adminOperationRunning()) return false
+  const startedAt = new Date().toISOString()
+  setAdminOperation(id, { status: 'RUNNING', startedAt, finishedAt: null, message: 'Operation started', error: null })
+  void work().then(result => {
+    setAdminOperation(id, { status: 'SUCCEEDED', finishedAt: new Date().toISOString(), message: result || 'Operation completed', error: null })
+  }).catch(error => {
+    setAdminOperation(id, { status: 'FAILED', finishedAt: new Date().toISOString(), message: null, error: sanitizeError(error) })
+  })
+  return true
+}
 
 
-function setupScheduledIngestion() {
-  const hoursRaw = process.env.FPL_INGEST_INTERVAL_HOURS ?? '12'
-  const hours = parseFloat(hoursRaw)
-  if (isNaN(hours) || hours <= 0) {
+function clearScheduledIngestion() {
+  if (scheduledIngestTimer) clearTimeout(scheduledIngestTimer)
+  scheduledIngestTimer = null
+}
+
+function configureScheduledIngestion() {
+  const hours = parseIngestIntervalHours(process.env.FPL_INGEST_INTERVAL_HOURS)
+  systemStatus.ingestIntervalHours = hours
+  if (hours <= 0) {
     console.log('⏱️ Periodic FPL ingestion is disabled (FPL_INGEST_INTERVAL_HOURS=0).')
-    systemStatus.ingestIntervalHours = 0
+    systemStatus.nextIngestAt = null
     return
   }
+  console.log(`⏱️ Periodic FPL ingestion is enabled every ${hours} hour(s).`)
+}
 
-  const intervalMs = hours * 60 * 60 * 1000
-  systemStatus.ingestIntervalHours = hours
-  systemStatus.nextIngestAt = new Date(Date.now() + intervalMs).toISOString()
-  console.log(`⏱️ Scheduled periodic FPL ingestion active every ${hours} hour(s). Next run at: ${systemStatus.nextIngestAt}`)
-
-  if (scheduledIngestTimer) clearInterval(scheduledIngestTimer)
-  scheduledIngestTimer = setInterval(() => {
-    if (systemStatus.isSeeding || systemStatus.isIngesting) {
-      console.log('⏱️ Scheduled ingestion skipped (ingestion already in progress).')
+async function scheduleNextIngestion({ notBefore = 0 } = {}) {
+  clearScheduledIngestion()
+  const hours = systemStatus.ingestIntervalHours
+  if (!(hours > 0)) {
+    systemStatus.nextIngestAt = null
+    return
+  }
+  const latest = await latestSuccessfulFeedRun(await getDb(), 'OFFICIAL_FPL')
+  const completedAt = latest?.finished_at || latest?.started_at || null
+  const schedule = nextIngestSchedule(completedAt, hours, Date.now(), notBefore)
+  systemStatus.lastIngestedAt = schedule.lastIngestedAt
+  systemStatus.nextIngestAt = schedule.nextIngestAt
+  console.log(`⏱️ Next FPL ingestion scheduled for ${systemStatus.nextIngestAt}.`)
+  scheduledIngestTimer = setTimeout(async () => {
+    scheduledIngestTimer = null
+    // Node timers have a maximum delay. Re-evaluate instead of firing early
+    // when an unusually long configured interval exceeds that limit.
+    if (Date.now() + 1_000 < Date.parse(systemStatus.nextIngestAt)) {
+      await scheduleNextIngestion()
+      return
+    }
+    if (systemStatus.isSeeding || systemStatus.isIngesting || adminOperationRunning()) {
+      console.log('⏱️ Scheduled ingestion deferred (ingestion already in progress).')
+      await scheduleNextIngestion({ notBefore: Date.now() + 60_000 })
       return
     }
     console.log('⏱️ Starting scheduled periodic FPL ingestion...')
-    triggerBackgroundIngest()
-  }, intervalMs)
+    const triggered = await triggerBackgroundIngest()
+    if (!triggered) await scheduleNextIngestion({ notBefore: Date.now() + 60_000 })
+  }, Math.min(schedule.delayMs, MAX_TIMER_DELAY_MS))
 }
 
 async function performColdStartInitialization() {
@@ -93,6 +159,7 @@ async function performColdStartInitialization() {
     const result = await db.query('SELECT COUNT(*) as count FROM "Player"').catch(() => ({ rows: [{ count: 0 }] }))
     const count = Number(result.rows[0]?.count || 0)
     systemStatus.playerCount = count
+    configureScheduledIngestion()
 
     if (count === 0) {
       console.log('📦 Cold start: Database is unseeded. Starting background live FPL ingestion...')
@@ -105,9 +172,8 @@ async function performColdStartInitialization() {
       systemStatus.isSeeding = false
       systemStatus.message = `System ready with ${count} players.`
       console.log(`✅ Database ready (${count} players loaded).`)
+      await scheduleNextIngestion()
     }
-
-    setupScheduledIngestion()
   } catch (err) {
     console.error('⚠️ Cold-start setup warning:', sanitizeError(err))
     systemStatus.status = 'error'
@@ -121,6 +187,8 @@ async function triggerBackgroundIngest() {
     return false
   }
   try {
+    clearScheduledIngestion()
+    systemStatus.nextIngestAt = null
     systemStatus.isIngesting = true
     const { execFile } = await import('node:child_process')
     const scriptPath = path.resolve('scripts/ingest-fpl.mjs')
@@ -131,20 +199,18 @@ async function triggerBackgroundIngest() {
         systemStatus.status = 'error'
         systemStatus.isSeeding = false
         systemStatus.message = `Ingestion error: ${sanitizeError(error)}`
+        await scheduleNextIngestion({ notBefore: Date.now() + INGEST_RETRY_DELAY_MS }).catch(scheduleError => console.error('⚠️ Could not schedule ingestion retry:', sanitizeError(scheduleError)))
       } else {
         console.log('✅ Background FPL ingestion completed.')
         systemStatus.status = 'ready'
         systemStatus.isSeeding = false
         systemStatus.message = 'Live FPL data ingested successfully.'
-        systemStatus.lastIngestedAt = new Date().toISOString()
-        if (systemStatus.ingestIntervalHours > 0) {
-          systemStatus.nextIngestAt = new Date(Date.now() + systemStatus.ingestIntervalHours * 60 * 60 * 1000).toISOString()
-        }
         try {
           const db = await getDb()
           const result = await db.query('SELECT COUNT(*) as count FROM "Player"').catch(() => ({ rows: [{ count: 0 }] }))
           systemStatus.playerCount = Number(result.rows[0]?.count || 0)
         } catch {}
+        await scheduleNextIngestion().catch(scheduleError => console.error('⚠️ Could not schedule next ingestion:', sanitizeError(scheduleError)))
       }
     })
     return true
@@ -153,6 +219,7 @@ async function triggerBackgroundIngest() {
     console.error('⚠️ Background ingestion launch error:', sanitizeError(err))
     systemStatus.status = 'ready'
     systemStatus.isSeeding = false
+    await scheduleNextIngestion({ notBefore: Date.now() + INGEST_RETRY_DELAY_MS }).catch(scheduleError => console.error('⚠️ Could not schedule ingestion retry:', sanitizeError(scheduleError)))
     return false
   }
 }
@@ -265,6 +332,55 @@ function requireIngestToken(req,res){
   if(!expected){sendJson(res,503,{error:'SIGNAL_INGEST_TOKEN is not configured'});return false}
   if(!tokenMatches(bearerToken(req),expected)){sendJson(res,401,{error:'Invalid ingestion token'});return false}
   return true
+}
+
+function requireAdminToken(req, res) {
+  const expected = process.env.ADMIN_TOKEN || ''
+  if (!expected) return true
+  if (!tokenMatches(bearerToken(req), expected)) { sendJson(res, 401, { error: 'Invalid admin token' }); return false }
+  return true
+}
+
+async function refreshLinkedManagerTeam() {
+  const db = await getDb()
+  const current = await getCurrentManager(db)
+  const teamId = current?.account?.teamId
+  if (!teamId) throw new Error('No FPL manager team is linked')
+  const payload = await fetchManagerPayload({ teamId })
+  const imported = await importManagerPayload(db, { ...payload, season: FPL_SEASON })
+  return `Refreshed ${imported.account.teamName} with ${imported.squad.length} players`
+}
+
+async function refreshSystemPlayerCount(message) {
+  const db = await getDb()
+  const result = await db.query('SELECT COUNT(*) AS count FROM "Player"')
+  systemStatus.playerCount = Number(result.rows[0]?.count || 0)
+  systemStatus.status = 'ready'
+  systemStatus.message = message
+  await scheduleNextIngestion()
+  return message
+}
+
+async function adminStatusSnapshot() {
+  const db = await getDb()
+  const [runs, unresolved, manager] = await Promise.all([
+    db.query(`SELECT "id","source","status","started_at","finished_at","inserted_count","updated_count","unmatched_count","used_cache","error_summary"
+      FROM "FeedRun" ORDER BY "started_at" DESC LIMIT 12`),
+    db.query(`SELECT
+      (SELECT COUNT(*) FROM "UnderlyingObservation" WHERE "match_status" != 'MATCHED') AS unresolved_players,
+      (SELECT COUNT(*) FROM "MarketFixtureObservation" WHERE "fixture_id" IS NULL) AS unresolved_fixtures`),
+    getCurrentManager(db).catch(() => null),
+  ])
+  return {
+    schemaVersion: 1,
+    authenticationRequired: Boolean(process.env.ADMIN_TOKEN),
+    operations: publicAdminOperations(),
+    feedRuns: runs.rows.map(row => ({ id: row.id, source: row.source, status: row.status, startedAt: row.started_at, finishedAt: row.finished_at, insertedCount: Number(row.inserted_count), updatedCount: Number(row.updated_count), unmatchedCount: Number(row.unmatched_count), usedCache: Boolean(row.used_cache), error: row.error_summary })),
+    unresolved: { players: Number(unresolved.rows[0]?.unresolved_players || 0), fixtures: Number(unresolved.rows[0]?.unresolved_fixtures || 0) },
+    manager: manager?.account ? { teamId: manager.account.teamId, teamName: manager.account.teamName, lastSynced: manager.account.lastSynced, playerCount: manager.squad?.length || 0 } : null,
+    oddsConfigured: Boolean(process.env.ODDS_API_KEY),
+    season: FPL_SEASON,
+  }
 }
 
 const parseJson=(value,fallback)=>{
@@ -800,6 +916,55 @@ function startServerOnAvailablePort(targetPort) {
       return
     }
 
+    if (request === '/api/admin/status' && req.method === 'GET') {
+      try { sendJson(res, 200, await adminStatusSnapshot()) }
+      catch (error) { sendJson(res, 500, { error: error instanceof Error ? error.message : 'Admin status unavailable' }) }
+      return
+    }
+
+    if (request.startsWith('/api/admin/actions/') && req.method === 'POST') {
+      if (!requireAdminToken(req, res)) return
+      const action = decodeURIComponent(request.slice('/api/admin/actions/'.length))
+      if (!adminOperations[action]) { sendJson(res, 404, { error: 'Unknown admin operation' }); return }
+      if (systemStatus.isIngesting || systemStatus.isSeeding) { sendJson(res, 409, { error: 'FPL ingestion is already in progress' }); return }
+      let work
+      if (action === 'fpl-sync') {
+        work = async () => {
+          systemStatus.isIngesting = true
+          systemStatus.status = 'ready'
+          systemStatus.message = 'Manual FPL sync is running...'
+          try {
+            await runChildScript('scripts/ingest-fpl.mjs')
+            return await refreshSystemPlayerCount('Manual FPL sync completed successfully.')
+          } finally { systemStatus.isIngesting = false }
+        }
+      } else if (action === 'odds-sync') {
+        work = async () => {
+          const output = await runChildScript('scripts/ingest-signals.mjs', ['--market-only'])
+          return output || 'Betting odds sync completed'
+        }
+      } else if (action === 'team-refresh') {
+        work = refreshLinkedManagerTeam
+      } else {
+        work = async () => {
+          systemStatus.isIngesting = true
+          systemStatus.message = 'Refreshing official player-to-club links...'
+          try {
+            await runChildScript('scripts/ingest-fpl.mjs', [], { FPL_INGEST_MATCH_HISTORY: '0' })
+            const catalogMessage = await refreshSystemPlayerCount('Official player-to-club links refreshed.')
+            let managerMessage = 'No linked manager team to refresh'
+            try { managerMessage = await refreshLinkedManagerTeam() } catch (error) {
+              if (!String(error?.message || error).includes('No FPL manager team is linked')) throw error
+            }
+            return `${catalogMessage} ${managerMessage}.`
+          } finally { systemStatus.isIngesting = false }
+        }
+      }
+      if (!startAdminOperation(action, work)) { sendJson(res, 409, { error: 'Another admin operation is already running' }); return }
+      sendJson(res, 202, { schemaVersion: 1, operation: adminOperations[action] })
+      return
+    }
+
     if (request === '/api/ai-config') {
       if (req.method === 'GET') {
         try {
@@ -894,7 +1059,7 @@ function startServerOnAvailablePort(targetPort) {
 
     if (request === '/api/fpl-refresh' && req.method === 'POST') {
       try {
-        if (systemStatus.isIngesting || systemStatus.isSeeding) {
+        if (systemStatus.isIngesting || systemStatus.isSeeding || adminOperationRunning()) {
           sendJson(res, 409, { error: 'Ingestion is already in progress' })
           return
         }
@@ -1103,6 +1268,7 @@ function startServerOnAvailablePort(targetPort) {
           })
           sendJson(res, 200, {
             ...manager,
+            account: { ...manager.account, leagues: payload.entry?.leagues || { classic: [], h2h: [] } },
             importStatus: {
               squadAvailable: false,
               code: 'SQUAD_NOT_PUBLIC',
@@ -1117,6 +1283,7 @@ function startServerOnAvailablePort(targetPort) {
           })
           sendJson(res, 200, {
             ...manager,
+            account: { ...manager.account, leagues: payload.entry?.leagues || { classic: [], h2h: [] } },
             importStatus: { squadAvailable: true, code: 'SQUAD_IMPORTED' },
           })
         }

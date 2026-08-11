@@ -43,6 +43,8 @@ import {
   type CaptaincyBreakdown,
   type ChipType,
   type ChipImpact,
+  getTeamColor,
+  getPlayerShirtColor,
   type FixtureTickerItem,
   type DraftImprovementPlan,
   type DraftChangeBundle,
@@ -96,6 +98,9 @@ import {
   type CanonicalRecommendation,
   type SystemStatus,
   type TeamMarketSnapshot,
+  fetchAdminStatus,
+  runAdminOperation,
+  type AdminStatus,
 } from "./integrations";
 import { type PlayerSignal, sanitizeExternalUrl } from "./player-signals";
 import { createToolContext } from "./intelligence";
@@ -129,6 +134,7 @@ const ArrowRight = glyph("→"),
   Trophy = glyph("♛"),
   Users = glyph("♙"),
   Zap = glyph("⚡");
+const Settings = glyph("⚙");
 let players = demoPlayers;
 
 const primaryIcons = {
@@ -139,6 +145,7 @@ const primaryIcons = {
   Leagues: Trophy,
   Review: Gauge,
   Ask: Bot,
+  Admin: Settings,
 };
 type ManagerSettings = { bank: number; freeTransfers: number };
 type ToastState = { message: string; undo?: boolean } | null;
@@ -184,7 +191,7 @@ function PlayerChip({
       onClick={onClick}
       style={onClick ? { cursor: "pointer" } : undefined}
     >
-      <span className="shirt" style={{ background: p.colour }}>
+      <span className="shirt" style={{ background: getPlayerShirtColor(p) }}>
         {p.position}
       </span>
       <span>
@@ -317,6 +324,79 @@ function ForecastReadinessPanel({ system, forecast, requestedHorizon }: { system
     </div>
     {forecast && <code title={forecast.id}>Run {forecast.id.slice(0, 8)} · {forecast.modelVersion}</code>}
   </section>;
+}
+
+const adminActionDetails = [
+  { id: "fpl-sync", icon: "↻", title: "Sync FPL data", description: "Fetch the official bootstrap, fixtures, player histories, and rebuild the stored forecast." },
+  { id: "odds-sync", icon: "◈", title: "Sync betting odds", description: "Fetch current EPL markets and store de-vigged fixture probabilities." },
+  { id: "team-refresh", icon: "⚽", title: "Refresh linked team", description: "Re-import the currently linked manager squad, prices, bank, and points." },
+  { id: "relink-player-teams", icon: "⤢", title: "Relink players to clubs", description: "Refresh official player-to-club observations, then re-import the linked manager squad." },
+];
+
+function AdminView() {
+  const [status, setStatus] = useState<AdminStatus | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [token, setToken] = useState(() => sessionStorage.getItem("fpl-admin-token") || "");
+  const [starting, setStarting] = useState<string | null>(null);
+  const load = useCallback(async () => {
+    try { setStatus(await fetchAdminStatus()); setError(null); }
+    catch (reason) { setError(reason instanceof Error ? reason.message : "Admin status unavailable"); }
+  }, []);
+  useEffect(() => {
+    void load();
+    const timer = window.setInterval(load, status?.operations.some(operation => operation.status === "RUNNING") ? 2_000 : 10_000);
+    return () => window.clearInterval(timer);
+  }, [load, status?.operations.some(operation => operation.status === "RUNNING")]);
+  const run = async (id: string) => {
+    setStarting(id); setError(null);
+    try {
+      if (token) sessionStorage.setItem("fpl-admin-token", token);
+      await runAdminOperation(id, token);
+      await load();
+    } catch (reason) { setError(reason instanceof Error ? reason.message : "Operation failed to start"); }
+    finally { setStarting(null); }
+  };
+  const running = status?.operations.some(operation => operation.status === "RUNNING") || false;
+  return <div className="admin-view">
+    <section className="admin-summary-grid">
+      <div className="admin-metric"><small>Season</small><b>{status?.season || "—"}</b></div>
+      <div className="admin-metric"><small>Linked team</small><b>{status?.manager?.teamName || "Not linked"}</b><span>{status?.manager ? `${status.manager.playerCount} players · #${status.manager.teamId}` : "Connect a team from My Team"}</span></div>
+      <div className="admin-metric"><small>Unresolved links</small><b>{(status?.unresolved.players || 0) + (status?.unresolved.fixtures || 0)}</b><span>{status?.unresolved.players || 0} players · {status?.unresolved.fixtures || 0} fixtures</span></div>
+      <div className="admin-metric"><small>Odds provider</small><b>{status?.oddsConfigured ? "Configured" : "Not configured"}</b><span>{status?.oddsConfigured ? "Ready to sync" : "Set ODDS_API_KEY"}</span></div>
+    </section>
+    {status?.authenticationRequired && <section className="admin-token-card">
+      <div><b>Admin authentication</b><p>Enter the server's admin token to run operations. It stays in this browser tab.</p></div>
+      <input type="password" value={token} onChange={event => setToken(event.target.value)} placeholder="Admin token" autoComplete="current-password" />
+    </section>}
+    {error && <div className="admin-error" role="alert">{error}</div>}
+    <section className="admin-actions-grid">
+      {adminActionDetails.map(action => {
+        const operation = status?.operations.find(candidate => candidate.id === action.id);
+        const busy = operation?.status === "RUNNING" || starting === action.id;
+        return <article className="admin-action-card" key={action.id}>
+          <div className="admin-action-icon">{action.icon}</div>
+          <div className="admin-action-copy"><h3>{action.title}</h3><p>{action.description}</p></div>
+          <div className={`admin-operation-state state-${(operation?.status || "IDLE").toLowerCase()}`}>
+            <span>{busy ? "Running" : operation?.status === "SUCCEEDED" ? "Completed" : operation?.status === "FAILED" ? "Failed" : "Ready"}</span>
+            {(operation?.message || operation?.error) && <small>{operation.error || operation.message}</small>}
+            {operation?.finishedAt && <time>{formatOperationalTime(operation.finishedAt)}</time>}
+          </div>
+          <button className="dark-btn" disabled={running || Boolean(starting) || (status?.authenticationRequired && !token)} onClick={() => void run(action.id)}>
+            {busy ? "Running…" : `Run ${action.title}`}
+          </button>
+        </article>;
+      })}
+    </section>
+    <section className="admin-feed-card">
+      <div className="admin-section-heading"><div><small>INGESTION AUDIT</small><h2>Recent feed runs</h2></div><button className="ghost-btn" onClick={() => void load()}>Refresh</button></div>
+      <div className="admin-feed-table" role="table">
+        <div className="admin-feed-row admin-feed-header" role="row"><span>Source</span><span>Status</span><span>Started</span><span>Changes</span><span>Links</span></div>
+        {status?.feedRuns.length ? status.feedRuns.map(run => <div className="admin-feed-row" role="row" key={run.id} title={run.error || run.id}>
+          <b>{run.source.replaceAll("_", " ")}</b><span className={`feed-status feed-${run.status.toLowerCase()}`}>{run.status}</span><span>{formatOperationalTime(run.startedAt)}</span><span>{run.insertedCount} added · {run.updatedCount} updated</span><span>{run.unmatchedCount ? `${run.unmatchedCount} unresolved` : "All linked"}{run.usedCache ? " · cache" : ""}</span>
+        </div>) : <p className="admin-empty">No feed runs recorded yet.</p>}
+      </div>
+    </section>
+  </div>;
 }
 
 function App() {
@@ -1532,7 +1612,9 @@ function App() {
             </p>
             <h1>{tab === "My Team" ? getGreeting(userName) : tab}</h1>
             <p className="muted">
-              {tab === "My Team"
+              {tab === "Admin"
+                ? "Run and audit data maintenance tasks from one place."
+                : tab === "My Team"
                 ? draftMode
                   ? draftPlan
                     ? "A coordinated GW1 restructure improves this draft."
@@ -1646,7 +1728,7 @@ function App() {
             }}
           />
         )}
-        {tab !== "Ask" && tab !== "Model Debug" && tab !== "Leagues" && tab !== "Signals" && (
+        {tab !== "Ask" && tab !== "Model Debug" && tab !== "Leagues" && tab !== "Signals" && tab !== "Admin" && (
           <>
             <PlanControls
               horizon={horizon}
@@ -1674,7 +1756,9 @@ function App() {
             )}
           </>
         )}
-        {tab === "Players" ? (
+        {tab === "Admin" ? (
+          <AdminView />
+        ) : tab === "Players" ? (
           <PlayersV2
             filtered={filteredPlayers}
             query={playerQuery}
@@ -3106,7 +3190,7 @@ function SquadEditor({
                     onClick={() => toggle(p.id)}
                     key={p.id}
                   >
-                    <span className="mini-shirt" style={{ background: p.colour }}>
+                    <span className="mini-shirt" style={{ background: getPlayerShirtColor(p) }}>
                       {p.position}
                     </span>
                     <div className="player-info">
@@ -3492,7 +3576,7 @@ function Transfers({ data, horizon }: { data: any[]; horizon: number }) {
           <div className="transfer-row" key={t.out.id + "-" + t.in.id}>
             <span className="rank">{String(i + 1).padStart(2, "0")}</span>
             <div className="transfer-player">
-              <span className="mini-shirt" style={{ background: t.out.colour }}>
+              <span className="mini-shirt" style={{ background: getPlayerShirtColor(t.out) }}>
                 {t.out.position}
               </span>
               <div>
@@ -3504,7 +3588,7 @@ function Transfers({ data, horizon }: { data: any[]; horizon: number }) {
             </div>
             <ArrowRight size={17} className="arrow-muted" />
             <div className="transfer-player">
-              <span className="mini-shirt" style={{ background: t.in.colour }}>
+              <span className="mini-shirt" style={{ background: getPlayerShirtColor(t.in) }}>
                 {t.in.position}
               </span>
               <div>
@@ -3571,7 +3655,7 @@ function Players({
         {filtered.map((p) => (
           <div className="tr shortlist-tr" key={p.id}>
             <div className="name-cell">
-              <span className="mini-shirt" style={{ background: p.colour }}>
+              <span className="mini-shirt" style={{ background: getPlayerShirtColor(p) }}>
                 {p.position}
               </span>
               <div>
@@ -4373,7 +4457,7 @@ function MyTeamV2({
                       onClick={() => onSelectPlayer(p)}
                       key={p.id}
                     >
-                      <span className="shirt" style={{ background: p.colour }}>
+                      <span className="shirt" style={{ background: getPlayerShirtColor(p) }}>
                         {p.position}
                       </span>
                       <span>
@@ -4398,7 +4482,7 @@ function MyTeamV2({
                 onClick={() => onSelectPlayer(p)}
                 key={p.id}
               >
-                <span className="shirt" style={{ background: p.colour }}>
+                <span className="shirt" style={{ background: getPlayerShirtColor(p) }}>
                   {p.position}
                 </span>
                 <span>
@@ -4519,7 +4603,7 @@ function MyTeamV2({
               key={p.id}
             >
               <div className="name-cell">
-                <span className="mini-shirt" style={{ background: p.colour }}>
+                <span className="mini-shirt" style={{ background: getPlayerShirtColor(p) }}>
                   {p.position}
                 </span>
                 <div>
@@ -5214,6 +5298,7 @@ function LeaguesView({
 }) {
   const [fetchedLeagues, setFetchedLeagues] = useState<FplLeagueSummary[]>([]);
   const [discoveringLeagues, setDiscoveringLeagues] = useState<boolean>(false);
+  const autoDiscoveryAttemptRef = useRef<string | null>(null);
   const [teamInput, setTeamInput] = useState<string>("");
 
   const [savedDefaultId, setSavedDefaultId] = useState<number | null>(null);
@@ -5252,23 +5337,44 @@ function LeaguesView({
 
   // Auto-discover leagues if teamId exists in fplAccount but leagues array wasn't pre-loaded
   useEffect(() => {
-    if (fplAccount?.teamId && userLeagues.length === 0 && !discoveringLeagues) {
-      setDiscoveringLeagues(true);
-      fetchFplAccount(fplAccount.teamId, currentGameweek)
-        .then((res) => {
-          if (res.account.leagues?.classic) {
-            setFetchedLeagues(res.account.leagues.classic);
-            const list = res.account.leagues.classic;
-            if (list.length > 0 && !selectedLeagueId) {
-              const def = savedDefaultId && list.some((x) => x.id === savedDefaultId) ? savedDefaultId : list[0].id;
-              setSelectedLeagueId(def);
-            }
-          }
-        })
-        .catch(() => {})
-        .finally(() => setDiscoveringLeagues(false));
-    }
-  }, [fplAccount, userLeagues.length, discoveringLeagues, currentGameweek, selectedLeagueId, savedDefaultId]);
+    if (!fplAccount?.teamId || userLeagues.length > 0) return;
+
+    const attemptKey = `${fplAccount.teamId}:${currentGameweek}`;
+    if (autoDiscoveryAttemptRef.current === attemptKey) return;
+    autoDiscoveryAttemptRef.current = attemptKey;
+
+    let active = true;
+    setDiscoveringLeagues(true);
+    setError(null);
+    fetchFplAccount(fplAccount.teamId, currentGameweek)
+      .then((res) => {
+        if (!active) return;
+        const list = res.account.leagues?.classic ?? [];
+        setFetchedLeagues(list);
+        if (list.length === 0) {
+          setError("No classic mini-leagues were found for this FPL account. You can still load one by League ID.");
+          return;
+        }
+        setSelectedLeagueId((current) => {
+          if (current) return current;
+          return savedDefaultId && list.some((league) => league.id === savedDefaultId)
+            ? savedDefaultId
+            : list[0].id;
+        });
+      })
+      .catch((reason) => {
+        if (active) {
+          setError(reason instanceof Error ? reason.message : "Could not discover leagues for this FPL account.");
+        }
+      })
+      .finally(() => {
+        if (active) setDiscoveringLeagues(false);
+      });
+
+    return () => {
+      active = false;
+    };
+  }, [fplAccount?.teamId, userLeagues.length, currentGameweek, savedDefaultId]);
 
   const loadLeague = useCallback(async (id: number) => {
     setLoading(true);
@@ -6063,7 +6169,7 @@ function DashboardV2({
                       onClick={() => setTab("Players")}
                       key={p.id}
                     >
-                      <span className="shirt" style={{ background: p.colour }}>
+                      <span className="shirt" style={{ background: getPlayerShirtColor(p) }}>
                         {p.position}
                       </span>
                       <span>
@@ -6302,7 +6408,7 @@ function TargetedReplacementSection({
         {candidates.map(({ player, inXp, gain, priceDelta }) => (
           <div className="targeted-candidate-card" key={player.id}>
             <div className="candidate-info">
-              <span className="shirt" style={{ background: player.colour }}>
+              <span className="shirt" style={{ background: getPlayerShirtColor(player) }}>
                 {player.position}
               </span>
               <div>
@@ -6465,7 +6571,7 @@ function TransfersV2({
                 <div className="transfer-player">
                   <span
                     className="mini-shirt"
-                    style={{ background: t.out.colour }}
+                    style={{ background: getPlayerShirtColor(t.out) }}
                   >
                     {t.out.position}
                   </span>
@@ -6480,7 +6586,7 @@ function TransfersV2({
                 <div className="transfer-player">
                   <span
                     className="mini-shirt"
-                    style={{ background: t.in.colour }}
+                    style={{ background: getPlayerShirtColor(t.in) }}
                   >
                     {t.in.position}
                   </span>
@@ -6793,7 +6899,7 @@ function PlayersV2({
             key={p.id}
           >
             <div className="name-cell">
-              <span className="mini-shirt" style={{ background: p.colour }}>
+              <span className="mini-shirt" style={{ background: getPlayerShirtColor(p) }}>
                 {p.position}
               </span>
               <div>
@@ -6945,7 +7051,7 @@ function InteractiveAnswerText({
           onClick={() => onSelectPlayer(player)}
           title={`Click to view ${player.name} detail`}
         >
-          <span className="mini-shirt" style={{ background: player.colour }}>
+          <span className="mini-shirt" style={{ background: getPlayerShirtColor(player) }}>
             {player.position}
           </span>
           <b>{player.name}</b>
@@ -7069,7 +7175,7 @@ function ResolvedPlayerActions({
           const isOwned = squadIds.has(p.id);
           return (
             <div className="resolved-player-chip" key={p.id}>
-              <span className="shirt" style={{ background: p.colour }}>
+              <span className="shirt" style={{ background: getPlayerShirtColor(p) }}>
                 {p.position}
               </span>
               <div className="chip-details" onClick={() => onSelectPlayer(p)}>
@@ -7862,7 +7968,7 @@ function PlayerDrawer({
           </button>
         </div>
         <div className="player-detail-hero">
-          <span className="shirt" style={{ background: player.colour }}>
+          <span className="shirt" style={{ background: getPlayerShirtColor(player) }}>
             {player.position}
           </span>
           <div>

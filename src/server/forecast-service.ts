@@ -6,7 +6,7 @@ import { fixtureRateModel, fixtureRoleStates, projectFixture } from '../core/pro
 import { SIMULATION_COUNT, SIMULATION_SEED_VERSION, simulateFixtureOutcomes } from '../core/uncertainty.ts'
 import type { ProjectionCatalogFixture, ProjectionCatalogPlayer, ProjectionInputCatalog } from '../core/types.ts'
 import { assembleProjectionInputCatalog } from './catalog-service.ts'
-import type { Player } from '../domain.ts'
+import { getTeamColor, type Player } from '../domain.ts'
 
 type Database = { query(sql: string, params?: unknown[]): Promise<{ rows: any[] }> }
 
@@ -45,7 +45,12 @@ function baseRole(player: ProjectionCatalogPlayer): PlayerRoleProfile {
   const official = player.official
   const position = String(official.position || 'MID')
   const minutes = Math.max(0, number(official.minutes))
-  const chance = clamp(number(official.chance_of_playing, ['i', 'u'].includes(String(official.status)) ? 0 : 100), 0, 100) / 100
+  // FPL leaves chance_of_playing null for healthy players. Number(null) is 0,
+  // so passing the value through the generic numeric helper incorrectly made
+  // every unflagged player a certain no-show (especially visible in GW1).
+  const reportedChance = nullableNumber(official.chance_of_playing)
+  const defaultChance = ['i', 'u'].includes(String(official.status)) ? 0 : 100
+  const chance = clamp(reportedChance ?? defaultChance, 0, 100) / 100
   const completeGameweeks = Math.max(1, Math.ceil(minutes / 90))
   const target = clamp((minutes / completeGameweeks) * chance, 0, 90)
   const isGoalkeeper = position === 'GK'
@@ -83,7 +88,7 @@ export function projectCatalogFixture(player: ProjectionCatalogPlayer, fixture: 
   }
   const modelPlayer: Player = {
     id: player.fplId, name: player.name, club: player.team.shortName, position, price: number(official.price_tenths) / 10,
-    form: number(official.form), ownership: number(official.ownership_percent), minutes: number(official.minutes), fixture: `${fixture.opponent.shortName} (${fixture.isHome ? 'H' : 'A'})`, difficulty: fixture.difficulty || 3, projection: number(official.ep_next), colour: '', status: String(official.status || 'a'), chanceOfPlaying: nullableNumber(official.chance_of_playing) ?? 100, active: Boolean(official.active), roleProfile: role, stats,
+    form: number(official.form), ownership: number(official.ownership_percent), minutes: number(official.minutes), fixture: `${fixture.opponent.shortName} (${fixture.isHome ? 'H' : 'A'})`, difficulty: fixture.difficulty || 3, projection: number(official.ep_next), colour: getTeamColor(player.team.shortName), status: String(official.status || 'a'), chanceOfPlaying: nullableNumber(official.chance_of_playing) ?? 100, active: Boolean(official.active), roleProfile: role, stats,
     upcomingFixtures: [{ gameweek: fixture.gameweekFplId || 0, opponent: fixture.opponent.shortName, venue: fixture.isHome ? 'H' : 'A', difficulty: fixture.difficulty || 3 }], dataConfidence: role.confidence,
   }
   const ownAttack = Number(player.teamStrength[fixture.isHome ? 'strengthAttackHome' : 'strengthAttackAway'])
