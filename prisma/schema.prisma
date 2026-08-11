@@ -355,3 +355,17 @@ model UserAccount {
   lastSynced      DateTime @default(now())
   updatedAt       DateTime @updatedAt
 }
+
+model UserPreference {
+  id                  String   @id @default("default")
+  userName            String   @default("")
+  selectedIds         String   @default("[]")
+  lockedIds           String   @default("[]")
+  bank                Float?
+  freeTransfers       Int      @default(1)
+  defaultLeagueId     Int?
+  onboardingCompleted Boolean  @default(false)
+  challengeResult     String?
+  stagedReviews       String   @default("{}")
+  updatedAt           DateTime @updatedAt
+}

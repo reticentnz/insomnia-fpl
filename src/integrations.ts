@@ -303,6 +303,18 @@ export interface FplAccount {
   };
 }
 
+export type UserPreferences = {
+  userName: string;
+  selectedIds: number[];
+  lockedIds: number[];
+  bank: number | null;
+  freeTransfers: number;
+  defaultLeagueId: number | null;
+  onboardingCompleted: boolean;
+  challengeResult: unknown | null;
+  stagedReviews: Record<number, 'VERIFIED' | 'REJECTED'>;
+};
+
 export interface LeagueRivalPick {
   element: number;
   position: number;
@@ -428,13 +440,15 @@ export async function fetchFplAccount(teamId: number, gameweek?: number): Promis
   }
 }
 
-export async function getUserProfile(): Promise<{ account: FplAccount | null; selectedIds: number[] | null }> {
+export async function getUserProfile(): Promise<{ account: FplAccount | null; selectedIds: number[] | null; preferences?: UserPreferences }> {
   try {
     const res = await fetch('/api/user-profile')
     if (res.ok) {
       return await res.json()
     }
-  } catch {}
+  } catch (error) {
+    if (error instanceof Error && error.name !== 'TypeError') throw error
+  }
   return { account: null, selectedIds: null }
 }
 
@@ -454,6 +468,19 @@ export async function saveUserProfile(account: FplAccount, selectedIds?: number[
 export async function deleteUserProfile(): Promise<boolean> {
   try {
     const res = await fetch('/api/user-profile', { method: 'DELETE' })
+    return res.ok
+  } catch {
+    return false
+  }
+}
+
+export async function saveUserPreferences(update: Partial<UserPreferences>): Promise<boolean> {
+  try {
+    const res = await fetch('/api/user-preferences', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(update),
+    })
     return res.ok
   } catch {
     return false
@@ -631,7 +658,15 @@ export async function updatePlayerSignalStatusesBatch(
       const data = await response.json().catch(() => null)
       if (Array.isArray(data?.signals)) return data.signals as PlayerSignal[]
     }
-  } catch {}
+    // A validation/data error from the current endpoint should reach the UI.
+    // Only fall back when the endpoint itself is unavailable on an older server.
+    if (response.status !== 404 && response.status !== 405) {
+      const data = await response.clone().json().catch(() => null)
+      throw new Error(data?.error || `Could not apply evidence changes: HTTP ${response.status}`)
+    }
+  } catch (error) {
+    if (error instanceof Error && error.name !== 'TypeError') throw error
+  }
 
   // Fallback to sequential/parallel individual updates if batch endpoint fails or server is older build
   const results = await Promise.all(
@@ -838,28 +873,6 @@ export async function fetchSystemStatus(): Promise<SystemStatus> {
   } catch {
     return { status: 'ready', isSeeding: false, message: 'Offline mode', playerCount: 0 }
   }
-}
-
-const ONBOARDING_STORAGE_KEY = 'fplgod-onboarding-completed'
-
-export function hasCompletedOnboarding(): boolean {
-  try {
-    return localStorage.getItem(ONBOARDING_STORAGE_KEY) === 'true'
-  } catch {
-    return false
-  }
-}
-
-export function completeOnboarding(): void {
-  try {
-    localStorage.setItem(ONBOARDING_STORAGE_KEY, 'true')
-  } catch {}
-}
-
-export function resetOnboarding(): void {
-  try {
-    localStorage.removeItem(ONBOARDING_STORAGE_KEY)
-  } catch {}
 }
 
 export type ServerAiConfig = {

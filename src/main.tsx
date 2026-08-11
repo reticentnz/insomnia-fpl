@@ -50,6 +50,7 @@ import {
   fetchFplAccount,
   getUserProfile,
   saveUserProfile,
+  saveUserPreferences,
   deleteUserProfile,
   fetchServerAiConfig,
   saveServerAiConfig,
@@ -76,9 +77,6 @@ import {
   type SignalSourceConfig,
   DEFAULT_SIGNAL_SOURCE_CONFIG,
   fetchSystemStatus,
-  hasCompletedOnboarding,
-  completeOnboarding,
-  resetOnboarding,
   type SystemStatus,
   type TeamMarketSnapshot,
 } from "./integrations";
@@ -285,19 +283,9 @@ function App() {
   const [importModalOpen, setImportModalOpen] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [importing, setImporting] = useState(false);
-  const [fplAccount, setFplAccount] = useState<FplAccount | null>(() => {
-    try {
-      const stored =
-        localStorage.getItem("insomnia-fpl-account") ||
-        localStorage.getItem("fplgod-account");
-      return stored ? JSON.parse(stored) : null;
-    } catch {
-      return null;
-    }
-  });
-  const [onboardingModalOpen, setOnboardingModalOpen] = useState<boolean>(() => {
-    return !hasCompletedOnboarding() && !fplAccount;
-  });
+  const [fplAccount, setFplAccount] = useState<FplAccount | null>(null);
+  const [profileHydrated, setProfileHydrated] = useState(false);
+  const [onboardingModalOpen, setOnboardingModalOpen] = useState(false);
   const [systemStatus, setSystemStatus] = useState<SystemStatus | null>(null);
   const [teamInput, setTeamInput] = useState("");
   const [teamMessage, setTeamMessage] = useState("");
@@ -306,60 +294,10 @@ function App() {
   const [pendingTransfer, setPendingTransfer] = useState<Transfer | null>(null);
   const [comparison, setComparison] = useState<Transfer | null>(null);
   const [syncingAccount, setSyncingAccount] = useState(false);
-  const [userName, setUserName] = useState<string>(() => {
-    try {
-      const savedAccount =
-        localStorage.getItem("insomnia-fpl-account") ||
-        localStorage.getItem("fplgod-account");
-      if (savedAccount) {
-        const parsed = JSON.parse(savedAccount);
-        if (parsed?.managerName) return parsed.managerName;
-      }
-      return (
-        localStorage.getItem("insomnia-fpl-user-name") ||
-        localStorage.getItem("fplgod-user-name") ||
-        "Alex"
-      );
-    } catch {
-      return "Alex";
-    }
-  });
-  const [hadSavedSquad] = useState(() => {
-    try {
-      return Boolean(
-        localStorage.getItem("insomnia-fpl-squad") ||
-          localStorage.getItem("fplgod-squad"),
-      );
-    } catch {
-      return false;
-    }
-  });
-  const [selectedIds, setSelectedIds] = useState<number[]>(() => {
-    try {
-      return (
-        JSON.parse(
-          localStorage.getItem("insomnia-fpl-squad") ||
-            localStorage.getItem("fplgod-squad") ||
-            "null",
-        ) || squadIds
-      );
-    } catch {
-      return squadIds;
-    }
-  });
-  const [manager, setManager] = useState<ManagerSettings>(() => {
-    try {
-      return (
-        JSON.parse(
-          localStorage.getItem("insomnia-fpl-manager-settings") ||
-            localStorage.getItem("fplgod-manager-settings") ||
-            "null",
-        ) || { bank: 1.2, freeTransfers: 1 }
-      );
-    } catch {
-      return { bank: 1.2, freeTransfers: 1 };
-    }
-  });
+  const [userName, setUserName] = useState("Alex");
+  const [hadSavedSquad, setHadSavedSquad] = useState(false);
+  const [selectedIds, setSelectedIds] = useState<number[]>(squadIds);
+  const [manager, setManager] = useState<ManagerSettings>({ bank: 1.2, freeTransfers: 1 });
   const [review, setReview] = useState<DecisionReview | null>(null);
   const [explanationReview, setExplanationReview] =
     useState<DecisionReview | null>(null);
@@ -380,40 +318,10 @@ function App() {
   const [llmError, setLlmError] = useState<string | null>(null);
   const [llmLoading, setLlmLoading] = useState(false);
   const [analysisNonce, setAnalysisNonce] = useState(0);
-  const [apiKey, setApiKey] = useState<string>(() => {
-    try {
-      return (
-        localStorage.getItem("insomnia-fpl-ai-key") ||
-        localStorage.getItem("fplgod-ai-key") ||
-        ""
-      );
-    } catch {
-      return "";
-    }
-  });
-  const [aiProvider, setAiProvider] = useState<string>(() => {
-    try {
-      return (
-        localStorage.getItem("insomnia-fpl-ai-provider") ||
-        localStorage.getItem("fplgod-ai-provider") ||
-        "gemini"
-      );
-    } catch {
-      return "gemini";
-    }
-  });
+  const [apiKey, setApiKey] = useState("");
+  const [aiProvider, setAiProvider] = useState("gemini");
   const [aiModalOpen, setAiModalOpen] = useState(false);
-  const [squadChallenge, setSquadChallenge] =
-    useState<SquadChallengeResult | null>(() => {
-      try {
-        const saved =
-          localStorage.getItem("insomnia-fpl-squad-challenge-result") ||
-          localStorage.getItem("fplgod-squad-challenge-result");
-        return saved ? JSON.parse(saved) : null;
-      } catch {
-        return null;
-      }
-    });
+  const [squadChallenge, setSquadChallenge] = useState<SquadChallengeResult | null>(null);
   const [stagedSignalReviews, setStagedSignalReviews] = useState<Record<number, "VERIFIED" | "REJECTED">>({});
   const [applyingBatch, setApplyingBatch] = useState(false);
   const [challengeLoading, setChallengeLoading] = useState(false);
@@ -425,17 +333,7 @@ function App() {
   const [exportModalOpen, setExportModalOpen] = useState(false);
   const [copiedExport, setCopiedExport] = useState(false);
   const [initialClear, setInitialClear] = useState(false);
-  const [lockedIds, setLockedIds] = useState<number[]>(() => {
-    try {
-      return JSON.parse(
-        localStorage.getItem("insomnia-fpl-locked-players") ||
-          localStorage.getItem("fplgod-locked-players") ||
-          "[]",
-      );
-    } catch {
-      return [];
-    }
-  });
+  const [lockedIds, setLockedIds] = useState<number[]>([]);
   const debugEnabled = useMemo(
     () => new URLSearchParams(window.location.search).has("debug"),
     [],
@@ -590,20 +488,12 @@ function App() {
   }, []);
 
   useEffect(() => {
-    if (squadChallenge) {
-      try {
-        localStorage.setItem(
-          "insomnia-fpl-squad-challenge-result",
-          JSON.stringify(squadChallenge),
-        );
-      } catch {}
-    } else {
-      try {
-        localStorage.removeItem("insomnia-fpl-squad-challenge-result");
-        localStorage.removeItem("fplgod-squad-challenge-result");
-      } catch {}
-    }
-  }, [squadChallenge]);
+    if (profileHydrated) void saveUserPreferences({ challengeResult: squadChallenge });
+  }, [profileHydrated, squadChallenge]);
+
+  useEffect(() => {
+    if (profileHydrated) void saveUserPreferences({ stagedReviews: stagedSignalReviews });
+  }, [profileHydrated, stagedSignalReviews]);
 
   useEffect(() => {
     let active = true;
@@ -641,41 +531,38 @@ function App() {
   }, []);
 
   useEffect(() => {
-    getUserProfile().then(({ account, selectedIds: serverIds }) => {
-      if (account) {
-        setFplAccount(account);
-        localStorage.setItem("insomnia-fpl-account", JSON.stringify(account));
-        if (account.managerName) {
-          setUserName(account.managerName);
-          localStorage.setItem("insomnia-fpl-user-name", account.managerName);
-        }
-        if (account.aiProvider) {
-          setAiProvider(account.aiProvider);
-          localStorage.setItem("insomnia-fpl-ai-provider", account.aiProvider);
-        }
-        if (account.apiKey) {
-          setApiKey(account.apiKey);
-          localStorage.setItem("insomnia-fpl-ai-key", account.apiKey);
-        }
-        if (serverIds && serverIds.length === 15) {
-          setSelectedIds(serverIds);
-          localStorage.setItem("insomnia-fpl-squad", JSON.stringify(serverIds));
-        }
-        completeOnboarding();
-        setOnboardingModalOpen(false);
+    getUserProfile().then(({ account, selectedIds: serverIds, preferences }) => {
+      const prefs = preferences;
+      if (account) setFplAccount(account);
+      const ids = prefs?.selectedIds?.length ? prefs.selectedIds : serverIds;
+      if (ids?.length) {
+        setSelectedIds(ids);
+        setHadSavedSquad(true);
       }
-    });
+      if (prefs) {
+        setLockedIds(prefs.lockedIds || []);
+        setManager({ bank: prefs.bank ?? account?.bank ?? 1.2, freeTransfers: prefs.freeTransfers ?? 1 });
+        setUserName(prefs.userName || account?.managerName || "Alex");
+        setSquadChallenge((prefs.challengeResult as SquadChallengeResult | null) || null);
+        setStagedSignalReviews(prefs.stagedReviews || {});
+        setAiProvider(account?.aiProvider || "gemini");
+        setApiKey(account?.apiKey || "");
+        setOnboardingModalOpen(!account && !prefs.onboardingCompleted);
+      } else {
+        setOnboardingModalOpen(!account);
+      }
+    }).catch(() => {
+      setOnboardingModalOpen(true);
+    }).finally(() => setProfileHydrated(true));
   }, []);
 
   useEffect(() => {
     fetchServerAiConfig().then((cfg) => {
       if (cfg.provider) {
         setAiProvider(cfg.provider);
-        localStorage.setItem("insomnia-fpl-ai-provider", cfg.provider);
       }
       if (cfg.apiKey) {
         setApiKey(cfg.apiKey);
-        localStorage.setItem("insomnia-fpl-ai-key", cfg.apiKey);
       }
     }).catch(() => {});
   }, []);
@@ -813,8 +700,7 @@ function App() {
     setChallengeError(null);
     setChallengeRawOutput("");
     setChallengeOutputTypes([]);
-    localStorage.setItem("insomnia-fpl-squad", JSON.stringify(ids));
-    localStorage.setItem("insomnia-fpl-locked-players", JSON.stringify(validLocks));
+    void saveUserPreferences({ selectedIds: ids, lockedIds: validLocks });
     if (fplAccount) {
       saveUserProfile(fplAccount, ids);
     }
@@ -894,7 +780,7 @@ function App() {
   };
   const saveManager = (next: ManagerSettings) => {
     setManager(next);
-    localStorage.setItem("insomnia-fpl-manager-settings", JSON.stringify(next));
+    void saveUserPreferences(next);
     setSettingsOpen(false);
   };
   const compareTransfer = (t: Transfer) => {
@@ -927,6 +813,7 @@ function App() {
     setChallengeRawOutput("");
     setChallengeOutputTypes([]);
     setSquadChallenge(null);
+    setStagedSignalReviews({});
     try {
       const result = await challengeSquad(
         squad.map((player) => player.id),
@@ -975,13 +862,42 @@ function App() {
   };
 
   const applyBatchReview = async () => {
-    const updates = Object.entries(stagedSignalReviews).map(([id, status]) => ({
+    const requestedUpdates = Object.entries(stagedSignalReviews).map(([id, status]) => ({
       id: Number(id),
       status,
     }));
-    if (!updates.length) return;
+    if (!requestedUpdates.length) return;
     setApplyingBatch(true);
     try {
+      // A challenge can survive longer than the database row set it came from
+      // it came from. Reconcile IDs before submitting so one stale review does
+      // not make an otherwise valid batch appear to do nothing.
+      let updates = requestedUpdates;
+      let staleReviewCount = 0;
+      try {
+        const currentSignals = await fetchAllSignals({ limit: 500 });
+        const liveIds = new Set(currentSignals.map((signal) => signal.id));
+        const staleIds = requestedUpdates.filter((update) => !liveIds.has(update.id)).map((update) => update.id);
+        staleReviewCount = staleIds.length;
+        updates = requestedUpdates.filter((update) => liveIds.has(update.id));
+        if (staleIds.length) {
+          setStagedSignalReviews((current) => {
+            const next = { ...current };
+            staleIds.forEach((id) => delete next[id]);
+            return next;
+          });
+          setSquadChallenge((current) => current
+            ? { ...current, signals: current.signals.filter((signal) => liveIds.has(signal.id)) }
+            : current);
+          if (!updates.length) {
+            throw new Error("These reviews belong to an older database session and are no longer available. Run the challenge again to create current evidence.");
+          }
+        }
+      } catch (error) {
+        // Preserve normal offline/error handling, but don't let a failed
+        // reconciliation request prevent the batch endpoint from being tried.
+        if (error instanceof Error && error.message.includes("older database session")) throw error;
+      }
       const updatedSignals = await updatePlayerSignalStatusesBatch(updates);
       // Apply the server-confirmed statuses back into local state
       const statusMap = new Map(updatedSignals.map((s) => [s.id, s.status]));
@@ -1004,6 +920,7 @@ function App() {
       const parts = [];
       if (approvedCount) parts.push(`${approvedCount} approved`);
       if (rejectedCount) parts.push(`${rejectedCount} rejected`);
+      if (staleReviewCount) parts.push(`${staleReviewCount} stale review${staleReviewCount === 1 ? "" : "s"} removed`);
       setToast({
         message: `${parts.join(", ")} · Projections refreshed.`,
       });
@@ -1052,20 +969,15 @@ function App() {
         saveSquad(ids);
       }
       setFplAccount(res.account);
-      localStorage.setItem("insomnia-fpl-account", JSON.stringify(res.account));
       if (res.account.managerName) {
         setUserName(res.account.managerName);
-        localStorage.setItem("insomnia-fpl-user-name", res.account.managerName);
       }
       saveUserProfile(res.account, ids.length === 15 ? ids : selectedIds);
 
       if (res.account.bank !== undefined) {
         const updatedManager = { ...manager, bank: res.account.bank };
         setManager(updatedManager);
-        localStorage.setItem(
-          "insomnia-fpl-manager-settings",
-          JSON.stringify(updatedManager),
-        );
+        void saveUserPreferences(updatedManager);
       }
 
       setToast({
@@ -1088,8 +1000,6 @@ function App() {
 
   const unlinkAccount = () => {
     setFplAccount(null);
-    localStorage.removeItem("insomnia-fpl-account");
-    localStorage.removeItem("fplgod-account");
     deleteUserProfile();
     setImportModalOpen(false);
     setToast({ message: "Season FPL account unlinked." });
@@ -1112,15 +1022,11 @@ function App() {
         saveSquad(ids);
       }
       setFplAccount(res.account);
-      localStorage.setItem("insomnia-fpl-account", JSON.stringify(res.account));
       saveUserProfile(res.account, ids.length === 15 ? ids : selectedIds);
       if (res.account.bank !== undefined) {
         const updatedManager = { ...manager, bank: res.account.bank };
         setManager(updatedManager);
-        localStorage.setItem(
-          "insomnia-fpl-manager-settings",
-          JSON.stringify(updatedManager),
-        );
+        void saveUserPreferences(updatedManager);
       }
       return { success: true, managerName: res.account.managerName };
     } catch {
@@ -1130,15 +1036,13 @@ function App() {
 
   const handleOnboardingComplete = (data: { managerName: string; apiKey?: string; provider?: string }) => {
     setUserName(data.managerName);
-    localStorage.setItem("insomnia-fpl-user-name", data.managerName);
-    localStorage.setItem("fplgod-user-name", data.managerName);
-    completeOnboarding();
+    void saveUserPreferences({ userName: data.managerName, onboardingCompleted: true });
     setOnboardingModalOpen(false);
     setToast({ message: `Welcome to Insomnia FPL, ${data.managerName}!` });
   };
 
   const handleOnboardingSkip = () => {
-    completeOnboarding();
+    void saveUserPreferences({ onboardingCompleted: true });
     setOnboardingModalOpen(false);
     setToast({ message: "Welcome! Exploring with demo squad." });
   };
@@ -1246,7 +1150,7 @@ function App() {
               const n = prompt("Enter your name:", userName);
               if (n && n.trim()) {
                 setUserName(n.trim());
-                localStorage.setItem("insomnia-fpl-user-name", n.trim());
+                void saveUserPreferences({ userName: n.trim() });
               }
             }}
           >
@@ -4807,12 +4711,13 @@ function LeaguesView({
   const [discoveringLeagues, setDiscoveringLeagues] = useState<boolean>(false);
   const [teamInput, setTeamInput] = useState<string>("");
 
-  const [savedDefaultId, setSavedDefaultId] = useState<number | null>(() => {
-    const raw =
-      localStorage.getItem("insomnia-fpl-default-league-id") ||
-      localStorage.getItem("fplgod-default-league-id");
-    return raw ? Number(raw) : null;
-  });
+  const [savedDefaultId, setSavedDefaultId] = useState<number | null>(null);
+
+  useEffect(() => {
+    getUserProfile().then(({ preferences }) => {
+      setSavedDefaultId(preferences?.defaultLeagueId ?? null);
+    }).catch(() => {});
+  }, []);
 
   const userLeagues = useMemo(() => {
     if (fplAccount?.leagues?.classic && fplAccount.leagues.classic.length > 0) {
@@ -4890,7 +4795,7 @@ function LeaguesView({
 
   const handleSetDefault = () => {
     if (selectedLeagueId) {
-      localStorage.setItem("insomnia-fpl-default-league-id", String(selectedLeagueId));
+      void saveUserPreferences({ defaultLeagueId: selectedLeagueId });
       setSavedDefaultId(selectedLeagueId);
     }
   };
@@ -6968,8 +6873,6 @@ function AiKeyModal({
     const cleanKey = keyInput.trim();
     setApiKey(cleanKey);
     setProvider(provInput);
-    localStorage.setItem("insomnia-fpl-ai-key", cleanKey);
-    localStorage.setItem("insomnia-fpl-ai-provider", provInput);
     saveServerAiConfig(provInput, cleanKey);
     if (fplAccount) {
       const nextAcc = { ...fplAccount, aiProvider: provInput, apiKey: cleanKey };
@@ -6980,8 +6883,6 @@ function AiKeyModal({
   };
   const clear = () => {
     setApiKey("");
-    localStorage.removeItem("insomnia-fpl-ai-key");
-    localStorage.removeItem("fplgod-ai-key");
     saveServerAiConfig(provInput, "");
     if (fplAccount) {
       const nextAcc = { ...fplAccount, apiKey: "" };

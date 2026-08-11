@@ -1466,8 +1466,25 @@ function startServerOnAvailablePort(targetPort) {
         try {
           const db = await getDb()
           const resDb = await db.query('SELECT * FROM "UserAccount" WHERE id=\'default\' LIMIT 1')
+          const prefDb = await db.query('SELECT * FROM "UserPreference" WHERE id=\'default\' LIMIT 1').catch(() => ({ rows: [] }))
+          const pref = prefDb.rows[0] || {}
           if (resDb.rows.length === 0) {
-            res.writeHead(200, { 'content-type': 'application/json' }).end(JSON.stringify({ account: null, selectedIds: null }))
+            let selectedIds = []
+            try { selectedIds = JSON.parse(pref.selectedIds || '[]') } catch {}
+            let challengeResult = null
+            try { challengeResult = pref.challengeResult ? JSON.parse(pref.challengeResult) : null } catch {}
+            let stagedReviews = {}
+            try { stagedReviews = JSON.parse(pref.stagedReviews || '{}') } catch {}
+            res.writeHead(200, { 'content-type': 'application/json' }).end(JSON.stringify({
+              account: null,
+              selectedIds: selectedIds.length ? selectedIds : null,
+              preferences: {
+                userName: pref.userName || '', selectedIds, lockedIds: JSON.parse(pref.lockedIds || '[]'),
+                bank: pref.bank == null ? null : Number(pref.bank), freeTransfers: Number(pref.freeTransfers ?? 1),
+                defaultLeagueId: pref.defaultLeagueId == null ? null : Number(pref.defaultLeagueId),
+                onboardingCompleted: Boolean(pref.onboardingCompleted), challengeResult, stagedReviews,
+              },
+            }))
             return
           }
           const row = resDb.rows[0]
@@ -1490,7 +1507,24 @@ function startServerOnAvailablePort(targetPort) {
             apiKey: row.apiKey || undefined,
             lastSynced: row.lastSynced ? new Date(row.lastSynced).toISOString() : new Date().toISOString()
           }
-          res.writeHead(200, { 'content-type': 'application/json' }).end(JSON.stringify({ account, selectedIds }))
+          let preferenceSelectedIds = selectedIds
+          try { preferenceSelectedIds = JSON.parse(pref.selectedIds || JSON.stringify(selectedIds)) } catch {}
+          let challengeResult = null
+          try { challengeResult = pref.challengeResult ? JSON.parse(pref.challengeResult) : null } catch {}
+          let stagedReviews = {}
+          try { stagedReviews = JSON.parse(pref.stagedReviews || '{}') } catch {}
+          let lockedIds = []
+          try { lockedIds = JSON.parse(pref.lockedIds || '[]') } catch {}
+          res.writeHead(200, { 'content-type': 'application/json' }).end(JSON.stringify({
+            account,
+            selectedIds: preferenceSelectedIds,
+            preferences: {
+              userName: pref.userName || account.managerName || '', selectedIds: preferenceSelectedIds, lockedIds,
+              bank: pref.bank == null ? account.bank : Number(pref.bank), freeTransfers: Number(pref.freeTransfers ?? 1),
+              defaultLeagueId: pref.defaultLeagueId == null ? null : Number(pref.defaultLeagueId),
+              onboardingCompleted: Boolean(pref.onboardingCompleted), challengeResult, stagedReviews,
+            },
+          }))
         } catch (err) {
           res.writeHead(200, { 'content-type': 'application/json' }).end(JSON.stringify({ account: null, selectedIds: null }))
         }
@@ -1548,6 +1582,7 @@ function startServerOnAvailablePort(targetPort) {
                 account.apiKey || null
               ]
             )
+            await db.query(`INSERT INTO "UserPreference" ("id","userName","selectedIds","bank","updatedAt") VALUES ('default',$1,$2,$3,NOW()) ON CONFLICT ("id") DO UPDATE SET "userName"=EXCLUDED."userName","selectedIds"=EXCLUDED."selectedIds","bank"=EXCLUDED."bank","updatedAt"=NOW()`, [account.managerName || '', idsJson, account.bank ?? null])
             res.writeHead(200, { 'content-type': 'application/json' }).end(JSON.stringify({ success: true }))
           } catch (err) {
             res.writeHead(500, { 'content-type': 'application/json' }).end(JSON.stringify({ error: err instanceof Error ? err.message : 'Save failed' }))
@@ -1560,12 +1595,36 @@ function startServerOnAvailablePort(targetPort) {
         try {
           const db = await getDb()
           await db.query('DELETE FROM "UserAccount" WHERE id=\'default\'')
+          await db.query('DELETE FROM "UserPreference" WHERE id=\'default\'')
           res.writeHead(200, { 'content-type': 'application/json' }).end(JSON.stringify({ success: true }))
         } catch (err) {
           res.writeHead(500, { 'content-type': 'application/json' }).end(JSON.stringify({ error: 'Delete failed' }))
         }
         return
       }
+    }
+
+    if (request === '/api/user-preferences' && req.method === 'POST') {
+      try {
+        const body = await readRequestBody(req)
+        const db = await getDb()
+        await db.query(`INSERT INTO "UserPreference" ("id") VALUES ('default') ON CONFLICT ("id") DO NOTHING`)
+        const sets = []
+        const params = []
+        const add = (column, value) => { sets.push(`"${column}"=$${params.length + 1}`); params.push(value) }
+        if (Array.isArray(body.selectedIds)) add('selectedIds', JSON.stringify(body.selectedIds.filter(Number.isInteger)))
+        if (Array.isArray(body.lockedIds)) add('lockedIds', JSON.stringify(body.lockedIds.filter(Number.isInteger)))
+        if (Object.prototype.hasOwnProperty.call(body, 'challengeResult')) add('challengeResult', body.challengeResult == null ? null : JSON.stringify(body.challengeResult))
+        if (Object.prototype.hasOwnProperty.call(body, 'stagedReviews')) add('stagedReviews', JSON.stringify(body.stagedReviews || {}))
+        if (typeof body.userName === 'string') add('userName', body.userName.slice(0, 120))
+        if (body.bank === null || Number.isFinite(Number(body.bank))) add('bank', body.bank === null ? null : Number(body.bank))
+        if (Number.isFinite(Number(body.freeTransfers))) add('freeTransfers', Math.max(0, Math.min(5, Math.round(Number(body.freeTransfers)))))
+        if (body.defaultLeagueId === null || Number.isInteger(Number(body.defaultLeagueId))) add('defaultLeagueId', body.defaultLeagueId == null ? null : Number(body.defaultLeagueId))
+        if (Object.prototype.hasOwnProperty.call(body, 'onboardingCompleted')) add('onboardingCompleted', body.onboardingCompleted ? 1 : 0)
+        if (sets.length) await db.query(`UPDATE "UserPreference" SET ${sets.join(',')},"updatedAt"=NOW() WHERE id='default'`, params)
+        sendJson(res, 200, { success: true })
+      } catch (error) { sendJson(res, 400, { error: error instanceof Error ? error.message : 'Could not save user preferences' }) }
+      return
     }
 
 
