@@ -493,7 +493,7 @@ export async function saveUserProfile(account: FplAccount, selectedIds?: number[
       body: JSON.stringify({ teamId: account.teamId, parentPlanId: parentPlanId || undefined, playerIds: selectedIds, lockedPlayerIds, name: 'Active plan', status: 'ACTIVE' })
     })
     const data = await res.json().catch(() => ({}))
-    return { ok: res.ok, planId: data.id, parentPlanId: data.parentPlanId, bankTenths: data.bankTenths, freeTransfers: data.freeTransfers, error: data.error }
+    return { ok: res.ok, planId: data.id, parentPlanId: data.parentPlanId, bankTenths: data.bankTenths, freeTransfers: data.freeTransfers, error: res.ok ? undefined : apiErrorMessage(data, 'Plan could not be saved') }
   } catch {
     return { ok: false, error: 'Plan save request failed' }
   }

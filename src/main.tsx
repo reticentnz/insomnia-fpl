@@ -779,7 +779,8 @@ function App() {
           if (!result || !result.ok) {
             setSelectedIds(priorIds);
             setLockedIds(priorLocks);
-            setToast({ message: result?.error || "The plan could not be saved because its economics or squad structure is invalid." });
+            const errMsg = typeof result?.error === 'string' ? result.error : (result?.error as any)?.message || "The plan could not be saved because its economics or squad structure is invalid.";
+            setToast({ message: errMsg });
             return;
           }
           if (result.planId) {
