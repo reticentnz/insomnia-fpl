@@ -93,14 +93,14 @@ npm run db:migrate
 
 Development data can be explicitly discarded with `npm run db:reset -- --yes-reset-development-data`; the reset script refuses unsafe database paths. Verify the active schema with `npm run db:verify`.
 
-To refresh the live public FPL data and append immutable official observations:
-
-Set `FPL_SEASON` (for example, `2026/27`) or `FPL_SEASON_START_YEAR` before ingesting; the ingestion does not embed a season in application logic.
+To refresh the live public FPL data and append immutable official observations, run:
 
 ```bash
 npm run ingest:fpl
 npm run db:verify
 ```
+
+The ingestion derives the season from the official Gameweek 1 deadline. Set `FPL_SEASON` (for example, `2026/27`) or `FPL_SEASON_START_YEAR` only when an explicit override is needed.
 
 To refresh the optional underlying-performance and market feeds:
 

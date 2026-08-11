@@ -2,8 +2,8 @@ import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { DatabaseSync } from 'node:sqlite'
-import { afterEach, describe, expect, it } from 'vitest'
-import { ingestOfficialFpl, refreshOfficialFpl } from './ingest-fpl.mjs'
+import { afterEach, describe, expect, it, vi } from 'vitest'
+import { ingestOfficialFpl, refreshOfficialFpl, resolveSeason } from './ingest-fpl.mjs'
 
 const temporaryDirectories: string[] = []
 const fixtureDirectory = path.resolve('scripts', 'fixtures')
@@ -39,7 +39,31 @@ function queryRows(databasePath: string, sql: string, params: unknown[] = []) {
 }
 
 afterEach(() => {
+  vi.unstubAllEnvs()
   while (temporaryDirectories.length) fs.rmSync(temporaryDirectories.pop()!, { recursive: true, force: true })
+})
+
+describe('season resolution', () => {
+  it('derives the season from the earliest official gameweek deadline', () => {
+    vi.stubEnv('FPL_SEASON', '')
+    vi.stubEnv('FPL_SEASON_START_YEAR', '')
+
+    expect(resolveSeason({
+      bootstrap: {
+        events: [
+          { deadline_time: '2026-08-21T17:30:00Z' },
+          { deadline_time: '2026-08-14T17:30:00Z' },
+        ],
+      },
+    })).toBe('2026/27')
+  })
+
+  it('keeps an explicit season override authoritative', () => {
+    expect(resolveSeason({
+      season: '2027/28',
+      bootstrap: { events: [{ deadline_time: '2026-08-14T17:30:00Z' }] },
+    })).toBe('2027/28')
+  })
 })
 
 describe('WP-02 official feed ingestion', () => {

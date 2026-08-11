@@ -101,7 +101,19 @@ export function resolveSeason({ season, bootstrap } = {}) {
   const bootstrapSeason = bootstrap?.season || bootstrap?.meta?.season
   if (bootstrapSeason) return String(bootstrapSeason)
 
-  throw new Error('FPL season is required; set FPL_SEASON or FPL_SEASON_START_YEAR')
+  const firstDeadline = (bootstrap?.events || [])
+    .map(event => event?.deadline_time)
+    .filter(Boolean)
+    .map(value => new Date(value))
+    .filter(value => Number.isFinite(value.getTime()))
+    .sort((left, right) => left.getTime() - right.getTime())[0]
+  if (firstDeadline) {
+    const deadlineYear = firstDeadline.getUTCFullYear()
+    const startYear = firstDeadline.getUTCMonth() >= 6 ? deadlineYear : deadlineYear - 1
+    return `${startYear}/${String(startYear + 1).slice(-2)}`
+  }
+
+  throw new Error('FPL season could not be derived; set FPL_SEASON or FPL_SEASON_START_YEAR')
 }
 
 function normalizeElementSummaries(input) {
