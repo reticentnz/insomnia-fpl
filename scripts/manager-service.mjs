@@ -2,6 +2,7 @@ import { randomUUID } from 'node:crypto'
 import { migrateDatabase } from './db-migrate.mjs'
 import { closeDb, getDb } from './db.mjs'
 import { canonicalJson } from './feed-run.mjs'
+import { ensureInitialPlanForSnapshot, getActivePlan } from './plan-service.mjs'
 
 function integer(value, label, { nullable = false, minimum = 0 } = {}) {
   if (value === null || value === undefined || value === '') {
@@ -187,6 +188,7 @@ export async function importManagerPayload(db, {
     }
     db.sqlite.exec('COMMIT')
     transactionOpen = false
+    await ensureInitialPlanForSnapshot(db, { managerAccountId, snapshotId, createdAt: importedAt })
     return getCurrentManager(db, { fplEntryId, season: resolvedSeason })
   } catch (error) {
     if (transactionOpen) {
@@ -300,7 +302,7 @@ export async function getCurrentManager(db, { fplEntryId, season } = {}) {
       status: economicsUnknown ? 'AFFORDABILITY_UNKNOWN' : 'EXACT',
       exactSellingPrices: !economicsUnknown,
     },
-    activePlan: null,
+    activePlan: await getActivePlan(db, { managerAccountId: accountRow.id }),
   }
 }
 

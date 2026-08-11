@@ -411,11 +411,36 @@ export async function fetchFplAccount(teamId: number, gameweek?: number): Promis
   }
 }
 
-export async function getUserProfile(): Promise<{ account: FplAccount | null; selectedIds: number[] | null; preferences?: UserPreferences }> {
+export async function getUserProfile(): Promise<{ account: FplAccount | null; selectedIds: number[] | null; planId?: string | null; preferences?: UserPreferences }> {
   try {
-    const res = await fetch('/api/user-profile')
+    const res = await fetch('/api/manager/current')
     if (res.ok) {
-      return await res.json()
+      const data = await res.json()
+      const activePlanIds = Array.isArray(data.activePlan?.players)
+        ? data.activePlan.players.map((player: { fplId?: number }) => Number(player.fplId)).filter(Number.isInteger)
+        : []
+      const officialIds = Array.isArray(data.squad)
+        ? data.squad.map((player: { fplId?: number }) => Number(player.fplId)).filter(Number.isInteger)
+        : []
+      const selectedIds = activePlanIds.length ? activePlanIds : officialIds
+      return {
+        account: data.account || null,
+        selectedIds: selectedIds.length ? selectedIds : null,
+        planId: data.activePlan?.id || null,
+        preferences: {
+          userName: data.account?.managerName || '',
+          selectedIds,
+          lockedIds: Array.isArray(data.activePlan?.players)
+            ? data.activePlan.players.filter((player: { locked?: boolean }) => player.locked).map((player: { fplId?: number }) => Number(player.fplId)).filter(Number.isInteger)
+            : [],
+          bank: data.account?.bank == null ? null : Number(data.account.bank),
+          freeTransfers: data.freeTransfers == null ? 0 : Number(data.freeTransfers),
+          defaultLeagueId: null,
+          onboardingCompleted: Boolean(data.account),
+          challengeResult: null,
+          stagedReviews: {},
+        },
+      }
     }
   } catch (error) {
     if (error instanceof Error && error.name !== 'TypeError') throw error
@@ -423,34 +448,33 @@ export async function getUserProfile(): Promise<{ account: FplAccount | null; se
   return { account: null, selectedIds: null }
 }
 
-export async function saveUserProfile(account: FplAccount, selectedIds?: number[]): Promise<boolean> {
+export async function saveUserProfile(account: FplAccount, selectedIds?: number[], parentPlanId?: string | null): Promise<{ ok: boolean; planId?: string }> {
   try {
-    const res = await fetch('/api/user-profile', {
+    if (!Array.isArray(selectedIds) || !selectedIds.length) return { ok: true }
+    const res = await fetch('/api/plans', {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ account, selectedIds })
+      body: JSON.stringify({ teamId: account.teamId, parentPlanId: parentPlanId || undefined, playerIds: selectedIds, name: 'Active plan', status: 'ACTIVE' })
     })
-    return res.ok
+    const data = await res.json().catch(() => ({}))
+    return { ok: res.ok, planId: data.id }
   } catch {
-    return false
+    return { ok: false }
   }
 }
 
 export async function deleteUserProfile(): Promise<boolean> {
-  try {
-    const res = await fetch('/api/user-profile', { method: 'DELETE' })
-    return res.ok
-  } catch {
-    return false
-  }
+  return true
 }
 
 export async function saveUserPreferences(update: Partial<UserPreferences>): Promise<boolean> {
   try {
+    const { selectedIds: _selectedIds, ...preferenceUpdate } = update
+    if (!Object.keys(preferenceUpdate).length) return true
     const res = await fetch('/api/user-preferences', {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
-      body: JSON.stringify(update),
+      body: JSON.stringify(preferenceUpdate),
     })
     return res.ok
   } catch {

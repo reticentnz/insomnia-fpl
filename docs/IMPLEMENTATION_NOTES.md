@@ -192,3 +192,42 @@ Complete.
 - Legacy `/api/user-profile` and local selected-player persistence remain outside WP-03 and are scheduled for the plan/hydration work in WP-04; official manager state is now represented by the canonical manager endpoints and snapshots.
 - The preserved legacy `dev.db` remains untouched as documented under WP-02.
 - No later work package was started while implementing WP-03.
+
+## WP-04 — Plans and hydration
+
+### Status
+
+Complete.
+
+### Implementation summary
+
+- Added immutable plan services for creating active or named saved revisions, copying an official squad snapshot into `PlanPlayer` rows, creating child revisions, selecting an earlier revision for undo, and retaining parent ancestry.
+- Manager import now creates the initial active plan from the imported official snapshot when no active plan exists.
+- Added plan API routes for creation, active-plan retrieval and revision selection; `GET /api/manager/current` now includes the active plan.
+- Moved client account/profile hydration to the manager/current and plan APIs. Catalogue loading waits until profile hydration completes, preventing a fast profile response or slow catalogue response from replacing a saved plan with a generated default.
+- Made generated catalogue exploration explicit with a visible demo-squad label. Numeric selected-player IDs remain a transient UI projection of the active plan rather than a second persistence source.
+- Added tests covering official-state isolation, parent/child revisions, undo selection, named saved scenarios and reloadable active plans.
+
+### Files changed
+
+- `scripts/plan-service.mjs`
+- `scripts/plan-service.test.ts`
+- `scripts/manager-service.mjs`
+- `scripts/serve.mjs`
+- `src/integrations.ts`
+- `src/main.tsx`
+- `docs/IMPLEMENTATION_NOTES.md`
+
+### Commands run and results
+
+- `npm run test:vitest -- scripts/plan-service.test.ts scripts/manager-service.test.ts` — passed; 2 files and 6 tests.
+- `npm test` — passed; 7 test files and 73 tests.
+- `npm run build` — passed; production bundle written to `dist/`.
+- `node --check scripts/plan-service.mjs && node --check scripts/manager-service.mjs && node --check scripts/serve.mjs` — passed.
+- `git diff --check` — passed.
+
+### Deviations or unresolved issues
+
+- Existing non-plan preference endpoints remain for unrelated UI settings; selected squad persistence no longer uses them and is routed through immutable plans. Full preference cleanup is outside the WP-04 acceptance surface.
+- The preserved legacy `dev.db` remains untouched as documented under WP-02.
+- No later work package was started while implementing WP-04.

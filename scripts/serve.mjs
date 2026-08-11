@@ -36,6 +36,7 @@ const colours = ['#e74c3c', '#3b82f6', '#8b5cf6', '#dc2626', '#22c55e', '#f59e0b
 import { getDb } from './db.mjs'
 import { migrateDatabase } from './db-migrate.mjs'
 import { fetchManagerPayload, getCurrentManager, importManagerPayload, updateManagerAssumptions } from './manager-service.mjs'
+import { createPlan, getActivePlan, selectPlan } from './plan-service.mjs'
 
 let systemStatus = {
   status: 'initializing',
@@ -1279,6 +1280,54 @@ function startServerOnAvailablePort(targetPort) {
         sendJson(res, 200, manager)
       } catch (error) {
         sendJson(res, 400, { error: error instanceof Error ? error.message : 'Manager assumptions could not be saved' })
+      }
+      return
+    }
+
+    if (request === '/api/plans' && req.method === 'POST') {
+      try {
+        const body = await readRequestBody(req)
+        const db = await getDb()
+        const plan = await createPlan(db, {
+          fplEntryId: body.teamId,
+          managerAccountId: body.managerAccountId,
+          snapshotId: body.snapshotId,
+          parentPlanId: body.parentPlanId,
+          name: body.name,
+          status: body.status,
+          playerIds: body.playerIds,
+          bankTenths: body.bankTenths,
+          freeTransfers: body.freeTransfers,
+          changeSummary: body.changeSummary || {},
+          createdAt: new Date().toISOString(),
+        })
+        sendJson(res, 201, plan)
+      } catch (error) {
+        sendJson(res, 400, { error: error instanceof Error ? error.message : 'Plan could not be created' })
+      }
+      return
+    }
+
+    if (request === '/api/plans/current' && req.method === 'GET') {
+      try {
+        const params = new URL(req.url || '/', `http://${host}`).searchParams
+        const db = await getDb()
+        const plan = await getActivePlan(db, { fplEntryId: params.get('teamId') ? Number(params.get('teamId')) : undefined })
+        sendJson(res, plan ? 200 : 404, { plan })
+      } catch (error) {
+        sendJson(res, 400, { error: error instanceof Error ? error.message : 'Active plan unavailable' })
+      }
+      return
+    }
+
+    const planSelectMatch = request.match(/^\/api\/plans\/([^/]+)\/select$/)
+    if (planSelectMatch && req.method === 'POST') {
+      try {
+        const db = await getDb()
+        const plan = await selectPlan(db, decodeURIComponent(planSelectMatch[1]))
+        sendJson(res, 200, plan)
+      } catch (error) {
+        sendJson(res, 400, { error: error instanceof Error ? error.message : 'Plan could not be selected' })
       }
       return
     }

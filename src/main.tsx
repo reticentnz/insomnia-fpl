@@ -284,6 +284,7 @@ function App() {
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [importing, setImporting] = useState(false);
   const [fplAccount, setFplAccount] = useState<FplAccount | null>(null);
+  const [activePlanId, setActivePlanId] = useState<string | null>(null);
   const [profileHydrated, setProfileHydrated] = useState(false);
   const [onboardingModalOpen, setOnboardingModalOpen] = useState(false);
   const [systemStatus, setSystemStatus] = useState<SystemStatus | null>(null);
@@ -296,7 +297,7 @@ function App() {
   const [syncingAccount, setSyncingAccount] = useState(false);
   const [userName, setUserName] = useState("Alex");
   const [hadSavedSquad, setHadSavedSquad] = useState(false);
-  const [selectedIds, setSelectedIds] = useState<number[]>(squadIds);
+  const [selectedIds, setSelectedIds] = useState<number[]>([]);
   const [manager, setManager] = useState<ManagerSettings>({ bank: 1.2, freeTransfers: 1 });
   const [review, setReview] = useState<DecisionReview | null>(null);
   const [explanationReview, setExplanationReview] =
@@ -306,7 +307,7 @@ function App() {
   const [playerDetail, setPlayerDetail] = useState<Player | null>(null);
   const [livePlayers, setLivePlayers] = useState<Player[] | null>(null);
   const [catalogMode, setCatalogMode] = useState<
-    "loading" | "live" | "demo-conflict" | "demo-offline"
+    "loading" | "live" | "demo-live" | "demo-conflict" | "demo-offline"
   >("loading");
   const [currentGameweek, setCurrentGameweek] = useState<number | null>(null);
   const [deadlineTime, setDeadlineTime] = useState<string | null>(null);
@@ -424,6 +425,7 @@ function App() {
   activeDraftPlan = draftPlan;
   players = catalog;
   useEffect(() => {
+    if (!profileHydrated) return;
     let active = true;
     let pollTimer: ReturnType<typeof setTimeout> | null = null;
 
@@ -457,6 +459,7 @@ function App() {
                 })
               : buildLegalDefaultSquad(data.players, 100 + manager.bank);
             setSelectedIds(legalPicks.map((p) => p.id));
+            setCatalogMode("demo-live");
           }
         }
       } catch {
@@ -485,7 +488,7 @@ function App() {
       active = false;
       if (pollTimer) clearTimeout(pollTimer);
     };
-  }, []);
+  }, [profileHydrated]);
 
   useEffect(() => {
     if (profileHydrated) void saveUserPreferences({ challengeResult: squadChallenge });
@@ -531,9 +534,10 @@ function App() {
   }, []);
 
   useEffect(() => {
-    getUserProfile().then(({ account, selectedIds: serverIds, preferences }) => {
+    getUserProfile().then(({ account, selectedIds: serverIds, preferences, planId }) => {
       const prefs = preferences;
       if (account) setFplAccount(account);
+      setActivePlanId(planId || null);
       const ids = prefs?.selectedIds?.length ? prefs.selectedIds : serverIds;
       if (ids?.length) {
         setSelectedIds(ids);
@@ -702,7 +706,9 @@ function App() {
     setChallengeOutputTypes([]);
     void saveUserPreferences({ selectedIds: ids, lockedIds: validLocks });
     if (fplAccount) {
-      saveUserProfile(fplAccount, ids);
+      void saveUserProfile(fplAccount, ids, activePlanId).then((result) => {
+        if (result.planId) setActivePlanId(result.planId);
+      });
     }
     setEditing(false);
   };
@@ -1053,8 +1059,10 @@ function App() {
       ? capturedAt
         ? `Updated ${new Date(capturedAt).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}`
         : "Live data ready"
-      : catalogMode === "demo-conflict"
+        : catalogMode === "demo-conflict"
         ? "Saved squad needs review"
+        : catalogMode === "demo-live"
+          ? "Demo squad (explicit)"
         : "Database offline (0 players)";
   return (
     <div className="app">
@@ -1168,6 +1176,14 @@ function App() {
               start a reviewed live squad.
             </span>
             <button onClick={repairLiveSquad}>Create live starter squad</button>
+          </div>
+        )}
+        {catalogMode === "demo-live" && (
+          <div className="validation-warning conflict-banner">
+            <Shield size={16} />
+            <span>
+              <b>Demo exploration is active.</b> This squad is generated from the live catalogue and is not an imported official squad.
+            </span>
           </div>
         )}
         {catalogMode === "demo-offline" && catalog.length === 0 && (
