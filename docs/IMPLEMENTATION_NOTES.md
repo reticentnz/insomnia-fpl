@@ -150,3 +150,45 @@ Complete.
 
 - The existing `dev.db` was deliberately not reset or overwritten because it predates the canonical migration. Canonical verification used temporary databases; running `npm run db:migrate` or the guarded development reset is still required before using the preserved local database with canonical commands.
 - No later work package was started while implementing WP-02.
+
+## WP-03 — Manager import and exact economics
+
+### Status
+
+Complete.
+
+### Implementation summary
+
+- Added transactional manager import services for `ManagerAccount`, immutable `OfficialSquadSnapshot`, `OfficialSquadPlayer` economics and append-only `ManagerAssumption` records.
+- Imported official purchase/selling prices and bank/squad value as integer tenths without substituting current catalogue prices.
+- Added user-confirmed free-transfer and missing-selling-price updates with supersession and provenance.
+- Added pure simultaneous-transfer affordability and legality functions using final-squad positions, duplicate checks, club limits, exact bank and hit costs.
+- Replaced the legacy `/api/fpl-account` and `/api/fpl-squad` routes with `POST /api/manager/import`, `GET /api/manager/current` and `PATCH /api/manager/assumptions`; updated the client account import to use the new route.
+- Added saved manager payload fixtures and tests for official economics, unknown affordability, confirmation overrides, immutable re-imports, exact multi-transfer funding and simultaneous club-limit checks.
+
+### Files changed
+
+- `scripts/manager-service.mjs`
+- `scripts/manager-service.test.ts`
+- `scripts/fixtures/wp03-entry.json`
+- `scripts/fixtures/wp03-picks.json`
+- `scripts/serve.mjs`
+- `src/core/transfers.ts`
+- `src/core/transfers.test.ts`
+- `src/integrations.ts`
+- `docs/IMPLEMENTATION_NOTES.md`
+
+### Commands run and results
+
+- `npm run test:vitest -- src/core/transfers.test.ts scripts/manager-service.test.ts` — passed; 2 files and 7 tests.
+- `npm test` — passed; 6 test files and 70 tests.
+- `npm run build` — passed; production bundle written to `dist/`.
+- `node --check scripts/manager-service.mjs && node --check scripts/serve.mjs` — passed.
+- `git diff --check` — passed.
+- `rg '/api/fpl-account|/api/fpl-squad' scripts/serve.mjs src/integrations.ts` — passed; no legacy account/squad route references remain.
+
+### Deviations or unresolved issues
+
+- Legacy `/api/user-profile` and local selected-player persistence remain outside WP-03 and are scheduled for the plan/hydration work in WP-04; official manager state is now represented by the canonical manager endpoints and snapshots.
+- The preserved legacy `dev.db` remains untouched as documented under WP-02.
+- No later work package was started while implementing WP-03.

@@ -372,71 +372,42 @@ export interface LeagueDetailsResponse {
 
 export async function fetchFplAccount(teamId: number, gameweek?: number): Promise<{
   account: FplAccount;
-  picks: Array<{ element: number; position?: number; multiplier?: number; is_captain?: boolean; is_vice_captain?: boolean }>;
+  picks: Array<{ element: number; position?: number; multiplier?: number; is_captain?: boolean; is_vice_captain?: boolean; purchase_price?: number | null; selling_price?: number | null }>;
 }> {
-  try {
-    const url = gameweek ? `/api/fpl-account?teamId=${teamId}&gameweek=${gameweek}` : `/api/fpl-account?teamId=${teamId}`
-    const response = await fetch(url)
-    if (response.ok) {
-      const data = await response.json()
-      return {
-        account: {
-          teamId: data.teamId || teamId,
-          teamName: data.teamName || `Team #${teamId}`,
-          managerName: data.managerName || '',
-          totalPoints: Number(data.totalPoints) || 0,
-          gameweekPoints: Number(data.gameweekPoints) || 0,
-          squadValue: Number(data.squadValue) || 100,
-          bank: Number(data.bank) || 0,
-          overallRank: data.overallRank ? Number(data.overallRank) : null,
-          transfersCost: Number(data.transfersCost) || 0,
-          eventTransfers: Number(data.eventTransfers) || 0,
-          totalTransfers: Number(data.totalTransfers) || 0,
-          currentGameweek: Number(data.currentGameweek) || gameweek || 1,
-          leagues: data.leagues || { classic: [], h2h: [] },
-          lastSynced: data.lastSynced || new Date().toISOString()
-        },
-        picks: data.picks || []
-      }
-    }
-  } catch {
-    // Fallback to direct client fetch
-  }
-
-  const entryRes = await fetch(`https://fantasy.premierleague.com/api/entry/${teamId}/`)
-  if (!entryRes.ok) throw new Error(`FPL account fetch failed: HTTP ${entryRes.status}`)
-  const entryData = await entryRes.json()
-
-  const gw = gameweek || entryData.current_event || entryData.summary_overall_event || 1
-  const picksRes = await fetch(`https://fantasy.premierleague.com/api/entry/${teamId}/event/${gw}/picks/`)
-  let picks: Array<{ element: number }> = []
-  let entryHistory: any = null
-  if (picksRes.ok) {
-    const picksData = await picksRes.json()
-    picks = picksData.picks || []
-    entryHistory = picksData.entry_history || null
-  }
-
-  const squadValue = entryHistory?.value ? entryHistory.value / 10 : (entryData.last_deadline_value ? entryData.last_deadline_value / 10 : 100)
-  const bank = entryHistory?.bank ? entryHistory.bank / 10 : (entryData.last_deadline_bank ? entryData.last_deadline_bank / 10 : 0)
-
+  const response = await fetch('/api/manager/import', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ teamId, gameweek }),
+  })
+  const data = await response.json().catch(() => ({}))
+  if (!response.ok) throw new Error(data.error || `FPL account import failed: HTTP ${response.status}`)
+  const account = data.account || {}
   return {
     account: {
-      teamId: entryData.id || teamId,
-      teamName: entryData.name || `Team #${teamId}`,
-      managerName: `${entryData.player_first_name || ''} ${entryData.player_last_name || ''}`.trim(),
-      totalPoints: Number(entryHistory?.total_points ?? entryData.summary_overall_points) || 0,
-      gameweekPoints: Number(entryHistory?.points ?? entryData.summary_event_points) || 0,
-      squadValue,
-      bank,
-      overallRank: entryData.summary_overall_rank || null,
-      transfersCost: Number(entryHistory?.event_transfers_cost) || 0,
-      eventTransfers: Number(entryHistory?.event_transfers) || 0,
-      totalTransfers: Number(entryData.last_deadline_total_transfers) || 0,
-      currentGameweek: Number(gw),
-      lastSynced: new Date().toISOString()
+      teamId: Number(account.teamId || teamId),
+      teamName: account.teamName || `Team #${teamId}`,
+      managerName: account.managerName || '',
+      totalPoints: Number(account.totalPoints) || 0,
+      gameweekPoints: Number(account.gameweekPoints) || 0,
+      squadValue: Number(account.squadValue) || 0,
+      bank: Number(account.bank) || 0,
+      overallRank: account.overallRank == null ? null : Number(account.overallRank),
+      transfersCost: Number(account.transfersCost) || 0,
+      eventTransfers: Number(account.eventTransfers) || 0,
+      totalTransfers: Number(account.totalTransfers) || 0,
+      currentGameweek: Number(account.currentGameweek) || gameweek || 1,
+      leagues: { classic: [], h2h: [] },
+      lastSynced: account.lastSynced || new Date().toISOString(),
     },
-    picks
+    picks: (Array.isArray(data.squad) ? data.squad : []).map((player: any) => ({
+      element: Number(player.fplId),
+      position: Number(player.squadOrder),
+      multiplier: Number(player.multiplier),
+      is_captain: Boolean(player.isCaptain),
+      is_vice_captain: Boolean(player.isViceCaptain),
+      purchase_price: player.purchasePriceTenths,
+      selling_price: player.sellingPriceTenths,
+    })),
   }
 }
 
@@ -488,16 +459,8 @@ export async function saveUserPreferences(update: Partial<UserPreferences>): Pro
 }
 
 export async function fetchPublicSquad(teamId:number, gameweek?:number):Promise<{picks:Array<{element:number}>; gameweek:number}> {
-  try {
-    const res = await fetchFplAccount(teamId, gameweek)
-    return { picks: res.picks, gameweek: res.account.currentGameweek }
-  } catch {
-    const gw = gameweek || 1
-    const response = await fetch(`https://fantasy.premierleague.com/api/entry/${teamId}/event/${gw}/picks/`)
-    if (!response.ok) throw new Error(`FPL squad import failed: ${response.status}`)
-    const data = await response.json() as {picks:Array<{element:number}>}
-    return { picks: data.picks, gameweek: gw }
-  }
+  const res = await fetchFplAccount(teamId, gameweek)
+  return { picks: res.picks, gameweek: res.account.currentGameweek }
 }
 export async function fetchLiveCatalog(retries = 3): Promise<{capturedAt:string;currentGameweek:number|null;deadline:string|null;players:Player[]}> {
   let lastError: Error | null = null

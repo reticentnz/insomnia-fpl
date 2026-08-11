@@ -35,6 +35,7 @@ const colours = ['#e74c3c', '#3b82f6', '#8b5cf6', '#dc2626', '#22c55e', '#f59e0b
 
 import { getDb } from './db.mjs'
 import { migrateDatabase } from './db-migrate.mjs'
+import { fetchManagerPayload, getCurrentManager, importManagerPayload, updateManagerAssumptions } from './manager-service.mjs'
 
 let systemStatus = {
   status: 'initializing',
@@ -1228,112 +1229,56 @@ function startServerOnAvailablePort(targetPort) {
       return
     }
 
-    if (request === '/api/fpl-squad') {
-      const urlParams = new URLSearchParams((req.url || '').split('?')[1] || '')
-      const teamIdStr = urlParams.get('teamId')
-      const teamId = teamIdStr ? Number(teamIdStr) : null
-      if (!teamId || isNaN(teamId)) {
-        res.writeHead(400, { 'content-type': 'application/json' })
-          .end(JSON.stringify({ error: 'Valid numeric teamId parameter is required' }))
-        return
-      }
-
+    if (request === '/api/manager/import' && req.method === 'POST') {
       try {
-        let gw = urlParams.get('gameweek')
-        if (!gw) {
-          try {
-            const entryRes = await fetch(`https://fantasy.premierleague.com/api/entry/${teamId}/`, {
-              headers: { 'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7)' }
-            })
-            if (entryRes.ok) {
-              const entryData = await entryRes.json()
-              gw = entryData.current_event || entryData.summary_overall_event || 28
-            } else {
-              gw = 28
-            }
-          } catch {
-            gw = 28
-          }
-        }
-
-        const picksRes = await fetch(`https://fantasy.premierleague.com/api/entry/${teamId}/event/${gw}/picks/`, {
-          headers: { 'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7)' }
+        const body = await readRequestBody(req)
+        const db = await getDb()
+        const payload = await fetchManagerPayload({ teamId: body.teamId, gameweek: body.gameweek })
+        const manager = await importManagerPayload(db, {
+          ...payload,
+          season: body.season,
+          importedAt: new Date().toISOString(),
         })
-        if (!picksRes.ok) {
-          throw new Error(`FPL squad fetch failed: HTTP ${picksRes.status}`)
-        }
-        const picksData = await picksRes.json()
-        res.writeHead(200, { 'content-type': 'application/json; charset=utf-8' })
-          .end(JSON.stringify({ picks: picksData.picks, gameweek: Number(gw) }))
-      } catch (err) {
-        if (!res.headersSent) {
-          res.writeHead(500, { 'content-type': 'application/json' })
-            .end(JSON.stringify({ error: err instanceof Error ? err.message : 'Squad fetch failed' }))
-        }
+        sendJson(res, 200, manager)
+      } catch (error) {
+        sendJson(res, 400, { error: error instanceof Error ? error.message : 'Manager import failed' })
       }
       return
     }
 
-    if (request === '/api/fpl-account') {
-      const urlParams = new URLSearchParams((req.url || '').split('?')[1] || '')
-      const teamIdStr = urlParams.get('teamId')
-      const teamId = teamIdStr ? Number(teamIdStr) : null
-      if (!teamId || isNaN(teamId)) {
-        res.writeHead(400, { 'content-type': 'application/json' })
-          .end(JSON.stringify({ error: 'Valid numeric teamId parameter is required' }))
-        return
-      }
-
+    if (request === '/api/manager/current' && req.method === 'GET') {
       try {
-        const entryRes = await fetch(`https://fantasy.premierleague.com/api/entry/${teamId}/`, {
-          headers: { 'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7)' }
+        const params = new URL(req.url || '/', `http://${host}`).searchParams
+        const teamId = params.get('teamId')
+        const db = await getDb()
+        const manager = await getCurrentManager(db, {
+          fplEntryId: teamId ? Number(teamId) : undefined,
+          season: params.get('season') || undefined,
         })
-        if (!entryRes.ok) {
-          throw new Error(`FPL entry fetch failed: HTTP ${entryRes.status}`)
-        }
-        const entryData = await entryRes.json()
+        sendJson(res, manager.account ? 200 : 404, manager)
+      } catch (error) {
+        sendJson(res, 400, { error: error instanceof Error ? error.message : 'Manager state unavailable' })
+      }
+      return
+    }
 
-        const gw = urlParams.get('gameweek') || entryData.current_event || entryData.summary_overall_event || 1
-        const picksRes = await fetch(`https://fantasy.premierleague.com/api/entry/${teamId}/event/${gw}/picks/`, {
-          headers: { 'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7)' }
+    if (request === '/api/manager/assumptions' && req.method === 'PATCH') {
+      try {
+        const body = await readRequestBody(req)
+        const db = await getDb()
+        const current = await getCurrentManager(db, { fplEntryId: body.teamId === undefined ? undefined : Number(body.teamId) })
+        const fplEntryId = body.teamId ?? current.account?.teamId
+        const manager = await updateManagerAssumptions(db, {
+          fplEntryId,
+          season: body.season,
+          gameweek: body.gameweek,
+          freeTransfers: body.freeTransfers,
+          sellingPrices: body.sellingPrices || body.selling_prices,
+          createdAt: new Date().toISOString(),
         })
-
-        let picks = []
-        let entryHistory = null
-        if (picksRes.ok) {
-          const picksData = await picksRes.json()
-          picks = picksData.picks || []
-          entryHistory = picksData.entry_history || null
-        }
-
-        const squadValue = entryHistory?.value ? entryHistory.value / 10 : (entryData.last_deadline_value ? entryData.last_deadline_value / 10 : 100)
-        const bank = entryHistory?.bank ? entryHistory.bank / 10 : (entryData.last_deadline_bank ? entryData.last_deadline_bank / 10 : 0)
-
-        const payload = {
-          teamId: entryData.id || teamId,
-          teamName: entryData.name || `Team #${teamId}`,
-          managerName: `${entryData.player_first_name || ''} ${entryData.player_last_name || ''}`.trim(),
-          totalPoints: Number(entryHistory?.total_points ?? entryData.summary_overall_points) || 0,
-          gameweekPoints: Number(entryHistory?.points ?? entryData.summary_event_points) || 0,
-          squadValue,
-          bank,
-          overallRank: entryData.summary_overall_rank || null,
-          transfersCost: Number(entryHistory?.event_transfers_cost) || 0,
-          eventTransfers: Number(entryHistory?.event_transfers) || 0,
-          totalTransfers: Number(entryData.last_deadline_total_transfers) || 0,
-          currentGameweek: Number(gw),
-          picks,
-          leagues: entryData.leagues || { classic: [], h2h: [] },
-          lastSynced: new Date().toISOString()
-        }
-
-        res.writeHead(200, { 'content-type': 'application/json; charset=utf-8' })
-          .end(JSON.stringify(payload))
-      } catch (err) {
-        if (!res.headersSent) {
-          res.writeHead(500, { 'content-type': 'application/json' })
-            .end(JSON.stringify({ error: err instanceof Error ? err.message : 'FPL account fetch failed' }))
-        }
+        sendJson(res, 200, manager)
+      } catch (error) {
+        sendJson(res, 400, { error: error instanceof Error ? error.message : 'Manager assumptions could not be saved' })
       }
       return
     }

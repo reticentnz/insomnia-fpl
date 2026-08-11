@@ -1,0 +1,13 @@
+{
+  "id": 123456,
+  "name": "Exact Economics FC",
+  "player_first_name": "Morgan",
+  "player_last_name": "Manager",
+  "current_event": 1,
+  "summary_overall_points": 42,
+  "summary_event_points": 8,
+  "summary_overall_rank": 98765,
+  "last_deadline_bank": 5,
+  "last_deadline_value": 1200,
+  "last_deadline_total_transfers": 3
+}

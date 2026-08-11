@@ -1,0 +1,30 @@
+{
+  "active_chip": null,
+  "entry_history": {
+    "bank": 5,
+    "value": 1200,
+    "event_transfers": 2,
+    "event_transfers_cost": 4,
+    "total_points": 42,
+    "points": 8
+  },
+  "picks": [
+    {
+      "element": 10,
+      "position": 1,
+      "multiplier": 2,
+      "is_captain": true,
+      "is_vice_captain": false,
+      "purchase_price": 50,
+      "selling_price": 52
+    },
+    {
+      "element": 11,
+      "position": 2,
+      "multiplier": 1,
+      "is_captain": false,
+      "is_vice_captain": true,
+      "purchase_price": 48
+    }
+  ]
+}
