@@ -148,6 +148,10 @@ The calculation boundary is shared across `src/core/scoring.ts`, `src/core/proje
 
 Expensive player/fixture projection is an offline boundary. Each successful ingestion creates an immutable `ForecastRun` and its `PlayerFixtureForecast` rows; recommendation requests read those stored rows and run only the manager-specific, bounded transfer or chip search. A completed recommendation is itself reused when the plan, forecast run, horizon, transfer limit, chip and uncertainty settings are identical. A changed forecast run or planning input creates a new result, preserving both freshness and reproducibility.
 
+The application header shows the operational state of that boundary: forecast ready, processing, stale, failed or missing; generation time; stored player/fixture and gameweek coverage; next scheduled refresh; and the immutable run/model identifier. It refreshes automatically every 30 seconds.
+
+Container startup applies all pending SQL migrations before reporting the database ready. When upgrading an existing container, retain and back up the mounted `/app/data` volume; no separate manual migration command is required under the standard Docker configuration.
+
 ## Verification
 
 All tests use saved fixtures or temporary databases and do not require a network connection:

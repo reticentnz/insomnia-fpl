@@ -94,6 +94,7 @@ import { type PlayerSignal, sanitizeExternalUrl } from "./player-signals";
 import { createToolContext } from "./intelligence";
 import { reviewDecision, type DecisionReview } from "./decision-review";
 import { projectionBreakdown } from "./model";
+import { deriveForecastReadiness } from "./forecast-status";
 import "./styles.css";
 
 type GlyphProps = { size?: number; className?: string };
@@ -283,6 +284,34 @@ function formatDeadlineText(deadlineIso: string | null): string {
   return `${diffHours}h until deadline`;
 }
 
+function formatOperationalTime(value?: string | null) {
+  if (!value) return "not scheduled";
+  const time = Date.parse(value);
+  if (!Number.isFinite(time)) return "unknown";
+  return new Date(time).toLocaleString([], { day: "numeric", month: "short", hour: "2-digit", minute: "2-digit" });
+}
+
+function ForecastReadinessPanel({ system, forecast, requestedHorizon }: { system: SystemStatus | null; forecast: ForecastSummary | null; requestedHorizon: number }) {
+  const readiness = deriveForecastReadiness(system, forecast);
+  const copy = {
+    READY: { title: "Forecast ready", detail: "Recommendations use this stored offline dataset." },
+    RUNNING: { title: "Forecast processing", detail: forecast ? "A refresh is running; the previous successful forecast remains available." : "Player projections are being generated in the background." },
+    STALE: { title: "Forecast stale", detail: `The stored inputs are older than ${readiness.staleAfterHours} hours. Recommendations may be out of date.` },
+    FAILED: { title: "Forecast refresh failed", detail: forecast ? "The previous successful forecast remains available while the refresh problem is resolved." : system?.message || "No usable forecast is currently available." },
+    MISSING: { title: "Forecast missing", detail: "Ingestion has not yet produced a successful offline projection dataset." },
+  }[readiness.state];
+  return <section className={`forecast-readiness forecast-readiness-${readiness.state.toLowerCase()}`} aria-label="Offline forecast status" role="status">
+    <div className="forecast-readiness-primary"><span className="forecast-readiness-dot"/><div><small>OFFLINE PROJECTION STATUS</small><b>{copy.title}</b><p>{copy.detail}</p></div></div>
+    <div className="forecast-readiness-metrics">
+      <span><small>Generated</small><b>{forecast ? formatOperationalTime(forecast.createdAt) : "—"}</b></span>
+      <span><small>Coverage</small><b>{readiness.playerCount ? `${readiness.playerCount} players · ${readiness.fixtureCount} fixtures` : "—"}</b></span>
+      <span><small>Gameweeks</small><b>{forecast ? `${readiness.coveredGameweeks}/${requestedHorizon} available` : "—"}</b></span>
+      <span><small>Next refresh</small><b>{system?.ingestIntervalHours === 0 ? "Disabled" : formatOperationalTime(system?.nextIngestAt)}</b></span>
+    </div>
+    {forecast && <code title={forecast.id}>Run {forecast.id.slice(0, 8)} · {forecast.modelVersion}</code>}
+  </section>;
+}
+
 function App() {
   const [tab, setTab] = useState("My Team");
   const [horizon, setHorizon] = useState(5);
@@ -361,8 +390,10 @@ function App() {
   useEffect(() => {
     if (!livePlayers?.length) { setForecastSummary(null); return; }
     let active = true;
-    fetchLatestForecast(horizon as 1 | 3 | 5).then(value => { if (active) setForecastSummary(value); }).catch(() => { if (active) setForecastSummary(null); });
-    return () => { active = false; };
+    const refresh = () => fetchLatestForecast(horizon as 1 | 3 | 5).then(value => { if (active) setForecastSummary(value); }).catch(() => { if (active) setForecastSummary(null); });
+    void refresh();
+    const timer = window.setInterval(refresh, 30_000);
+    return () => { active = false; window.clearInterval(timer); };
   }, [livePlayers, horizon]);
   useEffect(() => { setCanonicalRecommendation(null); }, [activePlanId, horizon]);
   const catalog = useMemo(() => {
@@ -1115,7 +1146,11 @@ function App() {
     setToast({ message: "Season FPL account unlinked." });
   };
   useEffect(() => {
-    fetchSystemStatus().then((status) => setSystemStatus(status));
+    let active = true;
+    const refresh = () => fetchSystemStatus().then((status) => { if (active) setSystemStatus(status); });
+    void refresh();
+    const timer = window.setInterval(refresh, 30_000);
+    return () => { active = false; window.clearInterval(timer); };
   }, []);
 
   const handleOnboardingImport = async (teamIdStr: string) => {
@@ -1270,6 +1305,7 @@ function App() {
             {getInitials(userName)}
           </button>
         </header>
+        <ForecastReadinessPanel system={systemStatus} forecast={forecastSummary} requestedHorizon={horizon} />
         {catalogMode === "demo-conflict" && (
           <div className="validation-warning conflict-banner">
             <Shield size={16} />

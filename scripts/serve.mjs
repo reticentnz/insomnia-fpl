@@ -783,10 +783,11 @@ function startServerOnAvailablePort(targetPort) {
     }
 
     if (request === '/api/health') {
-      res.writeHead(200, {
-        'content-type': 'application/json; charset=utf-8',
-        'cache-control': 'no-store'
-      }).end(JSON.stringify({ status: 'ok', database: systemStatus.status, isSeeding: systemStatus.isSeeding, playerCount: systemStatus.playerCount }))
+      if (systemStatus.status === 'initializing' || systemStatus.status === 'error') {
+        sendJson(res, 503, { error: systemStatus.message, database: systemStatus.status, isSeeding: systemStatus.isSeeding, playerCount: systemStatus.playerCount })
+      } else {
+        sendJson(res, 200, { status: 'ok', database: systemStatus.status, isSeeding: systemStatus.isSeeding, playerCount: systemStatus.playerCount })
+      }
       return
     }
 

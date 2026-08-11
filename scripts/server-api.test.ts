@@ -39,6 +39,9 @@ describe('canonical HTTP API smoke', () => {
     const baseUrl = `http://127.0.0.1:${port}`
     await waitForServer(server, baseUrl)
 
+    const health = await fetch(`${baseUrl}/api/health`)
+    expect(health.status).toBe(200)
+    expect(await health.json()).toMatchObject({ status: 'ok', database: 'ready', playerCount: 2 })
     const catalog = await fetch(`${baseUrl}/api/catalog`).then(response => response.json())
     expect(catalog.players).toHaveLength(2)
     expect(catalog.inputHash).toMatch(/^[a-f0-9]{64}$/)

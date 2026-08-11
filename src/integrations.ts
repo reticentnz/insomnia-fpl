@@ -987,19 +987,24 @@ export async function saveSignalConfig(config: SignalSourceConfig): Promise<Sign
 }
 
 export type SystemStatus = {
+  reachable?: boolean;
   status: 'initializing' | 'seeding' | 'ready' | 'error';
   isSeeding: boolean;
+  isIngesting?: boolean;
   message: string;
   playerCount: number;
+  lastIngestedAt?: string | null;
+  nextIngestAt?: string | null;
+  ingestIntervalHours?: number;
 };
 
 export async function fetchSystemStatus(): Promise<SystemStatus> {
   try {
     const res = await fetch('/api/system-status')
-    if (!res.ok) return { status: 'ready', isSeeding: false, message: 'Server online', playerCount: 0 }
-    return await res.json()
+    if (!res.ok) return { reachable: false, status: 'error', isSeeding: false, isIngesting: false, message: `Status unavailable: HTTP ${res.status}`, playerCount: 0 }
+    return { ...(await res.json()), reachable: true }
   } catch {
-    return { status: 'ready', isSeeding: false, message: 'Offline mode', playerCount: 0 }
+    return { reachable: false, status: 'error', isSeeding: false, isIngesting: false, message: 'Server status unavailable', playerCount: 0 }
   }
 }
 
