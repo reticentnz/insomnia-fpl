@@ -6927,7 +6927,7 @@ function PlayersV2({
             <span data-label="Form" className="col-numeric">{p.form.toFixed(1)}</span>
             <span data-label="Minutes" className="col-numeric">{p.minutes}%</span>
             <span data-label={`${horizon}-GW projection`} className="col-numeric col-proj">
-              <b>{horizonProjection(p, horizon)}</b> pts
+              <b>{horizonProjection(p, horizon).toFixed(1)}</b> pts
             </span>
             <span data-label="Value" className="value col-numeric">
               {(horizonProjection(p, horizon) / p.price).toFixed(2)}
