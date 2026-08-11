@@ -57,7 +57,12 @@ async function officialJson(endpoint) {
     const response = await fetch(`https://fantasy.premierleague.com/api/${endpoint}`, {
       headers: { 'User-Agent': 'Insomnia-FPL/1.0' }, signal: controller.signal,
     })
-    if (!response.ok) throw new Error(`FPL manager source ${endpoint} returned HTTP ${response.status}`)
+    if (!response.ok) {
+      const error = new Error(`FPL manager source ${endpoint} returned HTTP ${response.status}`)
+      error.status = response.status
+      error.endpoint = endpoint
+      throw error
+    }
     return response.json()
   } finally {
     clearTimeout(timeout)
@@ -66,10 +71,74 @@ async function officialJson(endpoint) {
 
 export async function fetchManagerPayload({ teamId, gameweek, fetchJson = officialJson } = {}) {
   const entryId = integer(teamId, 'teamId', { minimum: 1 })
-  const entry = await fetchJson(`entry/${entryId}/`)
+  let entry
+  try {
+    entry = await fetchJson(`entry/${entryId}/`)
+  } catch (error) {
+    if (error?.status === 404) throw new Error(`No FPL account exists for Team ID ${entryId}`)
+    throw error
+  }
   const selectedGameweek = integer(gameweek ?? entry.current_event ?? entry.summary_overall_event, 'gameweek', { minimum: 1 })
-  const picks = await fetchJson(`entry/${entryId}/event/${selectedGameweek}/picks/`)
-  return { entry, picks, gameweek: selectedGameweek }
+  try {
+    const picks = await fetchJson(`entry/${entryId}/event/${selectedGameweek}/picks/`)
+    return { entry, picks, gameweek: selectedGameweek, squadAvailable: true }
+  } catch (error) {
+    if (error?.status !== 404) throw error
+    return {
+      entry,
+      picks: null,
+      gameweek: selectedGameweek,
+      squadAvailable: false,
+      squadUnavailableReason: 'FPL has not made this gameweek squad public yet',
+    }
+  }
+}
+
+export async function linkManagerAccount(db, {
+  entry,
+  gameweek,
+  linkedAt = new Date().toISOString(),
+} = {}) {
+  const fplEntryId = integer(entry?.id, 'entry.id', { minimum: 1 })
+  const managerAccountId = managerId(fplEntryId)
+  const currentGameweek = integer(gameweek, 'gameweek', { minimum: 1 })
+  const teamName = String(entry.name || `Team #${fplEntryId}`)
+  const managerName = `${entry.player_first_name || ''} ${entry.player_last_name || ''}`.trim()
+  let transactionOpen = false
+  try {
+    db.sqlite.exec('BEGIN IMMEDIATE')
+    transactionOpen = true
+    await db.query(
+      `INSERT INTO "ManagerAccount" (
+        "id", "fpl_entry_id", "team_name", "manager_name", "total_points", "gameweek_points",
+        "overall_rank", "current_gameweek", "total_transfers", "last_imported_at", "created_at", "updated_at"
+      ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
+      ON CONFLICT ("fpl_entry_id") DO UPDATE SET
+        "team_name"=EXCLUDED."team_name", "manager_name"=EXCLUDED."manager_name",
+        "total_points"=EXCLUDED."total_points", "gameweek_points"=EXCLUDED."gameweek_points",
+        "overall_rank"=EXCLUDED."overall_rank", "current_gameweek"=EXCLUDED."current_gameweek",
+        "total_transfers"=EXCLUDED."total_transfers",
+        "last_imported_at"=EXCLUDED."last_imported_at", "updated_at"=EXCLUDED."updated_at"`,
+      [
+        managerAccountId, fplEntryId, teamName, managerName,
+        integer(entry.summary_overall_points ?? 0, 'total_points', { minimum: 0 }),
+        integer(entry.summary_event_points ?? 0, 'gameweek_points', { minimum: 0 }),
+        integer(entry.summary_overall_rank, 'overall_rank', { nullable: true, minimum: 0 }),
+        currentGameweek,
+        integer(entry.last_deadline_total_transfers ?? 0, 'total_transfers', { minimum: 0 }),
+        linkedAt, linkedAt, linkedAt,
+      ],
+    )
+    await setActiveManager(db, managerAccountId, linkedAt)
+    db.sqlite.exec('COMMIT')
+    transactionOpen = false
+    return getCurrentManager(db, { fplEntryId })
+  } catch (error) {
+    if (transactionOpen) {
+      try { db.sqlite.exec('ROLLBACK') } catch {}
+    }
+    throw error
+  }
 }
 
 async function playerForPick(db, season, pick, importedAt) {

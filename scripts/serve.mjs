@@ -32,7 +32,7 @@ const colours = ['#e74c3c', '#3b82f6', '#8b5cf6', '#dc2626', '#22c55e', '#f59e0b
 
 import { getDb } from './db.mjs'
 import { migrateDatabase } from './db-migrate.mjs'
-import { fetchManagerPayload, getCurrentManager, importManagerPayload, unlinkCurrentManager, updateManagerAssumptions } from './manager-service.mjs'
+import { fetchManagerPayload, getCurrentManager, importManagerPayload, linkManagerAccount, unlinkCurrentManager, updateManagerAssumptions } from './manager-service.mjs'
 import { createPlan, getActivePlan, selectPlan } from './plan-service.mjs'
 import { createRecommendationSet } from './recommendation-service.mjs'
 import { evaluateDecision, listDecisions, recordDecision } from './decision-journal-service.mjs'
@@ -1094,12 +1094,32 @@ function startServerOnAvailablePort(targetPort) {
         const body = await readRequestBody(req)
         const db = await getDb()
         const payload = await fetchManagerPayload({ teamId: body.teamId, gameweek: body.gameweek })
-        const manager = await importManagerPayload(db, {
-          ...payload,
-          season: body.season,
-          importedAt: new Date().toISOString(),
-        })
-        sendJson(res, 200, manager)
+        const importedAt = new Date().toISOString()
+        if (!payload.squadAvailable) {
+          const manager = await linkManagerAccount(db, {
+            entry: payload.entry,
+            gameweek: payload.gameweek,
+            linkedAt: importedAt,
+          })
+          sendJson(res, 200, {
+            ...manager,
+            importStatus: {
+              squadAvailable: false,
+              code: 'SQUAD_NOT_PUBLIC',
+              message: `Account linked, but FPL has not made the GW${payload.gameweek} squad public yet. Sync again after the deadline to import the official 15-player squad.`,
+            },
+          })
+        } else {
+          const manager = await importManagerPayload(db, {
+            ...payload,
+            season: body.season,
+            importedAt,
+          })
+          sendJson(res, 200, {
+            ...manager,
+            importStatus: { squadAvailable: true, code: 'SQUAD_IMPORTED' },
+          })
+        }
       } catch (error) {
         sendJson(res, 400, { error: error instanceof Error ? error.message : 'Manager import failed' })
       }

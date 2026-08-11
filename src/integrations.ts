@@ -390,6 +390,8 @@ export async function fetchFplAccount(teamId: number, gameweek?: number): Promis
   lockedIds: number[];
   planBank: number | null;
   planFreeTransfers: number;
+  squadAvailable: boolean;
+  notice?: string;
 }> {
   const response = await fetch('/api/manager/import', {
     method: 'POST',
@@ -436,6 +438,8 @@ export async function fetchFplAccount(teamId: number, gameweek?: number): Promis
       : [],
     planBank: data.activePlan?.bankTenths == null ? null : Number(data.activePlan.bankTenths) / 10,
     planFreeTransfers: Number(data.activePlan?.freeTransfers ?? 0),
+    squadAvailable: data.importStatus?.squadAvailable !== false,
+    notice: typeof data.importStatus?.message === 'string' ? data.importStatus.message : undefined,
   }
 }
 

@@ -1113,15 +1113,13 @@ function App() {
         setUserName(res.account.managerName);
       }
       setToast({
-        message: `FPL Account Synced: ${res.account.teamName} (${res.account.totalPoints} pts, GW${res.account.currentGameweek}: ${res.account.gameweekPoints} pts)`,
+        message: res.notice || `FPL Account Synced: ${res.account.teamName} (${res.account.totalPoints} pts, GW${res.account.currentGameweek}: ${res.account.gameweekPoints} pts)`,
       });
       setImportModalOpen(false);
       setTeamInput("");
       setTeamMessage("");
-    } catch {
-      setTeamMessage(
-        "Could not sync FPL account. Please check the Team ID or build your squad manually.",
-      );
+    } catch (error) {
+      setTeamMessage(error instanceof Error ? error.message : "Could not sync FPL account. Please check the Team ID or build your squad manually.");
     } finally {
       setSyncingAccount(false);
       setImporting(false);
@@ -1174,9 +1172,9 @@ function App() {
       setActivePlanParentId(res.parentPlanId || null);
       setOfficialSellingPrices(res.sellingPrices);
       setManager({ bank: res.planBank ?? res.account.bank, freeTransfers: res.planFreeTransfers });
-      return { success: true, managerName: res.account.managerName };
-    } catch {
-      return { success: false, error: "Could not find FPL account with that ID." };
+      return { success: true, managerName: res.account.managerName, notice: res.notice };
+    } catch (error) {
+      return { success: false, error: error instanceof Error ? error.message : "Could not find FPL account with that ID." };
     }
   };
 
@@ -1941,7 +1939,7 @@ function OnboardingWizardModal({
 }: {
   onComplete: (data: { managerName: string; apiKey?: string; provider?: string }) => void;
   onSkip: () => void;
-  onImportTeam: (teamIdStr: string) => Promise<{ success: boolean; managerName?: string; error?: string }>;
+  onImportTeam: (teamIdStr: string) => Promise<{ success: boolean; managerName?: string; error?: string; notice?: string }>;
 }) {
   const [step, setStep] = useState<1 | 2>(1);
   const [teamInput, setTeamInput] = useState("");
@@ -1950,6 +1948,7 @@ function OnboardingWizardModal({
   const [provider, setProvider] = useState("openai");
   const [loading, setLoading] = useState(false);
   const [errorMsg, setErrorMsg] = useState("");
+  const [syncNotice, setSyncNotice] = useState("");
 
   const handleImport = async () => {
     if (!teamInput.trim()) {
@@ -1958,12 +1957,14 @@ function OnboardingWizardModal({
     }
     setLoading(true);
     setErrorMsg("");
+    setSyncNotice("");
     const res = await onImportTeam(teamInput);
     setLoading(false);
     if (res.success) {
       if (res.managerName && !managerName) {
         setManagerName(res.managerName);
       }
+      setSyncNotice(res.notice || "");
       setStep(2);
     } else {
       setErrorMsg(res.error || "Could not fetch FPL team. Verify your Team ID.");
@@ -2032,6 +2033,7 @@ function OnboardingWizardModal({
           </div>
         ) : (
           <div className="onboarding-body">
+            {syncNotice && <p className="onboarding-notice">{syncNotice}</p>}
             <div className="settings-grid">
               <label>
                 Manager Name

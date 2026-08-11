@@ -5,7 +5,7 @@ import { afterEach, describe, expect, it } from 'vitest'
 import { closeDb, getDb } from './db.mjs'
 import { migrateDatabase } from './db-migrate.mjs'
 import { ingestOfficialFpl } from './ingest-fpl.mjs'
-import { getCurrentManager, importManagerPayload, unlinkCurrentManager, updateManagerAssumptions } from './manager-service.mjs'
+import { fetchManagerPayload, getCurrentManager, importManagerPayload, linkManagerAccount, unlinkCurrentManager, updateManagerAssumptions } from './manager-service.mjs'
 
 const temporaryDirectories: string[] = []
 const fixtureDirectory = path.resolve('scripts', 'fixtures')
@@ -42,6 +42,39 @@ afterEach(async () => {
 })
 
 describe('WP-03 manager import and exact economics', () => {
+  it('distinguishes a valid pre-deadline account from a missing account', async () => {
+    const entry = readFixture<any>('wp03-entry.json')
+    const fetchJson = async (endpoint: string) => {
+      if (endpoint === 'entry/123456/') return entry
+      throw Object.assign(new Error('not public'), { status: 404 })
+    }
+    const payload = await fetchManagerPayload({ teamId: 123456, gameweek: 1, fetchJson })
+    expect(payload).toMatchObject({ entry, picks: null, gameweek: 1, squadAvailable: false })
+
+    await expect(fetchManagerPayload({
+      teamId: 999999,
+      gameweek: 1,
+      fetchJson: async () => { throw Object.assign(new Error('missing'), { status: 404 }) },
+    })).rejects.toThrow('No FPL account exists for Team ID 999999')
+  })
+
+  it('links pre-deadline account metadata without inventing an official squad', async () => {
+    const databasePath = await seededDatabase()
+    await migrateDatabase(databasePath)
+    const db = getDb(databasePath)
+    const current = await linkManagerAccount(db, {
+      entry: readFixture<any>('wp03-entry.json'),
+      gameweek: 1,
+      linkedAt: '2026-08-15T19:00:00Z',
+    })
+
+    expect(current.account).toMatchObject({ teamId: 123456, teamName: 'Exact Economics FC' })
+    expect(current.snapshot).toBeNull()
+    expect(current.squad).toEqual([])
+    expect(Number((await db.query('SELECT COUNT(*) AS count FROM "OfficialSquadSnapshot"')).rows[0].count)).toBe(0)
+    expect((await getCurrentManager(db)).account.teamId).toBe(123456)
+  })
+
   it('persists official purchase and selling prices in an immutable squad snapshot', async () => {
     const databasePath = await seededDatabase()
     await migrateDatabase(databasePath)
