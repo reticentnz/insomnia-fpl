@@ -3679,7 +3679,7 @@ function Players({
             <span className="col-numeric">{p.form.toFixed(1)}</span>
             <span className="col-numeric">{p.minutes}%</span>
             <span className="col-numeric col-proj">
-              <b>{horizonProjection(p, horizon)}</b> pts
+              <b>{horizonProjection(p, horizon).toFixed(1)}</b> pts
             </span>
             <span className="value col-numeric">{(p.projection / p.price).toFixed(2)}</span>
           </div>
@@ -4638,7 +4638,7 @@ function MyTeamV2({
               <span className="col-numeric">{p.form.toFixed(1)}</span>
               <span className="col-numeric">{p.minutes}%</span>
               <span className="col-numeric col-proj">
-                <b>{horizonProjection(p, horizon)}</b> pts
+                <b>{horizonProjection(p, horizon).toFixed(1)}</b> pts
               </span>
               <span className="value col-numeric">
                 {(horizonProjection(p, horizon) / p.price).toFixed(2)}
