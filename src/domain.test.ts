@@ -1,10 +1,49 @@
 import { describe, expect, it } from 'vitest'
-import { bestXI, bestXIForGameweek, buildDraftImprovementPlan, buildLegalDefaultSquad, buildLegalRemainingSquad, draftSquadScore, findTransferRoutesToTarget, getSquad, horizonProjection, initialSquadBank, isInitialDraftPeriod, isLegalTransfer, isPlayerInjured, isPlayerFlagged, optimizeInitialSquad, players, transferDecision, transfers, validateInitialSquad, validateSquad, CLUB_FIXTURES, getPlayerUpcomingFixtures, INITIAL_SQUAD_BUDGET, TRANSFER_GAIN_THRESHOLDS, calculateChipImpact, generateSquadExportText, getPlayerFixtureTicker, getDifferentialsAndEnablers, getCaptaincyBreakdown, calculateRivalEO } from './domain'
+import { bestXI, bestXIForGameweek, buildDraftImprovementPlan, buildLegalDefaultSquad, buildLegalRemainingSquad, computeDraftFingerprint, computeDraftPlayerFingerprint, draftSquadScore, evaluateModeTransition, findTransferRoutesToTarget, getSquad, groupLegalChangeBundles, horizonProjection, initialSquadBank, isInitialDraftPeriod, isLegalTransfer, isPlayerInjured, isPlayerFlagged, optimizeInitialSquad, players, resolvePlanningMode, resolveSquadSaveTarget, transferDecision, transfers, validateInitialSquad, validateSquad, CLUB_FIXTURES, getPlayerUpcomingFixtures, INITIAL_SQUAD_BUDGET, TRANSFER_GAIN_THRESHOLDS, calculateChipImpact, generateSquadExportText, getPlayerFixtureTicker, getDifferentialsAndEnablers, getCaptaincyBreakdown, calculateRivalEO } from './domain'
+
 import { createToolContext, getBestTransfers, simulateTransfers } from './intelligence'
 import { allocateBonusPoints, scorePlayerMatch } from './model'
 import { evaluateCalibration } from './backtest'
 import { buildExplanationContext, resolvePlayerMention, resolveMultiplePlayerMentions } from './integrations'
 import { expectedRoleMinutes, resolvePlayerRole, sanitizeExternalUrl, type PlayerRoleProfile, type PlayerSignal } from './player-signals'
+
+describe('planning mode and save routing', () => {
+  it('proves Draft Mode routes saves to USER_PREFERENCES and never calls PLANS_API', async () => {
+    let preferencesCalled = false
+    let plansApiCalled = false
+    const mockSavePreferences = async () => { preferencesCalled = true; return true }
+    const mockSavePlan = async () => { plansApiCalled = true }
+
+    const executeSave = async (draftMode: boolean) => {
+      const target = resolveSquadSaveTarget({ draftMode })
+      if (target === 'USER_PREFERENCES') {
+        await mockSavePreferences()
+      } else {
+        await mockSavePlan()
+      }
+    }
+
+    await executeSave(true)
+    expect(preferencesCalled).toBe(true)
+    expect(plansApiCalled).toBe(false)
+
+    preferencesCalled = false
+    await executeSave(false)
+    expect(preferencesCalled).toBe(false)
+    expect(plansApiCalled).toBe(true)
+  })
+
+  it('scopes player evidence fingerprints to player IDs so lock changes do not invalidate challenges', () => {
+    const p1 = computeDraftPlayerFingerprint([10, 5, 1])
+    const p2 = computeDraftPlayerFingerprint([1, 5, 10])
+    expect(p1).toBe(p2)
+  })
+
+  it('holds planning mode in LOADING state until metadata is loaded', () => {
+    expect(resolvePlanningMode({ hasCurrentSeasonOfficialSquad: false, isMetadataLoaded: false })).toBe('LOADING')
+    expect(resolvePlanningMode({ hasCurrentSeasonOfficialSquad: false, currentSeason: null })).toBe('LOADING')
+  })
+})
 
 describe('player evidence signals',()=>{
   const base:PlayerRoleProfile={startProbability:.75,minutesIfStarting:86,substituteProbabilityWhenBenched:.2,minutesIfSubstitute:18,confidence:'MEDIUM',derivedFromSignalIds:[]}
@@ -354,6 +393,74 @@ describe('GW1 locked-core squad optimisation',()=>{
     expect(isInitialDraftPeriod(1,'2026-08-21T05:30:00.000Z',Date.parse('2026-08-10T00:00:00Z'))).toBe(true)
     expect(isInitialDraftPeriod(1,'2026-08-01T05:30:00.000Z',Date.parse('2026-08-10T00:00:00Z'))).toBe(false)
     expect(isInitialDraftPeriod(2,'2026-08-28T05:30:00.000Z',Date.parse('2026-08-10T00:00:00Z'))).toBe(false)
+  })
+
+  it('computes draft fingerprints deterministically for challenge invalidation',()=>{
+    const fp1 = computeDraftFingerprint([5, 1, 3], [1])
+    const fp2 = computeDraftFingerprint([1, 3, 5], [1])
+    const fp3 = computeDraftFingerprint([1, 3, 5], [3])
+    expect(fp1).toBe(fp2)
+    expect(fp1).not.toBe(fp3)
+  })
+
+  it('resolves planning mode explicitly with snapshot, account, and season checks',()=>{
+    // DRAFT when no current-season snapshot and not activated for this account
+    expect(resolvePlanningMode({ hasCurrentSeasonOfficialSquad: false, currentSeason: '2026/27', activeManagerAccountId: 'acc-1' })).toBe('DRAFT')
+    
+    // SEASON once valid current-season snapshot detected for active manager account
+    expect(resolvePlanningMode({
+      hasCurrentSeasonOfficialSquad: true,
+      officialSnapshotManagerAccountId: 'acc-1',
+      officialSnapshotSeason: '2026/27',
+      currentSeason: '2026/27',
+      activeManagerAccountId: 'acc-1',
+    })).toBe('SEASON')
+
+    // DRAFT if switching to a different manager account without an official squad snapshot
+    expect(resolvePlanningMode({
+      hasCurrentSeasonOfficialSquad: true,
+      officialSnapshotManagerAccountId: 'acc-1',
+      officialSnapshotSeason: '2026/27',
+      currentSeason: '2026/27',
+      activeManagerAccountId: 'acc-2',
+    })).toBe('DRAFT')
+
+    // SEASON when persisted activation belongs to active manager account and current season
+    expect(resolvePlanningMode({
+      hasCurrentSeasonOfficialSquad: false,
+      activationManagerAccountId: 'acc-1',
+      activationSeason: '2026/27',
+      currentSeason: '2026/27',
+      activeManagerAccountId: 'acc-1',
+    })).toBe('SEASON')
+
+    // DRAFT when activation belongs to a different account or season
+    expect(resolvePlanningMode({
+      hasCurrentSeasonOfficialSquad: false,
+      activationManagerAccountId: 'acc-1',
+      activationSeason: '2025/26',
+      currentSeason: '2026/27',
+      activeManagerAccountId: 'acc-1',
+    })).toBe('DRAFT')
+  })
+
+  it('evaluates mode transitions correctly for clean vs dirty editor states',()=>{
+    expect(evaluateModeTransition({ currentMode: 'DRAFT', hasOfficialSquad: true, isEditorDirty: false })).toEqual({ targetMode: 'SEASON', requiresPrompt: false })
+    expect(evaluateModeTransition({ currentMode: 'DRAFT', hasOfficialSquad: true, isEditorDirty: true })).toEqual({ targetMode: 'DRAFT', requiresPrompt: true })
+    expect(evaluateModeTransition({ currentMode: 'SEASON', hasOfficialSquad: true, isEditorDirty: true })).toEqual({ targetMode: 'SEASON', requiresPrompt: false })
+  })
+
+  it('groups legal budget-linked change bundles from draft improvement changes',()=>{
+    const squad = getSquad()
+    const plan = buildDraftImprovementPlan(squad, players, { horizon: 5 })
+    if (plan && plan.changes.length > 0) {
+      const bundles = groupLegalChangeBundles(squad, plan.changes, 0, 5, 100)
+      expect(Array.isArray(bundles)).toBe(true)
+      bundles.forEach(b => {
+        expect(b.isLegal).toBe(true)
+        expect(b.netGain).toBeGreaterThan(0)
+      })
+    }
   })
 
   it('changes its selected structure when the planning horizon changes',()=>{

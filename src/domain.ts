@@ -172,6 +172,73 @@ export function isInitialDraftPeriod(
   return Number.isFinite(deadlineTime) && now < deadlineTime;
 }
 
+export function computeDraftFingerprint(
+  playerIds: number[],
+  lockedIds: number[] = [],
+): string {
+  const sortedPlayers = [...playerIds].map(Number).filter(Number.isInteger).sort((a, b) => a - b);
+  const sortedLocks = [...lockedIds].map(Number).filter(Number.isInteger).sort((a, b) => a - b);
+  return `${sortedPlayers.join(",")}|${sortedLocks.join(",")}`;
+}
+
+export function computeDraftPlayerFingerprint(playerIds: number[]): string {
+  return [...playerIds].map(Number).filter(Number.isInteger).sort((a, b) => a - b).join(",");
+}
+
+export function resolveSquadSaveTarget(params: { draftMode: boolean }): "USER_PREFERENCES" | "PLANS_API" {
+  return params.draftMode ? "USER_PREFERENCES" : "PLANS_API";
+}
+
+export function resolvePlanningMode(params: {
+  hasCurrentSeasonOfficialSquad: boolean;
+  officialSnapshotManagerAccountId?: string | null;
+  officialSnapshotSeason?: string | null;
+  activationManagerAccountId?: string | null;
+  activationSeason?: string | null;
+  currentSeason?: string | null;
+  activeManagerAccountId?: string | null;
+  isMetadataLoaded?: boolean;
+}): "LOADING" | "DRAFT" | "SEASON" {
+  if (params.isMetadataLoaded === false || !params.currentSeason) {
+    return "LOADING";
+  }
+  if (
+    params.activationManagerAccountId &&
+    params.activeManagerAccountId &&
+    params.activationManagerAccountId === params.activeManagerAccountId &&
+    params.activationSeason === params.currentSeason
+  ) {
+    return "SEASON";
+  }
+  if (
+    params.hasCurrentSeasonOfficialSquad &&
+    params.officialSnapshotManagerAccountId &&
+    params.activeManagerAccountId &&
+    params.officialSnapshotManagerAccountId === params.activeManagerAccountId &&
+    params.officialSnapshotSeason === params.currentSeason
+  ) {
+    return "SEASON";
+  }
+  return "DRAFT";
+}
+
+export function evaluateModeTransition(params: {
+  currentMode: "DRAFT" | "SEASON";
+  hasOfficialSquad: boolean;
+  isEditorDirty: boolean;
+}): {
+  targetMode: "DRAFT" | "SEASON";
+  requiresPrompt: boolean;
+} {
+  if (params.hasOfficialSquad && params.currentMode === "DRAFT") {
+    if (params.isEditorDirty) {
+      return { targetMode: "DRAFT", requiresPrompt: true };
+    }
+    return { targetMode: "SEASON", requiresPrompt: false };
+  }
+  return { targetMode: params.currentMode, requiresPrompt: false };
+}
+
 export const CLUB_FIXTURES: Record<string, FixtureItem[]> = {
   ARS: [
     { gameweek: 1, opponent: "COV", venue: "H", difficulty: 2 },
@@ -2350,6 +2417,92 @@ export function buildDraftImprovementPlan(
     changes,
     squad: optimized,
   };
+}
+
+export type DraftChangeBundle = {
+  id: string;
+  label: string;
+  changes: DraftChange[];
+  netCost: number;
+  netGain: number;
+  isLegal: boolean;
+};
+
+export function groupLegalChangeBundles(
+  currentSquad: Player[],
+  changes: DraftChange[],
+  bank: number = 0,
+  horizon: number = 5,
+  budgetCap: number = INITIAL_SQUAD_BUDGET,
+): DraftChangeBundle[] {
+  if (!changes || changes.length === 0 || currentSquad.length !== 15) return [];
+
+  const rawBundles: { id: string; label: string; changes: DraftChange[]; netCost: number }[] = [];
+
+  // Single changes
+  changes.forEach((change) => {
+    const netCost = +(change.in.price - change.out.price).toFixed(1);
+    rawBundles.push({
+      id: `single-${change.out.id}-${change.in.id}`,
+      label: `${change.out.name} → ${change.in.name}`,
+      changes: [change],
+      netCost,
+    });
+  });
+
+  // Paired/grouped budget-linked bundles
+  for (let i = 0; i < changes.length; i++) {
+    for (let j = i + 1; j < changes.length; j++) {
+      const c1 = changes[i];
+      const c2 = changes[j];
+      if (c1.out.id === c2.out.id) continue;
+      const netCost = +((c1.in.price - c1.out.price) + (c2.in.price - c2.out.price)).toFixed(1);
+
+      rawBundles.push({
+        id: `bundle-${c1.out.id}-${c1.in.id}-${c2.out.id}-${c2.in.id}`,
+        label: `${c1.out.name} → ${c1.in.name} & ${c2.out.name} → ${c2.in.name}`,
+        changes: [c1, c2],
+        netCost,
+      });
+    }
+  }
+
+  const currentScore = draftSquadScore(horizon, currentSquad).total;
+  const validBundles: DraftChangeBundle[] = [];
+  const seenIds = new Set<string>();
+
+  for (const raw of rawBundles) {
+    if (seenIds.has(raw.id)) continue;
+    seenIds.add(raw.id);
+
+    // Apply changes to build full candidate squad
+    const swapMap = new Map<number, Player>();
+    raw.changes.forEach((c) => swapMap.set(c.out.id, c.in));
+    const candidateSquad = currentSquad.map((p) => swapMap.get(p.id) || p);
+
+    // Validate rules (3 per club, positional counts, budget cap)
+    const issues = validateInitialSquad(candidateSquad, budgetCap);
+    const isLegal = issues.length === 0;
+
+    if (!isLegal) continue;
+
+    // Lineup, bench, captaincy aware score difference
+    const candidateScore = draftSquadScore(horizon, candidateSquad).total;
+    const netGain = +(candidateScore - currentScore).toFixed(1);
+
+    if (netGain > 0) {
+      validBundles.push({
+        id: raw.id,
+        label: raw.label,
+        changes: raw.changes,
+        netCost: raw.netCost,
+        netGain,
+        isLegal: true,
+      });
+    }
+  }
+
+  return validBundles.sort((a, b) => b.netGain - a.netGain);
 }
 
 export type ChipType = "WC" | "FH" | "BB" | "TC" | null;

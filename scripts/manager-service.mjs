@@ -3,7 +3,7 @@ import { migrateDatabase } from './db-migrate.mjs'
 import { closeDb, getDb } from './db.mjs'
 import { canonicalJson } from './feed-run.mjs'
 import { ensureInitialPlanForSnapshot, getActivePlan } from './plan-service.mjs'
-import { setActiveManager } from './user-state-service.mjs'
+import { setActiveManager, updateUserState } from './user-state-service.mjs'
 
 function integer(value, label, { nullable = false, minimum = 0 } = {}) {
   if (value === null || value === undefined || value === '') {
@@ -265,6 +265,9 @@ export async function importManagerPayload(db, {
       )
     }
     await setActiveManager(db, managerAccountId, importedAt)
+    if (importedPlayers.length === 15) {
+      await updateUserState(db, { seasonModeManagerAccountId: managerAccountId, seasonModeSeason: resolvedSeason }, importedAt)
+    }
     if (beforeInitialPlan) await beforeInitialPlan({ managerAccountId, snapshotId })
     await ensureInitialPlanForSnapshot(db, { managerAccountId, snapshotId, createdAt: importedAt, withinTransaction: true })
     db.sqlite.exec('COMMIT')
@@ -291,6 +294,7 @@ async function managerAccountRow(db, { fplEntryId } = {}) {
 
 export async function unlinkCurrentManager(db) {
   await setActiveManager(db, null)
+  await updateUserState(db, { seasonModeManagerAccountId: null, seasonModeSeason: null })
   return { success: true }
 }
 
@@ -317,7 +321,7 @@ async function currentAssumptions(db, accountId, gameweekId) {
 
 export async function getCurrentManager(db, { fplEntryId, season } = {}) {
   const accountRow = await managerAccountRow(db, { fplEntryId: fplEntryId === undefined ? undefined : integer(fplEntryId, 'teamId', { minimum: 1 }) })
-  if (!accountRow) return { account: null, snapshot: null, squad: [], assumptions: [], activePlan: null }
+  if (!accountRow) return { account: null, snapshot: null, squad: [], assumptions: [], activePlan: null, snapshotMetadata: null }
   const snapshotResult = await db.query(
     `SELECT snapshot.*, gameweek."season", gameweek."fpl_id" AS "gameweek_fpl_id", gameweek."name" AS "gameweek_name"
      FROM "OfficialSquadSnapshot" snapshot
@@ -328,7 +332,7 @@ export async function getCurrentManager(db, { fplEntryId, season } = {}) {
     [accountRow.id],
   )
   const snapshot = snapshotResult.rows[0]
-  if (!snapshot) return { account: mapAccount(accountRow), snapshot: null, squad: [], assumptions: [], activePlan: null }
+  if (!snapshot) return { account: mapAccount(accountRow), snapshot: null, squad: [], assumptions: [], activePlan: null, snapshotMetadata: null }
   if (season && snapshot.season !== season) throw new Error(`Latest manager snapshot is for ${snapshot.season}, not ${season}`)
 
   const assumptions = await currentAssumptions(db, accountRow.id, snapshot.gameweek_id)
@@ -392,6 +396,12 @@ export async function getCurrentManager(db, { fplEntryId, season } = {}) {
       exactSellingPrices: !economicsUnknown,
     },
     activePlan: await getActivePlan(db, { managerAccountId: accountRow.id }),
+    snapshotMetadata: {
+      officialSnapshotId: snapshot.id,
+      snapshotSeason: snapshot.season,
+      officialPlayerCount: squad.length,
+      managerAccountId: accountRow.id,
+    },
   }
 }
 

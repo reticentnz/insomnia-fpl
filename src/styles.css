@@ -5388,3 +5388,92 @@ h2 {
     justify-content: flex-end;
   }
 }
+
+/* Planning Mode Badges & Transition Banners */
+.planning-mode-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+  padding: 6px 14px;
+  border-radius: 20px;
+  font-size: 12px;
+  margin-bottom: 12px;
+  backdrop-filter: blur(8px);
+  border: 1px solid rgba(255, 255, 255, 0.12);
+}
+.planning-mode-badge.draft-mode {
+  background: rgba(245, 158, 11, 0.12);
+  border-color: rgba(245, 158, 11, 0.35);
+  color: #fbbf24;
+}
+.planning-mode-badge.season-mode {
+  background: rgba(34, 197, 94, 0.12);
+  border-color: rgba(34, 197, 94, 0.35);
+  color: #4ade80;
+}
+.planning-mode-badge .badge-pill {
+  font-weight: 800;
+  letter-spacing: 0.5px;
+  text-transform: uppercase;
+}
+.planning-mode-badge .badge-text {
+  opacity: 0.9;
+  font-weight: 500;
+}
+
+.transition-banner-card {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 14px 18px;
+  margin-bottom: 18px;
+  border-radius: 12px;
+  background: linear-gradient(135deg, rgba(37, 99, 235, 0.15) 0%, rgba(124, 58, 237, 0.15) 100%);
+  border: 1px solid rgba(99, 102, 241, 0.35);
+  color: #e0e7ff;
+}
+.transition-banner-card.dirty-prompt {
+  background: linear-gradient(135deg, rgba(234, 88, 12, 0.15) 0%, rgba(217, 119, 6, 0.15) 100%);
+  border-color: rgba(245, 158, 11, 0.4);
+  color: #fef3c7;
+}
+.transition-banner-actions {
+  display: flex;
+  gap: 10px;
+}
+
+.bundle-card-list {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  margin-top: 14px;
+}
+.bundle-card {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 12px 16px;
+  border-radius: 10px;
+  background: rgba(15, 23, 42, 0.6);
+  border: 1px solid rgba(148, 163, 184, 0.15);
+  transition: all 0.15s ease;
+}
+.bundle-card:hover {
+  border-color: rgba(56, 189, 248, 0.35);
+  background: rgba(15, 23, 42, 0.85);
+}
+.bundle-card-info {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.bundle-card-title {
+  font-weight: 700;
+  font-size: 13px;
+  color: #f8fafc;
+}
+.bundle-card-meta {
+  font-size: 11px;
+  color: #94a3b8;
+}
+

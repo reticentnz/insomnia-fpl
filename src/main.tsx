@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { createRoot } from "react-dom/client";
 import {
   bestXI,
@@ -6,8 +6,12 @@ import {
   buildDraftImprovementPlan,
   buildLegalDefaultSquad,
   buildLegalRemainingSquad,
+  computeDraftFingerprint,
+  computeDraftPlayerFingerprint,
   draftSquadScore,
+  evaluateModeTransition,
   getSquad,
+  groupLegalChangeBundles,
   horizonProjection,
   getPlayerUpcomingFixtures,
   initialSquadBank,
@@ -20,6 +24,8 @@ import {
   priceMovementAlert,
   netTransfers,
   projectedTeamScore,
+  resolvePlanningMode,
+  resolveSquadSaveTarget,
   squadIds,
   transferDecision,
   transfers,
@@ -39,6 +45,7 @@ import {
   type ChipImpact,
   type FixtureTickerItem,
   type DraftImprovementPlan,
+  type DraftChangeBundle,
   type Player,
   type Transfer,
 } from "./domain";
@@ -415,7 +422,50 @@ function App() {
           : player!) as Player[],
     [selectedIds, catalog, officialSellingPrices],
   );
-  const draftMode = isInitialDraftPeriod(currentGameweek, deadlineTime);
+  const [catalogSeason, setCatalogSeason] = useState<string | null>(null);
+  const [seasonModeManagerAccountId, setSeasonModeManagerAccountId] = useState<string | null>(null);
+  const [seasonModeSeason, setSeasonModeSeason] = useState<string | null>(null);
+  const [snapshotMeta, setSnapshotMeta] = useState<{ officialSnapshotId: string; snapshotSeason: string; officialPlayerCount: number; managerAccountId: string } | null>(null);
+  const [storedDraftIds, setStoredDraftIds] = useState<number[]>([]);
+  const [storedDraftLocks, setStoredDraftLocks] = useState<number[]>([]);
+  const [transitionNotice, setTransitionNotice] = useState<string | null>(null);
+  const [pendingOfficialTransition, setPendingOfficialTransition] = useState<{
+    squadIds: number[];
+    planId?: string | null;
+    parentPlanId?: string | null;
+    sellingPrices?: Record<number, number | null>;
+    account?: FplAccount | null;
+    snapshotMetadata?: { officialSnapshotId: string; snapshotSeason: string; officialPlayerCount: number; managerAccountId: string } | null;
+    planBank?: number | null;
+    planFreeTransfers?: number | null;
+  } | null>(null);
+
+  const isMetadataLoaded = Boolean(catalog.length > 0 || snapshotMeta != null);
+  const currentSeason = catalogSeason || snapshotMeta?.snapshotSeason || "2026/27";
+  const hasCurrentSeasonOfficialSquad = Boolean(
+    snapshotMeta?.officialSnapshotId &&
+    snapshotMeta?.officialPlayerCount === 15 &&
+    snapshotMeta?.snapshotSeason === currentSeason
+  );
+  const activeAccountId = fplAccount?.managerAccountId || fplAccount?.id || snapshotMeta?.managerAccountId || null;
+  const planningMode = resolvePlanningMode({
+    hasCurrentSeasonOfficialSquad,
+    officialSnapshotManagerAccountId: snapshotMeta?.managerAccountId,
+    officialSnapshotSeason: snapshotMeta?.snapshotSeason,
+    activationManagerAccountId: seasonModeManagerAccountId,
+    activationSeason: seasonModeSeason,
+    currentSeason,
+    activeManagerAccountId: activeAccountId,
+    isMetadataLoaded,
+  });
+  const draftMode = planningMode === "DRAFT";
+
+  const selectedIdsRef = useRef(selectedIds);
+  useEffect(() => { selectedIdsRef.current = selectedIds; }, [selectedIds]);
+
+  const planningModeRef = useRef(planningMode);
+  useEffect(() => { planningModeRef.current = planningMode; }, [planningMode]);
+
   const effectiveBank = draftMode ? initialSquadBank(squad) : manager.bank;
   const xi = bestXI(horizon, squad);
   const topTransfers = useMemo(
@@ -442,6 +492,27 @@ function App() {
         : null,
     [draftMode, squad, catalog, lockedIds, horizon],
   );
+  const legalBundles = useMemo(
+    () =>
+      draftMode && draftPlan
+        ? groupLegalChangeBundles(squad, draftPlan.changes, effectiveBank, horizon as 1 | 3 | 5, INITIAL_SQUAD_BUDGET)
+        : [],
+    [draftMode, draftPlan, squad, effectiveBank, horizon],
+  );
+
+  const currentFingerprint = useMemo(
+    () => computeDraftPlayerFingerprint(selectedIds),
+    [selectedIds],
+  );
+
+  useEffect(() => {
+    if (!profileHydrated || !draftMode) return;
+    if (squadChallenge && (squadChallenge as any).draftRevision) {
+      if ((squadChallenge as any).draftRevision !== currentFingerprint) {
+        setSquadChallenge(null);
+      }
+    }
+  }, [profileHydrated, draftMode, currentFingerprint]);
   const decision = useMemo(
     () =>
       draftMode
@@ -500,6 +571,7 @@ function App() {
         if (!active) return;
         setLivePlayers(data.players);
         setCapturedAt(data.capturedAt || null);
+        if (data.season) setCatalogSeason(data.season);
         if (data.currentGameweek) setCurrentGameweek(data.currentGameweek);
         if (data.deadline) setDeadlineTime(data.deadline);
         const mapped = selectedIds
@@ -599,26 +671,73 @@ function App() {
   }, []);
 
   useEffect(() => {
-    getUserProfile().then(({ account, selectedIds: serverIds, preferences, planId, parentPlanId, sellingPrices }) => {
+    getUserProfile().then(({ account, selectedIds: serverIds, preferences, planId, parentPlanId, sellingPrices, snapshotMetadata }) => {
       const prefs = preferences;
       if (account) setFplAccount(account);
       setActivePlanId(planId || null);
       setActivePlanParentId(parentPlanId || null);
       setOfficialSellingPrices(sellingPrices || {});
-      const ids = prefs?.selectedIds?.length ? prefs.selectedIds : serverIds;
-      if (ids?.length) {
-        setSelectedIds(ids);
-        setHadSavedSquad(true);
+      setSnapshotMeta(snapshotMetadata || null);
+
+      const storedActivationAccountId = prefs?.seasonModeManagerAccountId || null;
+      const storedActivationSeason = prefs?.seasonModeSeason || null;
+      const draftIds = prefs?.draftPlayerIds || [];
+      const draftLocks = prefs?.draftLockedPlayerIds || [];
+      setStoredDraftIds(draftIds);
+      setStoredDraftLocks(draftLocks);
+      setSeasonModeManagerAccountId(storedActivationAccountId);
+      setSeasonModeSeason(storedActivationSeason);
+
+      const activeAccountId = account?.managerAccountId || account?.id || snapshotMetadata?.managerAccountId || null;
+      const resolvedSeason = catalogSeason || snapshotMetadata?.snapshotSeason || prefs?.draftSeason || null;
+
+      const effectiveMode = resolvePlanningMode({
+        hasCurrentSeasonOfficialSquad: Boolean(
+          snapshotMetadata?.officialSnapshotId &&
+          snapshotMetadata?.officialPlayerCount === 15 &&
+          resolvedSeason &&
+          snapshotMetadata?.snapshotSeason === resolvedSeason
+        ),
+        officialSnapshotManagerAccountId: snapshotMetadata?.managerAccountId,
+        officialSnapshotSeason: snapshotMetadata?.snapshotSeason,
+        activationManagerAccountId: storedActivationAccountId,
+        activationSeason: storedActivationSeason,
+        currentSeason: resolvedSeason || "2026/27",
+        activeManagerAccountId: activeAccountId,
+      });
+
+      if (effectiveMode === "DRAFT") {
+        const isCurrentSeasonDraft = !resolvedSeason || prefs?.draftSeason === resolvedSeason;
+        const idsToUse = isCurrentSeasonDraft && draftIds.length === 15 ? draftIds : (serverIds || []);
+        const locksToUse = isCurrentSeasonDraft && draftIds.length === 15 ? draftLocks : (prefs?.lockedIds || []);
+        if (idsToUse.length) {
+          setSelectedIds(idsToUse);
+          setLockedIds(locksToUse);
+          setHadSavedSquad(true);
+        }
+        const currentFinger = computeDraftPlayerFingerprint(idsToUse);
+        const savedChallenge = prefs?.challengeResult as (SquadChallengeResult & { draftRevision?: string }) | null;
+        if (savedChallenge && (!savedChallenge.draftRevision || savedChallenge.draftRevision === currentFinger)) {
+          setSquadChallenge(savedChallenge);
+        } else {
+          setSquadChallenge(null);
+        }
+      } else {
+        // SEASON Mode
+        const ids = serverIds?.length ? serverIds : (prefs?.selectedIds?.length ? prefs.selectedIds : []);
+        if (ids.length) {
+          setSelectedIds(ids);
+          setHadSavedSquad(true);
+        }
+        setLockedIds(prefs?.lockedIds || []);
+        setSquadChallenge(null);
       }
+
       if (prefs) {
-        setLockedIds(prefs.lockedIds || []);
         setManager({ bank: prefs.bank ?? account?.bank ?? 1.2, freeTransfers: prefs.freeTransfers ?? 1 });
         setUserName(prefs.userName || account?.managerName || "Alex");
-        setSquadChallenge((prefs.challengeResult as SquadChallengeResult | null) || null);
-        setStagedSignalReviews(prefs.stagedReviews || {});
+        setStagedSignalReviews(effectiveMode === "SEASON" ? {} : (prefs.stagedReviews || {}));
         setAiProvider(account?.aiProvider || "gemini");
-        // Server-held keys are intentionally write-only. Keep only an
-        // explicitly entered key in this browser session.
         setApiKey("");
         setOnboardingModalOpen(!account && !prefs.onboardingCompleted);
       } else {
@@ -759,19 +878,51 @@ function App() {
       active = false;
     };
   }, [explanationTransfer, horizon, squad, catalog, currentGameweek, deadlineTime, manager]);
-  const saveSquad = (ids: number[], nextLockedIds = lockedIds) => {
+  const saveSquad = async (ids: number[], nextLockedIds = lockedIds) => {
     const priorIds = selectedIds;
     const priorLocks = lockedIds;
     const validLocks = nextLockedIds.filter((id) => ids.includes(id));
     setSelectedIds(ids);
     setLockedIds(validLocks);
-    // Evidence is scoped to the exact squad that was challenged. Once the
-    // planned squad changes, keeping the old result would surface findings
-    // for players who may no longer be in the squad.
-    setSquadChallenge(null);
     setChallengeError(null);
     setChallengeRawOutput("");
-    setChallengeOutputTypes([]);
+    const saveTarget = resolveSquadSaveTarget({ draftMode });
+
+    if (saveTarget === "USER_PREFERENCES") {
+      const mapped = ids.map((id) => catalog.find((p) => p.id === id)).filter(Boolean) as Player[];
+      const issues = validateInitialSquad(mapped, INITIAL_SQUAD_BUDGET);
+      if (issues.length) {
+        setSelectedIds(priorIds);
+        setLockedIds(priorLocks);
+        setToast({ message: issues[0].detail });
+        return;
+      }
+      const revision = computeDraftFingerprint(ids, validLocks);
+
+      const ok = await saveUserPreferences({
+        draftSeason: currentSeason,
+        draftPlayerIds: ids,
+        draftLockedPlayerIds: validLocks,
+        draftRevision: revision,
+        draftUpdatedAt: new Date().toISOString(),
+      });
+
+      if (ok) {
+        setStoredDraftIds(ids);
+        setStoredDraftLocks(validLocks);
+        setHadSavedSquad(true);
+        setToast({ message: "GW1 draft saved — nothing was submitted to FPL." });
+        setEditing(false);
+      } else {
+        setSelectedIds(ids);
+        setLockedIds(validLocks);
+        setEditing(true);
+        setToast({ message: "Draft could not be persisted" });
+      }
+      return;
+    }
+
+    setSquadChallenge(null);
     void saveUserPreferences({ selectedIds: ids, lockedIds: validLocks });
     if (fplAccount) {
       void saveUserProfile(fplAccount, ids, activePlanId, validLocks)
@@ -894,7 +1045,65 @@ function App() {
       undo: true,
     });
   };
+  const applyDraftBundle = (bundle: DraftChangeBundle) => {
+    if (!bundle || !bundle.changes.length) return;
+    setPreviousSquad(selectedIds);
+    const swapMap = new Map(bundle.changes.map((c) => [c.out.id, c.in.id]));
+    const nextIds = selectedIds.map((id) => swapMap.get(id) ?? id);
+    saveSquad(nextIds, lockedIds);
+    setToast({
+      message: `Bundle applied: ${bundle.label} (+${bundle.netGain} pts).`,
+      undo: true,
+    });
+  };
   activeApplyDraftPlan = applyDraftPlan;
+  const challengeNonceRef = useRef(0);
+  const runSquadChallenge = async () => {
+    if (!squad.length) return;
+    const startFingerprint = computeDraftPlayerFingerprint(selectedIds);
+    const nonce = challengeNonceRef.current + 1;
+    challengeNonceRef.current = nonce;
+
+    setChallengeLoading(true);
+    setChallengeError(null);
+    setChallengeRawOutput("");
+    setChallengeOutputTypes([]);
+    setSquadChallenge(null);
+    setStagedSignalReviews({});
+
+    try {
+      const result = await challengeSquad(
+        squad.map((player) => player.id),
+        horizon,
+        {
+          apiKey: apiKey || undefined,
+          provider: aiProvider,
+          startingPlayerIds: xi.map((player) => player.id),
+        },
+      );
+      if (
+        challengeNonceRef.current !== nonce ||
+        planningModeRef.current === "SEASON" ||
+        computeDraftPlayerFingerprint(selectedIdsRef.current) !== startFingerprint
+      ) {
+        return;
+      }
+      setSquadChallenge({ ...result, draftRevision: startFingerprint } as any);
+    } catch (error) {
+      if (challengeNonceRef.current !== nonce) return;
+      setChallengeError(
+        error instanceof Error ? error.message : "Squad challenge failed",
+      );
+      if (error instanceof SquadChallengeError) {
+        setChallengeRawOutput(error.rawOutput);
+        setChallengeOutputTypes(error.outputTypes);
+      }
+    } finally {
+      if (challengeNonceRef.current === nonce) {
+        setChallengeLoading(false);
+      }
+    }
+  };
   const undoTransfer = async () => {
     if (activePlanParentId) {
       const result = await selectPlanRevision(activePlanParentId);
@@ -945,37 +1154,6 @@ function App() {
       message:
         "A new live-data starter squad is ready. Review it before using any recommendation.",
     });
-  };
-  const runSquadChallenge = async () => {
-    if (!squad.length) return;
-    setChallengeLoading(true);
-    setChallengeError(null);
-    setChallengeRawOutput("");
-    setChallengeOutputTypes([]);
-    setSquadChallenge(null);
-    setStagedSignalReviews({});
-    try {
-      const result = await challengeSquad(
-        squad.map((player) => player.id),
-        horizon,
-        {
-          apiKey: apiKey || undefined,
-          provider: aiProvider,
-          startingPlayerIds: xi.map((player) => player.id),
-        },
-      );
-      setSquadChallenge(result);
-    } catch (error) {
-      setChallengeError(
-        error instanceof Error ? error.message : "Squad challenge failed",
-      );
-      if (error instanceof SquadChallengeError) {
-        setChallengeRawOutput(error.rawOutput);
-        setChallengeOutputTypes(error.outputTypes);
-      }
-    } finally {
-      setChallengeLoading(false);
-    }
   };
   // Stage a signal review locally — no network call, no model recalculation
   const reviewSquadSignal = (
@@ -1102,23 +1280,50 @@ function App() {
     setTeamMessage("Fetching latest FPL account & team details...");
     try {
       const res = await fetchFplAccount(idToUse, currentGameweek || 1);
-      const ids = res.picks
-        .map((p) => p.element)
-        .filter((id) => catalog.some((x) => x.id === id));
       const hydratedIds = res.selectedIds.filter((id) => catalog.some((x) => x.id === id));
-      if (hydratedIds.length) {
-        setSelectedIds(hydratedIds);
-        setLockedIds(res.lockedIds);
-        setHadSavedSquad(true);
+      const prof = await getUserProfile();
+      const hasOfficialSquad = Boolean(prof.snapshotMetadata?.officialSnapshotId && prof.snapshotMetadata?.officialPlayerCount === 15);
+      const isDraftDirty = editing || computeDraftPlayerFingerprint(selectedIds) !== computeDraftPlayerFingerprint(storedDraftIds);
+      const transition = evaluateModeTransition({
+        currentMode: planningMode === "SEASON" ? "SEASON" : "DRAFT",
+        hasOfficialSquad,
+        isEditorDirty: isDraftDirty,
+      });
+
+      if (transition.requiresPrompt) {
+        setPendingOfficialTransition({
+          squadIds: hydratedIds,
+          planId: res.planId,
+          parentPlanId: res.parentPlanId,
+          sellingPrices: res.sellingPrices,
+          account: res.account,
+          snapshotMetadata: prof.snapshotMetadata,
+          planBank: res.planBank,
+          planFreeTransfers: res.planFreeTransfers,
+        });
+      } else {
+        if (prof.snapshotMetadata) {
+          setSnapshotMeta(prof.snapshotMetadata);
+          setSeasonModeManagerAccountId(prof.snapshotMetadata.managerAccountId);
+          setSeasonModeSeason(prof.snapshotMetadata.snapshotSeason);
+        }
+        setFplAccount(res.account);
+        setActivePlanId(res.planId || null);
+        setActivePlanParentId(res.parentPlanId || null);
+        setOfficialSellingPrices(res.sellingPrices);
+        setManager({ bank: res.planBank ?? res.account.bank, freeTransfers: res.planFreeTransfers });
+        if (res.account.managerName) {
+          setUserName(res.account.managerName);
+        }
+        if (hydratedIds.length) {
+          setSelectedIds(hydratedIds);
+          setHadSavedSquad(true);
+        }
+        setSquadChallenge(null);
+        setStagedSignalReviews({});
+        setLockedIds([]);
       }
-      setFplAccount(res.account);
-      setActivePlanId(res.planId || null);
-      setActivePlanParentId(res.parentPlanId || null);
-      setOfficialSellingPrices(res.sellingPrices);
-      setManager({ bank: res.planBank ?? res.account.bank, freeTransfers: res.planFreeTransfers });
-      if (res.account.managerName) {
-        setUserName(res.account.managerName);
-      }
+
       setToast({
         message: res.notice || `FPL Account Synced: ${res.account.teamName} (${res.account.totalPoints} pts, GW${res.account.currentGameweek}: ${res.account.gameweekPoints} pts)`,
       });
@@ -1144,6 +1349,9 @@ function App() {
     setActivePlanId(null);
     setActivePlanParentId(null);
     setOfficialSellingPrices({});
+    setSnapshotMeta(null);
+    setSeasonModeManagerAccountId(null);
+    setSeasonModeSeason(null);
     setSelectedIds([]);
     setLockedIds([]);
     setHadSavedSquad(false);
@@ -1165,20 +1373,46 @@ function App() {
     }
     try {
       const res = await fetchFplAccount(idNum, currentGameweek || 1);
-      const ids = res.picks
-        .map((p) => p.element)
-        .filter((id) => catalog.some((x) => x.id === id));
+      const prof = await getUserProfile();
       const hydratedIds = res.selectedIds.filter((id) => catalog.some((x) => x.id === id));
-      if (hydratedIds.length) {
-        setSelectedIds(hydratedIds);
-        setLockedIds(res.lockedIds);
-        setHadSavedSquad(true);
+      const hasOfficialSquad = Boolean(prof.snapshotMetadata?.officialSnapshotId && prof.snapshotMetadata?.officialPlayerCount === 15);
+      const isDraftDirty = editing || computeDraftPlayerFingerprint(selectedIds) !== computeDraftPlayerFingerprint(storedDraftIds);
+      const transition = evaluateModeTransition({
+        currentMode: planningMode === "SEASON" ? "SEASON" : "DRAFT",
+        hasOfficialSquad,
+        isEditorDirty: isDraftDirty,
+      });
+
+      if (transition.requiresPrompt) {
+        setPendingOfficialTransition({
+          squadIds: hydratedIds,
+          planId: res.planId,
+          parentPlanId: res.parentPlanId,
+          sellingPrices: res.sellingPrices,
+          account: res.account,
+          snapshotMetadata: prof.snapshotMetadata,
+          planBank: res.planBank,
+          planFreeTransfers: res.planFreeTransfers,
+        });
+      } else {
+        if (prof.snapshotMetadata) {
+          setSnapshotMeta(prof.snapshotMetadata);
+          setSeasonModeManagerAccountId(prof.snapshotMetadata.managerAccountId);
+          setSeasonModeSeason(prof.snapshotMetadata.snapshotSeason);
+        }
+        setFplAccount(res.account);
+        setActivePlanId(res.planId || null);
+        setActivePlanParentId(res.parentPlanId || null);
+        setOfficialSellingPrices(res.sellingPrices);
+        setManager({ bank: res.planBank ?? res.account.bank, freeTransfers: res.planFreeTransfers });
+        if (hydratedIds.length) {
+          setSelectedIds(hydratedIds);
+          setHadSavedSquad(true);
+        }
+        setSquadChallenge(null);
+        setStagedSignalReviews({});
+        setLockedIds([]);
       }
-      setFplAccount(res.account);
-      setActivePlanId(res.planId || null);
-      setActivePlanParentId(res.parentPlanId || null);
-      setOfficialSellingPrices(res.sellingPrices);
-      setManager({ bank: res.planBank ?? res.account.bank, freeTransfers: res.planFreeTransfers });
       return { success: true, managerName: res.account.managerName, notice: res.notice };
     } catch (error) {
       return { success: false, error: error instanceof Error ? error.message : "Could not find FPL account with that ID." };
@@ -1276,6 +1510,22 @@ function App() {
       <main>
         <header>
           <div>
+            <div className={`planning-mode-badge ${planningMode === "LOADING" ? "loading-mode" : draftMode ? "draft-mode" : "season-mode"}`}>
+              <span className="badge-pill">
+                {planningMode === "LOADING"
+                  ? "LOADING METADATA..."
+                  : draftMode
+                    ? "GW1 DRAFT MODE"
+                    : "LIVE SEASON MODE"}
+              </span>
+              <span className="badge-text">
+                {planningMode === "LOADING"
+                  ? "Fetching server configuration and snapshot metadata."
+                  : draftMode
+                    ? "Build and test your initial team. Changes are not submitted to FPL."
+                    : "Planning from your imported official FPL squad."}
+              </span>
+            </div>
             <p className="eyebrow">
               GAMEWEEK {currentGameweek ?? 1} <span>·</span>{" "}
               {formatDeadlineText(deadlineTime)}
@@ -1310,6 +1560,57 @@ function App() {
             {getInitials(userName)}
           </button>
         </header>
+        {transitionNotice && (
+          <div className="transition-banner-card">
+            <span>{transitionNotice}</span>
+            <button className="ghost-btn" onClick={() => setTransitionNotice(null)}>
+              Dismiss
+            </button>
+          </div>
+        )}
+        {pendingOfficialTransition && (
+          <div className="transition-banner-card dirty-prompt">
+            <div>
+              <b>Official team detected</b> — finish or discard your edits to enter Live Season Mode.
+            </div>
+            <div className="transition-banner-actions">
+              <button
+                className="dark-btn"
+                onClick={() => {
+                  const trans = pendingOfficialTransition;
+                  if (!trans) return;
+                  if (trans.snapshotMetadata) setSnapshotMeta(trans.snapshotMetadata);
+                  if (trans.account) setFplAccount(trans.account);
+                  const activeAccId = trans.account?.managerAccountId || trans.account?.id || trans.snapshotMetadata?.managerAccountId || null;
+                  setSeasonModeManagerAccountId(activeAccId);
+                  setSeasonModeSeason(currentSeason);
+                  void saveUserPreferences({ seasonModeManagerAccountId: activeAccId, seasonModeSeason: currentSeason });
+                  if (trans.planId) setActivePlanId(trans.planId);
+                  if (trans.parentPlanId) setActivePlanParentId(trans.parentPlanId);
+                  if (trans.sellingPrices) setOfficialSellingPrices(trans.sellingPrices);
+                  if (trans.planBank != null || trans.account?.bank != null) {
+                    setManager({ bank: trans.planBank ?? trans.account?.bank ?? 0, freeTransfers: trans.planFreeTransfers ?? 1 });
+                  }
+                  setSelectedIds(trans.squadIds);
+                  setLockedIds([]);
+                  setSquadChallenge(null);
+                  setStagedSignalReviews({});
+                  setEditing(false);
+                  setPendingOfficialTransition(null);
+                  setTransitionNotice(`Live Season Mode Activated — Official squad imported for Season ${currentSeason}.`);
+                }}
+              >
+                Switch to Live Season Mode (Discard Edits)
+              </button>
+              <button
+                className="ghost-btn"
+                onClick={() => setPendingOfficialTransition(null)}
+              >
+                Keep Editing GW1 Draft
+              </button>
+            </div>
+          </div>
+        )}
         <ForecastReadinessPanel system={systemStatus} forecast={forecastSummary} requestedHorizon={horizon} />
         {catalogMode === "demo-conflict" && (
           <div className="validation-warning conflict-banner">
@@ -1444,7 +1745,9 @@ function App() {
             freeTransfers={manager.freeTransfers}
             draftMode={draftMode}
             draftPlan={draftPlan}
+            legalBundles={legalBundles}
             onApplyDraft={applyDraftPlan}
+            onApplyBundle={applyDraftBundle}
             onWhy={setExplanationTransfer}
             setTab={(t) => {
               setTab(t);
@@ -2899,7 +3202,7 @@ function SquadEditor({
             disabled={ids.length !== 15 || issues.length > 0}
             onClick={() => onSave(ids, editorLockedIds)}
           >
-            Save squad
+            {draftMode ? "Save GW1 Draft" : "Save Plan"}
           </button>
         </div>
       </div>
@@ -3850,7 +4153,9 @@ function MyTeamV2({
   freeTransfers,
   draftMode,
   draftPlan,
+  legalBundles = [],
   onApplyDraft,
+  onApplyBundle,
   onWhy,
   setTab,
   onReplacePlayer,
@@ -3884,7 +4189,9 @@ function MyTeamV2({
   freeTransfers: number;
   draftMode: boolean;
   draftPlan: DraftImprovementPlan | null;
+  legalBundles?: DraftChangeBundle[];
   onApplyDraft: () => void;
+  onApplyBundle?: (bundle: DraftChangeBundle) => void;
   onWhy: (transfer: Transfer) => void;
   setTab: (tab: string) => void;
   onReplacePlayer?: (p: Player) => void;
@@ -3980,13 +4287,35 @@ function MyTeamV2({
           </div>
         )}
         {draftMode && draftPlan && (
-          <div className="recommend-actions">
-            <button className="dark-btn" onClick={onApplyDraft}>
-              Apply full restructure
-            </button>
-            <button className="ghost-btn" onClick={() => setTab("Transfers")}>
-              Review all changes
-            </button>
+          <div style={{ marginTop: "14px" }}>
+            <div className="recommend-actions">
+              <button className="dark-btn" onClick={onApplyDraft}>
+                Apply full restructure (+{draftPlan.gain} pts)
+              </button>
+              <button className="ghost-btn" onClick={() => setTab("Transfers")}>
+                Review all changes
+              </button>
+            </div>
+            {legalBundles.length > 0 && onApplyBundle && (
+              <div className="bundle-card-list">
+                <span className="label" style={{ fontSize: "10px", marginTop: "12px", display: "block" }}>
+                  LEGAL BUDGET-LINKED CHANGE BUNDLES
+                </span>
+                {legalBundles.map((bundle: DraftChangeBundle) => (
+                  <div key={bundle.id} className="bundle-card">
+                    <div className="bundle-card-info">
+                      <span className="bundle-card-title">{bundle.label}</span>
+                      <span className="bundle-card-meta">
+                        +{bundle.netGain} pts · Cost: {bundle.netCost > 0 ? `+£${bundle.netCost}m` : `£${bundle.netCost}m`}
+                      </span>
+                    </div>
+                    <button className="ghost-btn" onClick={() => onApplyBundle(bundle)}>
+                      Apply bundle
+                    </button>
+                  </div>
+                ))}
+              </div>
+            )}
           </div>
         )}
       </section>
@@ -5517,7 +5846,9 @@ function DashboardV2({
   freeTransfers,
   draftMode,
   draftPlan,
+  legalBundles = [],
   onApplyDraft,
+  onApplyBundle,
 }: {
   squad: Player[];
   xi: Player[];
@@ -5532,7 +5863,9 @@ function DashboardV2({
   freeTransfers: number;
   draftMode: boolean;
   draftPlan: DraftImprovementPlan | null;
+  legalBundles?: DraftChangeBundle[];
   onApplyDraft: () => void;
+  onApplyBundle?: (bundle: DraftChangeBundle) => void;
 }) {
   const starters = new Set(xi.map((p) => p.id));
   const vice = [...xi]
@@ -5598,9 +5931,30 @@ function DashboardV2({
             </div>
           )}
           {draftMode && draftPlan && (
-            <div className="recommend-actions">
-              <button className="dark-btn" onClick={onApplyDraft}>Apply full restructure</button>
-              <button className="ghost-btn" onClick={() => setTab("Transfers")}>Review all changes</button>
+            <div style={{ marginTop: "14px" }}>
+              <div className="recommend-actions">
+                <button className="dark-btn" onClick={onApplyDraft}>Apply full restructure (+{draftPlan.gain} pts)</button>
+              </div>
+              {legalBundles.length > 0 && onApplyBundle && (
+                <div className="bundle-card-list">
+                  <span className="label" style={{ fontSize: "10px", marginTop: "12px", display: "block" }}>
+                    LEGAL BUDGET-LINKED CHANGE BUNDLES
+                  </span>
+                  {legalBundles.map((bundle) => (
+                    <div key={bundle.id} className="bundle-card">
+                      <div className="bundle-card-info">
+                        <span className="bundle-card-title">{bundle.label}</span>
+                        <span className="bundle-card-meta">
+                          +{bundle.netGain} pts · Cost: {bundle.netCost > 0 ? `+£${bundle.netCost}m` : `£${bundle.netCost}m`}
+                        </span>
+                      </div>
+                      <button className="ghost-btn" onClick={() => onApplyBundle(bundle)}>
+                        Apply bundle
+                      </button>
+                    </div>
+                  ))}
+                </div>
+              )}
             </div>
           )}
         </div>

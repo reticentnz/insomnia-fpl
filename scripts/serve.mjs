@@ -29,6 +29,7 @@ for (const envFile of ['.env.local', '.env']) {
 }
 
 const colours = ['#e74c3c', '#3b82f6', '#8b5cf6', '#dc2626', '#22c55e', '#f59e0b', '#60a5fa', '#334155']
+const FPL_SEASON = process.env.FPL_SEASON || '2026/27'
 
 import { getDb } from './db.mjs'
 import { migrateDatabase } from './db-migrate.mjs'
@@ -795,7 +796,7 @@ function startServerOnAvailablePort(targetPort) {
       res.writeHead(200, {
         'content-type': 'application/json; charset=utf-8',
         'cache-control': 'no-store'
-      }).end(JSON.stringify(systemStatus))
+      }).end(JSON.stringify({ ...systemStatus, season: FPL_SEASON, currentSeason: FPL_SEASON }))
       return
     }
 
@@ -808,10 +809,9 @@ function startServerOnAvailablePort(targetPort) {
           const provider = state.ai.provider || stored.provider || ''
           const configuredKey = stored.apiKey || (provider === 'openai' && process.env.OPENAI_API_KEY) || (provider === 'gemini' && process.env.GEMINI_API_KEY) || (provider === 'anthropic' && process.env.ANTHROPIC_API_KEY) || (provider === 'deepseek' && process.env.DEEPSEEK_API_KEY) || ''
           sendJson(res, 200, { provider, configured: Boolean(configuredKey), suffix: configuredKey ? String(configuredKey).slice(-4) : null })
-          return
-        } catch {}
-        const stored = loadAiSettings()
-        sendJson(res, 200, { provider: stored.provider || '', configured: Boolean(stored.apiKey), suffix: stored.apiKey ? String(stored.apiKey).slice(-4) : null })
+        } catch (error) {
+          sendJson(res, 500, { error: error instanceof Error ? error.message : 'AI config unavailable' })
+        }
         return
       }
       if (req.method === 'POST' || req.method === 'PUT') {
@@ -839,16 +839,16 @@ function startServerOnAvailablePort(targetPort) {
         const key = catalogueCacheKey(requestKey, await projectionCatalogInputVersions(db, options.season))
         const cached = catalogueCache.get(key)
         if (cached) {
-          sendJson(res, 200, { schemaVersion: 1, ...cached, cache: { status: 'FRESH' } })
+          sendJson(res, 200, { schemaVersion: 1, season: cached.season || FPL_SEASON, currentSeason: cached.season || FPL_SEASON, ...cached, cache: { status: 'FRESH' } })
           return
         }
         const catalogue = await assembleProjectionInputCatalog(db, options)
         await catalogueCache.put(key, requestKey, catalogue)
-        sendJson(res, 200, { schemaVersion: 1, ...catalogue, cache: { status: 'MISS' } })
+        sendJson(res, 200, { schemaVersion: 1, season: catalogue.season || FPL_SEASON, currentSeason: catalogue.season || FPL_SEASON, ...catalogue, cache: { status: 'MISS' } })
       } catch (error) {
         const restart = await catalogueCache.getRestart(requestKey)
         if (restart) {
-          sendJson(res, 200, { schemaVersion: 1, ...restart, cache: { status: 'STALE' } })
+          sendJson(res, 200, { schemaVersion: 1, season: restart.season || FPL_SEASON, currentSeason: restart.season || FPL_SEASON, ...restart, cache: { status: 'STALE_RESTART' } })
           return
         }
         sendJson(res, 503, { schemaVersion: 1, cache: { status: 'MISS' }, error: error instanceof Error ? error.message : 'Catalogue unavailable' })

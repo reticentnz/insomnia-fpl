@@ -103,6 +103,13 @@ describe('WP-03 manager import and exact economics', () => {
       economicsSource: 'UNKNOWN',
     })
     expect(current.economics.status).toBe('AFFORDABILITY_UNKNOWN')
+
+    const latest = await getCurrentManager(db, { fplEntryId: 123456 })
+    expect(latest.snapshotMetadata).toMatchObject({
+      officialSnapshotId: current.snapshot.id,
+      snapshotSeason: '2026/27',
+      officialPlayerCount: 2,
+    })
   })
 
   it('records user-confirmed free transfers and missing selling prices without mutating the official snapshot', async () => {

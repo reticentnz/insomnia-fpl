@@ -289,6 +289,8 @@ export interface FplLeagueSummary {
 }
 
 export interface FplAccount {
+  id?: string;
+  managerAccountId?: string | null;
   teamId: number;
   teamName: string;
   managerName: string;
@@ -320,6 +322,13 @@ export type UserPreferences = {
   onboardingCompleted: boolean;
   challengeResult: unknown | null;
   stagedReviews: Record<number, 'VERIFIED' | 'REJECTED'>;
+  draftSeason?: string | null;
+  draftPlayerIds?: number[];
+  draftLockedPlayerIds?: number[];
+  draftRevision?: string;
+  draftUpdatedAt?: string | null;
+  seasonModeManagerAccountId?: string | null;
+  seasonModeSeason?: string | null;
 };
 
 export interface LeagueRivalPick {
@@ -403,6 +412,8 @@ export async function fetchFplAccount(teamId: number, gameweek?: number): Promis
   const account = data.account || {}
   return {
     account: {
+      id: account.id || data.snapshotMetadata?.managerAccountId || undefined,
+      managerAccountId: account.id || data.snapshotMetadata?.managerAccountId || null,
       teamId: Number(account.teamId || teamId),
       teamName: account.teamName || `Team #${teamId}`,
       managerName: account.managerName || '',
@@ -443,7 +454,7 @@ export async function fetchFplAccount(teamId: number, gameweek?: number): Promis
   }
 }
 
-export async function getUserProfile(): Promise<{ account: FplAccount | null; selectedIds: number[] | null; planId?: string | null; parentPlanId?: string | null; sellingPrices?: Record<number, number | null>; preferences?: UserPreferences }> {
+export async function getUserProfile(): Promise<{ account: FplAccount | null; selectedIds: number[] | null; planId?: string | null; parentPlanId?: string | null; sellingPrices?: Record<number, number | null>; preferences?: UserPreferences; snapshotMetadata?: { officialSnapshotId: string; snapshotSeason: string; officialPlayerCount: number; managerAccountId: string } | null }> {
   try {
     const [res, preferenceRes] = await Promise.all([fetch('/api/manager/current'), fetch('/api/user-preferences')])
     const storedPreferences = preferenceRes.ok ? await preferenceRes.json() : null
@@ -457,11 +468,12 @@ export async function getUserProfile(): Promise<{ account: FplAccount | null; se
         : []
       const selectedIds = activePlanIds.length ? activePlanIds : officialIds
       return {
-        account: data.account || null,
+        account: data.account ? { ...data.account, managerAccountId: data.account.id || data.snapshotMetadata?.managerAccountId || null } : null,
         selectedIds: selectedIds.length ? selectedIds : null,
         planId: data.activePlan?.id || null,
         parentPlanId: data.activePlan?.parentPlanId || null,
         sellingPrices: Object.fromEntries((Array.isArray(data.squad) ? data.squad : []).map((player: any) => [Number(player.fplId), player.sellingPriceTenths == null ? null : Number(player.sellingPriceTenths)])),
+        snapshotMetadata: data.snapshotMetadata || null,
         preferences: {
           userName: storedPreferences?.userName || data.account?.managerName || '',
           selectedIds,
@@ -474,6 +486,13 @@ export async function getUserProfile(): Promise<{ account: FplAccount | null; se
           onboardingCompleted: storedPreferences?.onboardingCompleted ?? Boolean(data.account),
           challengeResult: storedPreferences?.challengeResult ?? null,
           stagedReviews: storedPreferences?.stagedReviews || {},
+          draftSeason: storedPreferences?.draftSeason ?? null,
+          draftPlayerIds: storedPreferences?.draftPlayerIds || [],
+          draftLockedPlayerIds: storedPreferences?.draftLockedPlayerIds || [],
+          draftRevision: storedPreferences?.draftRevision ?? '',
+          draftUpdatedAt: storedPreferences?.draftUpdatedAt ?? null,
+          seasonModeManagerAccountId: storedPreferences?.seasonModeManagerAccountId ?? null,
+          seasonModeSeason: storedPreferences?.seasonModeSeason ?? null,
         },
       }
     }
@@ -581,7 +600,7 @@ function playerFromProjectionCatalog(item: ProjectionInputCatalog['players'][num
   }
 }
 
-export async function fetchLiveCatalog(retries = 3): Promise<{capturedAt:string;currentGameweek:number|null;deadline:string|null;players:Player[]}> {
+export async function fetchLiveCatalog(retries = 3): Promise<{capturedAt:string;currentGameweek:number|null;deadline:string|null;season:string|null;players:Player[]}> {
   let lastError: Error | null = null
   for (let attempt = 0; attempt <= retries; attempt++) {
     const controller = new AbortController()
@@ -589,10 +608,10 @@ export async function fetchLiveCatalog(retries = 3): Promise<{capturedAt:string;
     try {
       const response = await fetch('/api/catalog', { signal: controller.signal })
       if (response.ok) {
-        const catalogue = await response.json() as ProjectionInputCatalog
+        const catalogue = await response.json() as ProjectionInputCatalog & { season?: string; currentSeason?: string }
         const gameweeks = catalogue.players.flatMap(player => player.fixtures.map(fixture => ({ gameweek: fixture.gameweekFplId, kickoffAt: fixture.kickoffAt }))).filter(item => item.gameweek != null)
         const next = gameweeks.sort((a, b) => Number(a.gameweek) - Number(b.gameweek))[0]
-        return { capturedAt: catalogue.freshness.official.observedAt || catalogue.asOf, currentGameweek: next?.gameweek || null, deadline: null, players: catalogue.players.map(playerFromProjectionCatalog) }
+        return { capturedAt: catalogue.freshness.official.observedAt || catalogue.asOf, currentGameweek: next?.gameweek || null, deadline: null, season: catalogue.season || catalogue.currentSeason || null, players: catalogue.players.map(playerFromProjectionCatalog) }
       }
       lastError = new Error(`Live FPL data unavailable: ${response.status}`)
     } catch (err) {
