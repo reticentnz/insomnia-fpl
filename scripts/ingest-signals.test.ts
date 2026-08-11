@@ -4,7 +4,7 @@ import path from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
 import { closeDb, getDb } from './db.mjs'
 import { ingestOfficialFpl } from './ingest-fpl.mjs'
-import { deriveExpectedGoals, ingestMarketEvents, ingestUnderlyingRows, matchUnderlyingPlayer, resolveSignalSeason } from './ingest-signals.mjs'
+import { deriveExpectedGoals, featuredOddsUrl, ingestMarketEvents, ingestUnderlyingRows, matchUnderlyingPlayer, resolveSignalSeason } from './ingest-signals.mjs'
 
 const directories: string[] = []
 const fixtureDirectory = path.resolve('scripts', 'fixtures')
@@ -33,6 +33,12 @@ afterEach(async () => {
 })
 
 describe('WP-07 optional source ingestion', () => {
+  it('requests only markets supported by the featured odds endpoint', () => {
+    const url = new URL(featuredOddsUrl({ apiKey: 'secret', regions: 'uk' }))
+    expect(url.searchParams.get('markets')).toBe('h2h,totals')
+    expect(url.searchParams.get('markets')).not.toContain('btts')
+  })
+
   it('resolves the season from official data when no environment override exists', async () => {
     const db = await seed()
     expect(await resolveSignalSeason(db, { env: {} })).toBe('2026/27')

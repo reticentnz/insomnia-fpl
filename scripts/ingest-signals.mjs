@@ -148,6 +148,17 @@ async function fetchText(url, fetchImpl) {
   return response.text()
 }
 
+export function featuredOddsUrl({ apiKey, regions = 'uk' } = {}) {
+  const params = new URLSearchParams({
+    regions: String(regions),
+    markets: 'h2h,totals',
+    oddsFormat: 'decimal',
+    dateFormat: 'iso',
+    apiKey: String(apiKey || ''),
+  })
+  return `https://api.the-odds-api.com/v4/sports/soccer_epl/odds?${params}`
+}
+
 async function withCache(name, loader, cacheDir) {
   fs.mkdirSync(cacheDir, { recursive: true })
   const filename = path.join(cacheDir, name)
@@ -247,7 +258,7 @@ export async function ingestSignalFeeds({ db, season, fetchImpl = fetch, cacheDi
   const results = { underlying: await ingestUnderlyingRows(db, { season: activeSeason, rows: underlying.payload, feedDetails: underlying }) }
   if (marketEvents !== undefined) results.market = await ingestMarketEvents(db, { season: activeSeason, events: marketEvents })
   else if (process.env.ODDS_API_KEY) {
-    const url = `https://api.the-odds-api.com/v4/sports/soccer_epl/odds?regions=${encodeURIComponent(process.env.ODDS_API_REGIONS || 'uk')}&markets=h2h,totals,btts&oddsFormat=decimal&dateFormat=iso&apiKey=${encodeURIComponent(process.env.ODDS_API_KEY)}`
+    const url = featuredOddsUrl({ apiKey: process.env.ODDS_API_KEY, regions: process.env.ODDS_API_REGIONS || 'uk' })
     const market = await withCache('odds-epl.json', () => fetchJson(url, fetchImpl), cacheDir)
     results.market = await ingestMarketEvents(db, { season: activeSeason, events: market.payload, feedDetails: market })
   }
@@ -257,7 +268,7 @@ export async function ingestSignalFeeds({ db, season, fetchImpl = fetch, cacheDi
 export async function refreshBettingOdds({ db, season, fetchImpl = fetch, cacheDir = process.env.SIGNAL_CACHE_DIR || defaultCacheDir } = {}) {
   const activeSeason = await resolveSignalSeason(db, { season })
   if (!process.env.ODDS_API_KEY) throw new Error('ODDS_API_KEY is not configured')
-  const url = `https://api.the-odds-api.com/v4/sports/soccer_epl/odds?regions=${encodeURIComponent(process.env.ODDS_API_REGIONS || 'uk')}&markets=h2h,totals,btts&oddsFormat=decimal&dateFormat=iso&apiKey=${encodeURIComponent(process.env.ODDS_API_KEY)}`
+  const url = featuredOddsUrl({ apiKey: process.env.ODDS_API_KEY, regions: process.env.ODDS_API_REGIONS || 'uk' })
   const market = await withCache('odds-epl.json', () => fetchJson(url, fetchImpl), cacheDir)
   return ingestMarketEvents(db, { season: activeSeason, events: market.payload, feedDetails: market })
 }

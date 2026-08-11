@@ -78,7 +78,11 @@ export async function fetchManagerPayload({ teamId, gameweek, fetchJson = offici
     if (error?.status === 404) throw new Error(`No FPL account exists for Team ID ${entryId}`)
     throw error
   }
-  const selectedGameweek = integer(gameweek ?? entry.current_event ?? entry.summary_overall_event, 'gameweek', { minimum: 1 })
+  const selectedGameweek = gameweek !== undefined && gameweek !== null && gameweek !== ''
+    ? integer(gameweek, 'gameweek', { minimum: 1 })
+    : [entry.current_event, entry.summary_overall_event]
+      .map(value => Number(value))
+      .find(value => Number.isInteger(value) && value >= 1) ?? 1
   try {
     const picks = await fetchJson(`entry/${entryId}/event/${selectedGameweek}/picks/`)
     return { entry, picks, gameweek: selectedGameweek, squadAvailable: true }

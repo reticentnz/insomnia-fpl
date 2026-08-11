@@ -58,6 +58,21 @@ describe('WP-03 manager import and exact economics', () => {
     })).rejects.toThrow('No FPL account exists for Team ID 999999')
   })
 
+  it('uses Gameweek 1 before FPL has assigned a current event', async () => {
+    const entry = { ...readFixture<any>('wp03-entry.json'), current_event: 0, summary_overall_event: null }
+    const endpoints: string[] = []
+    const payload = await fetchManagerPayload({
+      teamId: 123456,
+      fetchJson: async (endpoint: string) => {
+        endpoints.push(endpoint)
+        if (endpoint === 'entry/123456/') return entry
+        throw Object.assign(new Error('not public'), { status: 404 })
+      },
+    })
+    expect(payload).toMatchObject({ gameweek: 1, picks: null, squadAvailable: false })
+    expect(endpoints).toEqual(['entry/123456/', 'entry/123456/event/1/picks/'])
+  })
+
   it('links pre-deadline account metadata without inventing an official squad', async () => {
     const databasePath = await seededDatabase()
     await migrateDatabase(databasePath)
