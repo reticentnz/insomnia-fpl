@@ -19,7 +19,7 @@ execFileSync(esbuildBin, [
 ], { stdio: 'inherit' })
 
 fs.copyFileSync('src/styles.css', 'dist/assets/app.css')
+fs.copyFileSync('src/favicon.svg', 'dist/favicon.svg')
 fs.copyFileSync('index.html', 'dist/index.html')
 fs.appendFileSync('dist/index.html', '\n<link rel="stylesheet" href="/assets/app.css"><script type="module" src="/assets/app.js"></script>\n')
 console.log('production bundle written to dist/')
-

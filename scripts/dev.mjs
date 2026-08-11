@@ -50,12 +50,14 @@ if (!fs.existsSync(outFile) || srcMtime > outMtime) {
   ], { stdio: ['ignore', 'ignore', 'inherit'] })
 
   fs.copyFileSync('src/styles.css', 'dist/assets/app.css')
+  fs.copyFileSync('src/favicon.svg', 'dist/favicon.svg')
   console.timeEnd('⚡ Build complete')
 } else {
   console.log('⚡ App bundle up-to-date (cached)')
 }
 
 fs.copyFileSync('index.html', 'dist/index.html')
+fs.copyFileSync('src/favicon.svg', 'dist/favicon.svg')
 fs.appendFileSync('dist/index.html', '\n<link rel="stylesheet" href="/assets/app.css"><script>window.addEventListener("error",e=>{const r=document.getElementById("root");if(r&&!r.innerHTML)r.innerHTML=`<main style="padding:40px;font-family:system-ui;color:#7b3028"><h1>Insomnia FPL failed to start</h1><p>${e.message||"The app bundle could not load."}</p><p>Check the terminal and refresh after fixing the error.</p></main>`});window.addEventListener("unhandledrejection",e=>{const r=document.getElementById("root");if(r&&!r.innerHTML)r.innerHTML=`<main style="padding:40px;font-family:system-ui;color:#7b3028"><h1>Insomnia FPL failed to start</h1><p>${e.reason?.message||e.reason||"The app bundle rejected during startup."}</p></main>`})</script><script type="module" src="/assets/app.js"></script>\n')
 
 console.log('🚀 Starting dev server...')

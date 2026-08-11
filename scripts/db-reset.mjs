@@ -14,7 +14,7 @@ function isWithin(root, target) {
   return relative === '' || (!relative.startsWith('..') && !path.isAbsolute(relative))
 }
 
-function assertSafeResetPath(databasePath, rawDatabaseUrl) {
+export function assertSafeResetPath(databasePath, rawDatabaseUrl) {
   if (containsUnresolvedVariable(rawDatabaseUrl)) throw new Error('Refusing reset: DATABASE_URL contains an unresolved environment variable')
   if (process.env.APP_DATA_DIR && containsUnresolvedVariable(process.env.APP_DATA_DIR)) throw new Error('Refusing reset: APP_DATA_DIR contains an unresolved environment variable')
   if (databasePath === ':memory:') throw new Error('Refusing reset: in-memory database path is unsafe')
@@ -35,14 +35,29 @@ function assertSafeResetPath(databasePath, rawDatabaseUrl) {
   if (fs.existsSync(normalizedDatabasePath) && fs.statSync(normalizedDatabasePath).isDirectory()) {
     throw new Error('Refusing reset: database path resolves to a directory')
   }
+  if (!['.db', '.sqlite', '.sqlite3'].includes(path.extname(normalizedDatabasePath).toLowerCase())) {
+    throw new Error('Refusing reset: database path must use a .db, .sqlite or .sqlite3 extension')
+  }
+  if (fs.existsSync(normalizedDatabasePath) && fs.statSync(normalizedDatabasePath).size > 0) {
+    const descriptor = fs.openSync(normalizedDatabasePath, 'r')
+    try {
+      const header = Buffer.alloc(16)
+      fs.readSync(descriptor, header, 0, header.length, 0)
+      if (header.toString('utf8') !== 'SQLite format 3\u0000') {
+        throw new Error('Refusing reset: existing target is not a SQLite database')
+      }
+    } finally {
+      fs.closeSync(descriptor)
+    }
+  }
 
   return normalizedDatabasePath
 }
 
-if (!process.argv.slice(2).includes(confirmationFlag)) {
+if (process.argv[1] && path.resolve(process.argv[1]) === path.resolve(import.meta.filename) && !process.argv.slice(2).includes(confirmationFlag)) {
   console.error(`db-reset requires ${confirmationFlag}`)
   process.exitCode = 1
-} else {
+} else if (process.argv[1] && path.resolve(process.argv[1]) === path.resolve(import.meta.filename)) {
   try {
     const rawDatabaseUrl = process.env.DATABASE_URL || 'file:./dev.db'
     const databasePath = assertSafeResetPath(resolveDatabasePath(), rawDatabaseUrl)

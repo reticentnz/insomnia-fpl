@@ -3,6 +3,7 @@ import { migrateDatabase } from './db-migrate.mjs'
 import { closeDb, getDb } from './db.mjs'
 import { canonicalJson } from './feed-run.mjs'
 import { ensureInitialPlanForSnapshot, getActivePlan } from './plan-service.mjs'
+import { setActiveManager } from './user-state-service.mjs'
 
 function integer(value, label, { nullable = false, minimum = 0 } = {}) {
   if (value === null || value === undefined || value === '') {
@@ -50,11 +51,17 @@ function parseJson(value) {
 }
 
 async function officialJson(endpoint) {
-  const response = await fetch(`https://fantasy.premierleague.com/api/${endpoint}`, {
-    headers: { 'User-Agent': 'Insomnia-FPL/1.0' },
-  })
-  if (!response.ok) throw new Error(`FPL manager source ${endpoint} returned HTTP ${response.status}`)
-  return response.json()
+  const controller = new AbortController()
+  const timeout = setTimeout(() => controller.abort(), 30000)
+  try {
+    const response = await fetch(`https://fantasy.premierleague.com/api/${endpoint}`, {
+      headers: { 'User-Agent': 'Insomnia-FPL/1.0' }, signal: controller.signal,
+    })
+    if (!response.ok) throw new Error(`FPL manager source ${endpoint} returned HTTP ${response.status}`)
+    return response.json()
+  } finally {
+    clearTimeout(timeout)
+  }
 }
 
 export async function fetchManagerPayload({ teamId, gameweek, fetchJson = officialJson } = {}) {
@@ -104,6 +111,7 @@ export async function importManagerPayload(db, {
   gameweek,
   season,
   importedAt = new Date().toISOString(),
+  beforeInitialPlan,
 } = {}) {
   const resolvedSeason = seasonFromConfiguration(season)
   const fplEntryId = integer(entry?.id, 'entry.id', { minimum: 1 })
@@ -142,19 +150,20 @@ export async function importManagerPayload(db, {
     await db.query(
       `INSERT INTO "ManagerAccount" (
         "id", "fpl_entry_id", "team_name", "manager_name", "total_points", "gameweek_points",
-        "overall_rank", "current_gameweek", "last_imported_at", "created_at", "updated_at"
-      ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
+        "overall_rank", "current_gameweek", "total_transfers", "last_imported_at", "created_at", "updated_at"
+      ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
       ON CONFLICT ("fpl_entry_id") DO UPDATE SET
         "team_name"=EXCLUDED."team_name", "manager_name"=EXCLUDED."manager_name",
         "total_points"=EXCLUDED."total_points", "gameweek_points"=EXCLUDED."gameweek_points",
         "overall_rank"=EXCLUDED."overall_rank", "current_gameweek"=EXCLUDED."current_gameweek",
+        "total_transfers"=EXCLUDED."total_transfers",
         "last_imported_at"=EXCLUDED."last_imported_at", "updated_at"=EXCLUDED."updated_at"`,
       [
         managerAccountId, fplEntryId, teamName, managerName,
         integer(entryHistory.total_points ?? entry.summary_overall_points ?? 0, 'total_points', { minimum: 0 }),
         integer(entryHistory.points ?? entry.summary_event_points ?? 0, 'gameweek_points', { minimum: 0 }),
         integer(entry.summary_overall_rank, 'overall_rank', { nullable: true, minimum: 0 }),
-        gameweekFplId, importedAt, now, now,
+        gameweekFplId, totalTransfers, importedAt, now, now,
       ],
     )
 
@@ -186,9 +195,11 @@ export async function importManagerPayload(db, {
         ],
       )
     }
+    await setActiveManager(db, managerAccountId, importedAt)
+    if (beforeInitialPlan) await beforeInitialPlan({ managerAccountId, snapshotId })
+    await ensureInitialPlanForSnapshot(db, { managerAccountId, snapshotId, createdAt: importedAt, withinTransaction: true })
     db.sqlite.exec('COMMIT')
     transactionOpen = false
-    await ensureInitialPlanForSnapshot(db, { managerAccountId, snapshotId, createdAt: importedAt })
     return getCurrentManager(db, { fplEntryId, season: resolvedSeason })
   } catch (error) {
     if (transactionOpen) {
@@ -200,9 +211,18 @@ export async function importManagerPayload(db, {
 
 async function managerAccountRow(db, { fplEntryId } = {}) {
   const result = fplEntryId === undefined
-    ? await db.query('SELECT * FROM "ManagerAccount" ORDER BY "updated_at" DESC LIMIT 1')
+    ? await db.query(
+      `SELECT manager.* FROM "AppUserState" state
+       JOIN "ManagerAccount" manager ON manager."id"=state."active_manager_account_id"
+       WHERE state."id"='default' LIMIT 1`,
+    )
     : await db.query('SELECT * FROM "ManagerAccount" WHERE "fpl_entry_id"=$1 LIMIT 1', [fplEntryId])
   return result.rows[0] || null
+}
+
+export async function unlinkCurrentManager(db) {
+  await setActiveManager(db, null)
+  return { success: true }
 }
 
 function assumptionValue(row) {
@@ -333,12 +353,17 @@ export async function updateManagerAssumptions(db, {
   if (!gameweekResult.rows[0]) throw new Error(`Gameweek ${gameweekFplId} is not present for ${resolvedSeason}`)
   const gameweekId = gameweekResult.rows[0].id
   const updates = []
-  if (freeTransfers !== undefined) updates.push({ kind: 'FREE_TRANSFERS', value: { freeTransfers: integer(freeTransfers, 'freeTransfers', { minimum: 0 }) } })
+  if (freeTransfers !== undefined) {
+    const value = integer(freeTransfers, 'freeTransfers', { minimum: 0 })
+    if (value > 5) throw new Error('freeTransfers must be between 0 and 5')
+    updates.push({ kind: 'FREE_TRANSFERS', value: { freeTransfers: value } })
+  }
   if (sellingPrices !== undefined) {
     if (!Array.isArray(sellingPrices)) throw new Error('sellingPrices must be an array')
     for (const item of sellingPrices) {
       const player = current.squad.find(candidate => String(candidate.id) === String(item.playerId) || Number(candidate.fplId) === Number(item.fplId))
       if (!player) throw new Error(`Cannot confirm a selling price for an unowned player: ${item.playerId ?? item.fplId}`)
+      if (player.officialSellingPriceTenths !== null) throw new Error(`Player ${player.fplId} already has an official selling price`)
       updates.push({
         kind: 'SELLING_PRICE',
         value: { playerId: player.id, sellingPriceTenths: integer(item.sellingPriceTenths ?? item.selling_price_tenths, 'sellingPriceTenths', { minimum: 0 }) },

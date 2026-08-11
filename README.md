@@ -1,11 +1,12 @@
 # Insomnia FPL
 
-An FPL planning companion built around deterministic, explainable recommendations. It includes a public squad import, editable bank and free-transfer assumptions, a persisted squad builder with direct player replacement, contextual transfer comparison, legal squad/transfer validation, a recommended XI, captaincy, confirmation and undo for local plan changes, player search and a grounded squad assistant. It never changes the manager's official FPL team.
+An FPL planning companion built around deterministic, explainable recommendations. It stores immutable source observations, assembles a timestamped projection catalogue, writes immutable forecast runs, and evaluates executable local plans. It imports a public FPL squad but never changes the manager's official FPL team.
 
 ## Run locally
 
 ```bash
 npm install
+npm run db:migrate
 npm run dev
 ```
 
@@ -27,7 +28,7 @@ docker run -d \
   -e APP_DATA_DIR='/app/data' \
   -e SIGNAL_INGEST_TOKEN='replace-with-a-long-random-token' \
   -e SIGNAL_CONFIG_FILE='/app/data/signal-config.json' \
-  -e FPL_DATA_CACHE_FILE='/app/data/cache/fpl-data.json' \
+  -e FPL_CATALOG_CACHE_FILE='/app/data/cache/projection-catalog.json' \
   -v "$PWD/data:/app/data" \
   insomnia-fpl:local
 ```
@@ -63,7 +64,7 @@ The creator-signal endpoint is `POST /api/signals/ingest`. It requires `Authoriz
 }
 ```
 
-Uncertain names stay in the Signals tab for manual linking. Confirmed links are remembered as aliases. General opinions remain evidence only; projections change only when a claim includes explicit role/minutes fields.
+Matched claims become auditable player signals. Uncertain names are returned in the ingestion response and are not retained; correct the player hint and retry the stable claim payload. General opinions remain evidence only; projections change only when a verified claim includes explicit role/minutes fields.
 
 GitHub is optional. The image can be built directly on Unraid from a copied or cloned working tree. For repeatable updates, push the repository to GitHub and publish an image to GitHub Container Registry; Unraid can then pull `ghcr.io/<owner>/<repository>:latest`. Keep database URLs and ingestion tokens in Unraid/n8n secrets, never in GitHub or the image.
 
@@ -111,9 +112,9 @@ ODDS_API_KEY=replace-with-your-key npm run ingest:signals
 
 In Docker, the signal cache defaults to `/app/data/cache/signal-feeds`, which is inside the persistent writable volume. Override it with `SIGNAL_CACHE_DIR` if needed.
 
-The local server exposes the refreshed catalog at `/api/fpl-data`. The React UI reads players, fixtures, prices, form and availability from that endpoint and falls back to the demo catalog if the database is temporarily unavailable. The rules-aware model uses individual fixtures (including blanks and doubles), expected minutes, shrunk per-90 attacking rates, expected goals conceded, saves, cards, penalties, bonus history and 2026/27 defensive-contribution inputs.
+The local server exposes the projection-input catalogue at `/api/catalog`. It includes source-specific freshness timestamps, provenance and a cache status. The shared model uses individual fixtures (including blanks and doubles), explicit start/substitute/no-show role probabilities, expected minutes, shrunk per-90 attacking rates, expected goals conceded, saves, cards, penalties, bonus history and 2026/27 defensive-contribution inputs.
 
-The server keeps the latest successful `/api/fpl-data` response in `.cache/fpl-data.json`. After the first successful load, restarts serve that snapshot immediately and refresh it from SQLite in the background. The in-memory freshness window defaults to 60 seconds and the restart cache to 24 hours; set `FPL_DATA_CACHE_TTL_MS`, `FPL_DATA_CACHE_MAX_STALE_MS`, or `FPL_DATA_CACHE_FILE` to override them. The example Docker deployment stores the database and cache together under `/app/data`.
+The server keeps successful `/api/catalog` assemblies in a keyed memory cache for 60 seconds by default, and persists the latest successful request variant through an atomic rename. If catalogue assembly fails after a restart, an eligible restart entry (up to 24 hours old by default) is returned with `cache.status: "STALE"`; source observation timestamps are never replaced by response time. Set `FPL_CATALOG_CACHE_TTL_MS`, `FPL_CATALOG_CACHE_MAX_STALE_MS`, or `FPL_CATALOG_CACHE_FILE` to override this. The example Docker deployment stores the database and cache together under `/app/data`. League samples are cached for five minutes, request no more than five upstream calls at once, and label effective ownership as a sampled-manager measure when only the first standings page is loaded.
 
 ## FPL intelligence layer
 
@@ -127,7 +128,7 @@ The `Model Debug` view is intentionally developer-only and is available by addin
 
 The projection model separates a start, substitute appearance and no-show for every player. Verified current evidence can update those probabilities; expired, rejected and merely pending claims cannot. Recent transfers deliberately fall back to a low-confidence role prior until evidence establishes the new depth-chart position. The optimiser chooses a legal XI, captain, vice-captain and bench cover separately for every gameweek in the planning horizon.
 
-On **My Team**, **Challenge squad** uses the OpenAI Responses API with web search and strict structured output to look for current role, injury, set-piece and minutes risks. Set `OPENAI_API_KEY` and optionally `OPENAI_RESEARCH_MODEL` in `.env.local`, or use the app's personal API-key setting. Results are accepted only when their URL appears in the API's actual web-search sources, then stored as `PENDING`. A manager must approve a finding before it can affect projections; approval also materializes the resolved role in `PlayerOutlook`. This is intentionally an evidence workflow, not a second optimiser or a mechanism that treats an LLM's prose as truth.
+On **My Team**, **Challenge squad** uses the OpenAI Responses API with web search and strict structured output to look for current role, injury, set-piece and minutes risks. Set `OPENAI_API_KEY` and optionally `OPENAI_RESEARCH_MODEL` in `.env.local`, or use the app's personal API-key setting. Results are accepted only when their URL appears in the API's actual web-search sources, then stored as `PENDING`. A manager must approve a finding before it can affect projections; the next catalogue and forecast resolve the canonical signal ledger directly. This is intentionally an evidence workflow, not a second optimiser or a mechanism that treats an LLM's prose as truth.
 
 Source priority is official FPL/club/Premier League material first, followed by reputable journalists and established predicted-lineup sources. A commercial editorial feed such as FPL Scout can be added later as a licensed provider, but the architecture does not require one and should not scrape or republish subscriber content. User-submitted feedback is stored as low-confidence `PENDING` evidence through `/api/player-signals`; manual overrides are explicit, fully trusted records rather than silently inferred from chat.
 
@@ -139,10 +140,30 @@ Source priority is official FPL/club/Premier League material first, followed by 
 npm run backtest
 ```
 
-This compares saved projections with actual points, reports sample size, MAE, RMSE and bias by position, and stores a bounded position calibration factor after at least 20 observations. The live API applies those factors to future projections. Set `FPL_INGEST_MATCH_HISTORY=0` for a lightweight catalogue-only refresh.
+This compares eligible pre-deadline projections with actual points and reports sample size, MAE, RMSE, mean bias, interval coverage and rank correlation. Calibration remains `Uncalibrated` with factor `1` until a group has at least 100 observations; applied factors are capped to `0.85–1.15`. Set `FPL_INGEST_MATCH_HISTORY=0` for a lightweight catalogue-only refresh.
 
 ## Architecture notes
 
-The calculation boundary lives in `src/domain.ts`. `src/integrations.ts` isolates raw FPL responses and defines the structured context contract; `src/explanations.ts` builds a grounded prompt and accepts a provider function, keeping LLM calls outside the calculation layer. `scripts/serve.mjs` provides the server-side database adapter at `/api/fpl-data`, while the projection/optimisation functions remain pure. Planning horizons, legality rules, hit costs and roll thresholds are centralized in the domain layer; the UI only presents calculated recommendations.
+The calculation boundary is shared across `src/core/scoring.ts`, `src/core/projection.ts`, `src/core/uncertainty.ts`, `src/core/lineup.ts`, `src/core/transfers.ts`, `src/core/optimizer.ts` and `src/core/chips.ts`. `src/server/catalog-service.ts` selects immutable inputs at an explicit `asOf`; `src/server/forecast-service.ts` persists its outputs. `src/integrations.ts` isolates raw FPL responses, while `src/explanations.ts` keeps LLM calls outside deterministic calculations. The server serves `/api/catalog`, manager and plan APIs, recommendations, decision history and backtests; the UI only presents calculated results.
+
+Expensive player/fixture projection is an offline boundary. Each successful ingestion creates an immutable `ForecastRun` and its `PlayerFixtureForecast` rows; recommendation requests read those stored rows and run only the manager-specific, bounded transfer or chip search. A completed recommendation is itself reused when the plan, forecast run, horizon, transfer limit, chip and uncertainty settings are identical. A changed forecast run or planning input creates a new result, preserving both freshness and reproducibility.
+
+## Verification
+
+All tests use saved fixtures or temporary databases and do not require a network connection:
+
+```bash
+npm test
+npm run typecheck
+npm run test:integration
+npm run test:e2e
+npm run build
+npm run db:reset -- --yes-reset-development-data
+npm run db:migrate
+npm run db:verify
+npm run backtest
+```
+
+For command-line database verification, set `DATABASE_URL` to a repository-local or application-data SQLite file. The reset command intentionally refuses broad or unresolved paths.
 
 The app intentionally does not authenticate with FPL or perform transfers. Forecasts remain probabilistic: official assists and BPS are consumed from FPL after matches, while future assists and bonus returns are estimated from xA and historical bonus rates.

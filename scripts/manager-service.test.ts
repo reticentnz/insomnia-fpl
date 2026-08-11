@@ -5,7 +5,7 @@ import { afterEach, describe, expect, it } from 'vitest'
 import { closeDb, getDb } from './db.mjs'
 import { migrateDatabase } from './db-migrate.mjs'
 import { ingestOfficialFpl } from './ingest-fpl.mjs'
-import { getCurrentManager, importManagerPayload, updateManagerAssumptions } from './manager-service.mjs'
+import { getCurrentManager, importManagerPayload, unlinkCurrentManager, updateManagerAssumptions } from './manager-service.mjs'
 
 const temporaryDirectories: string[] = []
 const fixtureDirectory = path.resolve('scripts', 'fixtures')
@@ -55,6 +55,7 @@ describe('WP-03 manager import and exact economics', () => {
     })
 
     expect(current.account.bankTenths).toBe(5)
+    expect(current.account.totalTransfers).toBe(3)
     expect(current.snapshot.bankTenths).toBe(5)
     expect(current.squad[0]).toMatchObject({
       fplId: 10,
@@ -113,5 +114,31 @@ describe('WP-03 manager import and exact economics', () => {
     expect(Number(players.rows[0].count)).toBe(4)
     const latest = await getCurrentManager(db, { fplEntryId: 123456 })
     expect(latest.snapshot.importedAt).toBe('2026-08-15T20:00:00Z')
+  })
+
+  it('rolls back the manager snapshot when initial plan creation fails', async () => {
+    const databasePath = await seededDatabase()
+    await migrateDatabase(databasePath)
+    const db = getDb(databasePath)
+    await expect(importManagerPayload(db, {
+      entry: readFixture<any>('wp03-entry.json'), picks: readFixture<any>('wp03-picks.json'),
+      gameweek: 1, season: '2026/27', importedAt: '2026-08-15T19:00:00Z',
+      beforeInitialPlan: async () => { throw new Error('injected plan failure') },
+    })).rejects.toThrow('injected plan failure')
+    expect(Number((await db.query('SELECT COUNT(*) AS count FROM "ManagerAccount"')).rows[0].count)).toBe(0)
+    expect(Number((await db.query('SELECT COUNT(*) AS count FROM "OfficialSquadSnapshot"')).rows[0].count)).toBe(0)
+  })
+
+  it('unlinks without deleting immutable official history', async () => {
+    const databasePath = await seededDatabase()
+    await migrateDatabase(databasePath)
+    const db = getDb(databasePath)
+    await importManagerPayload(db, {
+      entry: readFixture<any>('wp03-entry.json'), picks: readFixture<any>('wp03-picks.json'),
+      gameweek: 1, season: '2026/27', importedAt: '2026-08-15T19:00:00Z',
+    })
+    await unlinkCurrentManager(db)
+    expect((await getCurrentManager(db)).account).toBeNull()
+    expect(Number((await db.query('SELECT COUNT(*) AS count FROM "OfficialSquadSnapshot"')).rows[0].count)).toBe(1)
   })
 })

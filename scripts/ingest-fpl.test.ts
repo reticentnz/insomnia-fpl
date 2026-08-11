@@ -103,8 +103,8 @@ describe('WP-02 official feed ingestion', () => {
       fixture_observations: 2,
       player_observations: 2,
       results: 2,
-      forecast_runs: 0,
-      forecasts: 0,
+      forecast_runs: 1,
+      forecasts: 2,
     })
 
     await ingestOfficialFpl({

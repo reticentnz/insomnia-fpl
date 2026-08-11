@@ -117,6 +117,27 @@ async function currentMarketPrice(db, playerId, observedAt) {
   return result.rows[0]?.price_tenths === undefined ? null : Number(result.rows[0].price_tenths)
 }
 
+async function exactSellingPrice(db, player, snapshot, managerAccountId) {
+  const official = await db.query(
+    `SELECT "selling_price_tenths" FROM "OfficialSquadPlayer"
+     WHERE "squad_snapshot_id"=$1 AND "player_id"=$2`,
+    [snapshot.id, player.playerId],
+  )
+  if (!official.rows[0]) return player.plannedPurchasePriceTenths
+  if (official.rows[0].selling_price_tenths !== null) return Number(official.rows[0].selling_price_tenths)
+  const assumptions = await db.query(
+    `SELECT "value_json" FROM "ManagerAssumption"
+     WHERE "manager_account_id"=$1 AND "gameweek_id"=$2 AND "kind"='SELLING_PRICE'
+     ORDER BY "created_at" DESC, "id" DESC`,
+    [managerAccountId, snapshot.gameweek_id],
+  )
+  for (const assumption of assumptions.rows) {
+    const value = parseJson(assumption.value_json)
+    if (String(value.playerId) === String(player.playerId)) return integer(value.sellingPriceTenths, 'sellingPriceTenths', { minimum: 0 })
+  }
+  return null
+}
+
 async function resolvePlayerIds(db, season, playerIds, createdAt) {
   const resolved = []
   for (const rawId of playerIds) {
@@ -131,6 +152,31 @@ async function resolvePlayerIds(db, season, playerIds, createdAt) {
   }
   if (new Set(resolved.map(player => player.id)).size !== resolved.length) throw new Error('A plan cannot contain duplicate players')
   return resolved
+}
+
+async function validateFullSquad(db, players, createdAt) {
+  if (players.length !== 15) return
+  const positions = { GK: 0, DEF: 0, MID: 0, FWD: 0 }
+  const clubs = new Map()
+  for (const player of players) {
+    const result = await db.query(
+      `SELECT observation."position", observation."team_id", observation."active"
+       FROM "PlayerObservation" observation
+       WHERE observation."player_id"=$1 AND observation."observed_at" <= $2
+       ORDER BY observation."observed_at" DESC, observation."id" DESC LIMIT 1`,
+      [player.playerId, createdAt],
+    )
+    const observation = result.rows[0]
+    if (!observation) throw new Error(`Plan player ${player.playerId} has no eligible official observation`)
+    if (!observation.active) throw new Error(`Plan player ${player.playerId} is inactive`)
+    positions[observation.position] = (positions[observation.position] || 0) + 1
+    clubs.set(observation.team_id, (clubs.get(observation.team_id) || 0) + 1)
+  }
+  const required = { GK: 2, DEF: 5, MID: 5, FWD: 3 }
+  for (const [position, count] of Object.entries(required)) {
+    if (positions[position] !== count) throw new Error(`Plan requires ${count} ${position} players`)
+  }
+  for (const [club, count] of clubs) if (count > 3) throw new Error(`Plan exceeds the three-player limit for club ${club}`)
 }
 
 function applyPlayerIds(basePlayers, resolvedPlayers) {
@@ -181,7 +227,9 @@ export async function getActivePlan(db, { managerAccountId, fplEntryId } = {}) {
   return result.rows[0] ? getPlan(db, result.rows[0].id) : null
 }
 
-export async function createPlan(db, {
+let planWriteQueue = Promise.resolve()
+
+async function createPlanInternal(db, {
   managerAccountId,
   fplEntryId,
   snapshotId,
@@ -189,10 +237,12 @@ export async function createPlan(db, {
   name = 'Active plan',
   status = 'ACTIVE',
   playerIds,
+  lockedPlayerIds,
   bankTenths,
   freeTransfers,
   changeSummary = {},
   createdAt = new Date().toISOString(),
+  withinTransaction = false,
 } = {}) {
   if (!['ACTIVE', 'SAVED', 'ARCHIVED'].includes(status)) throw new Error(`Invalid plan status: ${status}`)
   const manager = await resolveManager(db, { managerAccountId, fplEntryId })
@@ -202,28 +252,58 @@ export async function createPlan(db, {
     managerAccountId: manager.id,
   })
   const basePlayers = parent ? await planPlayers(db, parent.id) : await officialPlanPlayers(db, snapshot.id)
-  const selectedPlayers = playerIds === undefined
+  let selectedPlayers = playerIds === undefined
     ? basePlayers
     : applyPlayerIds(basePlayers, await resolvePlayerIds(db, snapshot.season || (await db.query('SELECT "season" FROM "Gameweek" WHERE "id"=$1', [snapshot.gameweek_id])).rows[0]?.season, playerIds, createdAt))
   if (!selectedPlayers.length) throw new Error('A plan must contain at least one player')
-  const planBank = bankTenths === undefined
-    ? (parent ? parent.bank_tenths : snapshot.bank_tenths)
-    : integer(bankTenths, 'bankTenths', { minimum: 0 })
+  if (lockedPlayerIds !== undefined) {
+    if (!Array.isArray(lockedPlayerIds)) throw new Error('lockedPlayerIds must be an array')
+    const season = snapshot.season || (await db.query('SELECT "season" FROM "Gameweek" WHERE "id"=$1', [snapshot.gameweek_id])).rows[0]?.season
+    const locked = new Set((await resolvePlayerIds(db, season, lockedPlayerIds, createdAt)).map(player => player.id))
+    selectedPlayers = selectedPlayers.map(player => ({ ...player, locked: locked.has(player.playerId) }))
+  }
+  await validateFullSquad(db, selectedPlayers, createdAt)
+
+  const selectedIds = new Set(selectedPlayers.map(player => player.playerId))
+  const baseIds = new Set(basePlayers.map(player => player.playerId))
+  const outgoing = basePlayers.filter(player => !selectedIds.has(player.playerId))
+  const incoming = selectedPlayers.filter(player => !baseIds.has(player.playerId))
+  if (outgoing.length !== incoming.length) throw new Error('Plan revisions must replace the same number of outgoing and incoming players')
+  const outgoingPrices = await Promise.all(outgoing.map(player => exactSellingPrice(db, player, snapshot, manager.id)))
+  const incomingPrices = incoming.map(player => player.plannedPurchasePriceTenths)
+  const affordabilityKnown = outgoingPrices.every(value => value !== null) && incomingPrices.every(value => value !== null)
+  const inheritedBank = parent ? (parent.bank_tenths === null ? null : Number(parent.bank_tenths)) : Number(snapshot.bank_tenths)
+  const derivedBank = inheritedBank === null || !affordabilityKnown
+    ? null
+    : inheritedBank + outgoingPrices.reduce((sum, value) => sum + Number(value), 0) - incomingPrices.reduce((sum, value) => sum + Number(value), 0)
+  if (derivedBank !== null && derivedBank < 0) throw new Error('Plan is unaffordable with exact selling prices')
+  const planBank = bankTenths === undefined ? derivedBank : integer(bankTenths, 'bankTenths', { minimum: 0 })
+  const inheritedFreeTransfers = parent ? Number(parent.free_transfers) : await currentFreeTransfers(db, manager.id, snapshot.gameweek_id)
   const planFreeTransfers = freeTransfers === undefined
-    ? (parent ? Number(parent.free_transfers) : await currentFreeTransfers(db, manager.id, snapshot.gameweek_id))
+    ? Math.max(0, inheritedFreeTransfers - outgoing.length)
     : integer(freeTransfers, 'freeTransfers', { minimum: 0 })
+  const economicsSummary = {
+    affordability: affordabilityKnown ? 'EXACT' : 'AFFORDABILITY_UNKNOWN',
+    outgoingPlayerIds: outgoing.map(player => player.playerId),
+    incomingPlayerIds: incoming.map(player => player.playerId),
+    hitCost: Math.max(0, outgoing.length - inheritedFreeTransfers) * 4,
+    bankBeforeTenths: inheritedBank,
+    bankAfterTenths: planBank,
+  }
   const planId = randomUUID()
   let transactionOpen = false
   try {
-    db.sqlite.exec('BEGIN IMMEDIATE')
-    transactionOpen = true
+    if (!withinTransaction) {
+      db.sqlite.exec('BEGIN IMMEDIATE')
+      transactionOpen = true
+    }
     if (status === 'ACTIVE') await db.query('UPDATE "Plan" SET "status"=\'SAVED\' WHERE "manager_account_id"=$1 AND "status"=\'ACTIVE\'', [manager.id])
     await db.query(
       `INSERT INTO "Plan" (
         "id", "manager_account_id", "official_squad_snapshot_id", "parent_plan_id", "name", "status",
         "bank_tenths", "free_transfers", "created_at", "change_summary_json"
       ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)`,
-      [planId, manager.id, snapshot.id, parent?.id || null, String(name).slice(0, 120), status, planBank, planFreeTransfers, createdAt, canonicalJson(changeSummary)],
+      [planId, manager.id, snapshot.id, parent?.id || null, String(name).slice(0, 120), status, planBank, planFreeTransfers, createdAt, canonicalJson({ ...changeSummary, economics: economicsSummary })],
     )
     for (const player of selectedPlayers) {
       await db.query(
@@ -234,8 +314,10 @@ export async function createPlan(db, {
         [planId, player.playerId, player.squadSlot, player.plannedPurchasePriceTenths, player.inheritedSellingPriceTenths, player.isCaptain, player.isViceCaptain, player.benchOrder, player.locked],
       )
     }
-    db.sqlite.exec('COMMIT')
-    transactionOpen = false
+    if (!withinTransaction) {
+      db.sqlite.exec('COMMIT')
+      transactionOpen = false
+    }
     return getPlan(db, planId)
   } catch (error) {
     if (transactionOpen) {
@@ -245,13 +327,20 @@ export async function createPlan(db, {
   }
 }
 
-export async function ensureInitialPlanForSnapshot(db, { managerAccountId, snapshotId, createdAt } = {}) {
-  const existing = await getActivePlan(db, { managerAccountId })
-  if (existing) return existing
-  return createPlan(db, { managerAccountId, snapshotId, name: 'Active plan', status: 'ACTIVE', createdAt })
+export function createPlan(db, options = {}) {
+  if (options.withinTransaction) return createPlanInternal(db, options)
+  const result = planWriteQueue.then(() => createPlanInternal(db, options))
+  planWriteQueue = result.catch(() => undefined)
+  return result
 }
 
-export async function selectPlan(db, planId) {
+export async function ensureInitialPlanForSnapshot(db, { managerAccountId, snapshotId, createdAt, withinTransaction = false } = {}) {
+  const existing = await getActivePlan(db, { managerAccountId })
+  if (existing) return existing
+  return createPlan(db, { managerAccountId, snapshotId, name: 'Active plan', status: 'ACTIVE', createdAt, withinTransaction })
+}
+
+async function selectPlanInternal(db, planId) {
   const plan = await getPlan(db, planId)
   if (!plan) throw new Error(`Plan ${planId} does not exist`)
   let transactionOpen = false
@@ -269,4 +358,10 @@ export async function selectPlan(db, planId) {
     }
     throw error
   }
+}
+
+export function selectPlan(db, planId) {
+  const result = planWriteQueue.then(() => selectPlanInternal(db, planId))
+  planWriteQueue = result.catch(() => undefined)
+  return result
 }

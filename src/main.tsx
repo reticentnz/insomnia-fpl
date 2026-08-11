@@ -44,6 +44,7 @@ import {
 } from "./domain";
 import {
   fetchLiveCatalog,
+  fetchProjectionCatalog,
   fetchPublicSquad,
   parseTeamId,
   fetchLLMExplanation,
@@ -51,6 +52,8 @@ import {
   getUserProfile,
   saveUserProfile,
   saveUserPreferences,
+  saveManagerAssumptions,
+  selectPlanRevision,
   deleteUserProfile,
   fetchServerAiConfig,
   saveServerAiConfig,
@@ -77,6 +80,13 @@ import {
   type SignalSourceConfig,
   DEFAULT_SIGNAL_SOURCE_CONFIG,
   fetchSystemStatus,
+  fetchLatestForecast,
+  type ForecastSummary,
+  fetchBacktest,
+  fetchDecisionHistory,
+  createPlanRecommendation,
+  recordRecommendationDecision,
+  type CanonicalRecommendation,
   type SystemStatus,
   type TeamMarketSnapshot,
 } from "./integrations";
@@ -119,6 +129,7 @@ const primaryIcons = {
   Players: ListFilter,
   Signals: Radio,
   Leagues: Trophy,
+  Review: Gauge,
   Ask: Bot,
 };
 type ManagerSettings = { bank: number; freeTransfers: number };
@@ -285,6 +296,8 @@ function App() {
   const [importing, setImporting] = useState(false);
   const [fplAccount, setFplAccount] = useState<FplAccount | null>(null);
   const [activePlanId, setActivePlanId] = useState<string | null>(null);
+  const [activePlanParentId, setActivePlanParentId] = useState<string | null>(null);
+  const [officialSellingPrices, setOfficialSellingPrices] = useState<Record<number, number | null>>({});
   const [profileHydrated, setProfileHydrated] = useState(false);
   const [onboardingModalOpen, setOnboardingModalOpen] = useState(false);
   const [systemStatus, setSystemStatus] = useState<SystemStatus | null>(null);
@@ -306,6 +319,9 @@ function App() {
     useState<Transfer | null>(null);
   const [playerDetail, setPlayerDetail] = useState<Player | null>(null);
   const [livePlayers, setLivePlayers] = useState<Player[] | null>(null);
+  const [forecastSummary, setForecastSummary] = useState<ForecastSummary | null>(null);
+  const [canonicalRecommendation, setCanonicalRecommendation] = useState<CanonicalRecommendation | null>(null);
+  const [canonicalRecommendationLoading, setCanonicalRecommendationLoading] = useState(false);
   const [catalogMode, setCatalogMode] = useState<
     "loading" | "live" | "demo-live" | "demo-conflict" | "demo-offline"
   >("loading");
@@ -323,7 +339,7 @@ function App() {
   const [aiProvider, setAiProvider] = useState("gemini");
   const [aiModalOpen, setAiModalOpen] = useState(false);
   const [squadChallenge, setSquadChallenge] = useState<SquadChallengeResult | null>(null);
-  const [stagedSignalReviews, setStagedSignalReviews] = useState<Record<number, "VERIFIED" | "REJECTED">>({});
+  const [stagedSignalReviews, setStagedSignalReviews] = useState<Record<string, "VERIFIED" | "REJECTED">>({});
   const [applyingBatch, setApplyingBatch] = useState(false);
   const [challengeLoading, setChallengeLoading] = useState(false);
   const [challengeError, setChallengeError] = useState<string | null>(null);
@@ -342,13 +358,31 @@ function App() {
   const icons = debugEnabled
     ? { ...primaryIcons, "Model Debug": Gauge }
     : primaryIcons;
-  const catalog = livePlayers && livePlayers.length > 0 ? livePlayers : [];
+  useEffect(() => {
+    if (!livePlayers?.length) { setForecastSummary(null); return; }
+    let active = true;
+    fetchLatestForecast(horizon as 1 | 3 | 5).then(value => { if (active) setForecastSummary(value); }).catch(() => { if (active) setForecastSummary(null); });
+    return () => { active = false; };
+  }, [livePlayers, horizon]);
+  useEffect(() => { setCanonicalRecommendation(null); }, [activePlanId, horizon]);
+  const catalog = useMemo(() => {
+    const base = livePlayers && livePlayers.length > 0 ? livePlayers : [];
+    if (!forecastSummary || forecastSummary.horizon !== horizon) return base;
+    const forecasts = new Map(forecastSummary.players.map(player => [player.playerId, player]));
+    return base.map(player => {
+      const forecast = forecasts.get(player.id);
+      return forecast ? { ...player, storedForecast: { runId: forecastSummary.id, horizon, ...forecast } } : player;
+    });
+  }, [livePlayers, forecastSummary, horizon]);
   const squad = useMemo(
     () =>
       selectedIds
         .map((id) => catalog.find((p) => p.id === id))
-        .filter(Boolean) as Player[],
-    [selectedIds, catalog],
+        .filter(Boolean)
+        .map((player) => Object.prototype.hasOwnProperty.call(officialSellingPrices, player!.id)
+          ? { ...player!, sellingPrice: officialSellingPrices[player!.id] == null ? null : officialSellingPrices[player!.id]! / 10 }
+          : player!) as Player[],
+    [selectedIds, catalog, officialSellingPrices],
   );
   const draftMode = isInitialDraftPeriod(currentGameweek, deadlineTime);
   const effectiveBank = draftMode ? initialSquadBank(squad) : manager.bank;
@@ -534,10 +568,12 @@ function App() {
   }, []);
 
   useEffect(() => {
-    getUserProfile().then(({ account, selectedIds: serverIds, preferences, planId }) => {
+    getUserProfile().then(({ account, selectedIds: serverIds, preferences, planId, parentPlanId, sellingPrices }) => {
       const prefs = preferences;
       if (account) setFplAccount(account);
       setActivePlanId(planId || null);
+      setActivePlanParentId(parentPlanId || null);
+      setOfficialSellingPrices(sellingPrices || {});
       const ids = prefs?.selectedIds?.length ? prefs.selectedIds : serverIds;
       if (ids?.length) {
         setSelectedIds(ids);
@@ -550,7 +586,9 @@ function App() {
         setSquadChallenge((prefs.challengeResult as SquadChallengeResult | null) || null);
         setStagedSignalReviews(prefs.stagedReviews || {});
         setAiProvider(account?.aiProvider || "gemini");
-        setApiKey(account?.apiKey || "");
+        // Server-held keys are intentionally write-only. Keep only an
+        // explicitly entered key in this browser session.
+        setApiKey("");
         setOnboardingModalOpen(!account && !prefs.onboardingCompleted);
       } else {
         setOnboardingModalOpen(!account);
@@ -564,9 +602,6 @@ function App() {
     fetchServerAiConfig().then((cfg) => {
       if (cfg.provider) {
         setAiProvider(cfg.provider);
-      }
-      if (cfg.apiKey) {
-        setApiKey(cfg.apiKey);
       }
     }).catch(() => {});
   }, []);
@@ -694,6 +729,8 @@ function App() {
     };
   }, [explanationTransfer, horizon, squad, catalog, currentGameweek, deadlineTime, manager]);
   const saveSquad = (ids: number[], nextLockedIds = lockedIds) => {
+    const priorIds = selectedIds;
+    const priorLocks = lockedIds;
     const validLocks = nextLockedIds.filter((id) => ids.includes(id));
     setSelectedIds(ids);
     setLockedIds(validLocks);
@@ -706,11 +743,53 @@ function App() {
     setChallengeOutputTypes([]);
     void saveUserPreferences({ selectedIds: ids, lockedIds: validLocks });
     if (fplAccount) {
-      void saveUserProfile(fplAccount, ids, activePlanId).then((result) => {
-        if (result.planId) setActivePlanId(result.planId);
+      void saveUserProfile(fplAccount, ids, activePlanId, validLocks).then((result) => {
+        if (!result.ok) {
+          setSelectedIds(priorIds);
+          setLockedIds(priorLocks);
+          setToast({ message: result.error || "The plan could not be saved because its economics or squad structure is invalid." });
+          return;
+        }
+        if (result.planId) {
+          setActivePlanId(result.planId);
+          setActivePlanParentId(result.parentPlanId || null);
+        }
+        if (result.bankTenths != null) setManager((current) => ({ ...current, bank: result.bankTenths! / 10, freeTransfers: result.freeTransfers ?? current.freeTransfers }));
       });
     }
     setEditing(false);
+  };
+  const generateCanonicalRecommendation = async (chip: 'TRIPLE_CAPTAIN' | 'BENCH_BOOST' | 'FREE_HIT' | 'WILDCARD' | null = null) => {
+    if (!activePlanId) { setToast({ message: 'Import and confirm an official squad before generating a stored recommendation.' }); return; }
+    setCanonicalRecommendationLoading(true);
+    try {
+      setCanonicalRecommendation(await createPlanRecommendation(activePlanId, { horizon: horizon as 1 | 3 | 5, chip }));
+    } catch (error) {
+      setToast({ message: error instanceof Error ? error.message : 'Recommendation could not be generated.' });
+    } finally { setCanonicalRecommendationLoading(false); }
+  };
+  const applyCanonicalCandidate = async (candidate: CanonicalRecommendation['candidates'][number]) => {
+    if (!canonicalRecommendation || !activePlanId) return;
+    if (candidate.action === 'CHIP') {
+      await recordRecommendationDecision({ recommendationSetId: canonicalRecommendation.id, candidateId: candidate.id, decision: 'ACCEPTED', selectedPlanId: activePlanId, reason: 'Chip plan accepted for manual execution in official FPL' });
+      setToast({ message: 'Chip decision recorded. Activate the chip manually in official FPL.' });
+      return;
+    }
+    if (!fplAccount || !candidate.apiMoves?.length) return;
+    const replacements = new Map(candidate.apiMoves.map(move => [Number(move.outId), Number(move.inId)]));
+    const nextIds = selectedIds.map(id => replacements.get(id) ?? id);
+    const nextLocks = lockedIds.filter(id => !replacements.has(id));
+    const result = await saveUserProfile(fplAccount, nextIds, activePlanId, nextLocks);
+    if (!result.ok || !result.planId) { setToast({ message: result.error || 'The recommended plan could not be saved.' }); return; }
+    setPreviousSquad(selectedIds); setSelectedIds(nextIds); setLockedIds(nextLocks); setActivePlanId(result.planId); setActivePlanParentId(result.parentPlanId || null);
+    if (result.bankTenths != null) setManager(current => ({ ...current, bank: result.bankTenths! / 10, freeTransfers: result.freeTransfers ?? current.freeTransfers }));
+    await recordRecommendationDecision({ recommendationSetId: canonicalRecommendation.id, candidateId: candidate.id, decision: 'ACCEPTED', selectedPlanId: result.planId, reason: 'Applied from the stored recommendation surface' });
+    setToast({ message: `Stored ${candidate.apiMoves.length}-move plan applied locally; your official FPL team was not changed.`, undo: true });
+  };
+  const dismissCanonicalCandidate = async (candidate: CanonicalRecommendation['candidates'][number], decision: 'REJECTED' | 'IGNORED') => {
+    if (!canonicalRecommendation) return;
+    await recordRecommendationDecision({ recommendationSetId: canonicalRecommendation.id, candidateId: candidate.id, decision, reason: 'Recorded from the recommendation surface' });
+    setToast({ message: `${decision === 'REJECTED' ? 'Rejected' : 'Ignored'} recommendation recorded in Review.` });
   };
   const requestTransfer = (outId: number, inId: number) => {
     const out = squad.find((p) => p.id === outId);
@@ -778,15 +857,32 @@ function App() {
     });
   };
   activeApplyDraftPlan = applyDraftPlan;
-  const undoTransfer = () => {
-    if (!previousSquad) return;
-    saveSquad(previousSquad);
-    setPreviousSquad(null);
-    setToast({ message: "Planned squad restored." });
+  const undoTransfer = async () => {
+    if (activePlanParentId) {
+      const result = await selectPlanRevision(activePlanParentId);
+      if (result.ok && result.plan) {
+        const plan = result.plan;
+        setSelectedIds(plan.players.map((player: { fplId: number }) => Number(player.fplId)));
+        setLockedIds(plan.players.filter((player: { locked: boolean }) => player.locked).map((player: { fplId: number }) => Number(player.fplId)));
+        setActivePlanId(plan.id);
+        setActivePlanParentId(plan.parentPlanId || null);
+        if (plan.bankTenths != null) setManager((current) => ({ ...current, bank: Number(plan.bankTenths) / 10, freeTransfers: Number(plan.freeTransfers) }));
+        setPreviousSquad(null);
+        setToast({ message: "Exact parent plan restored." });
+        return;
+      }
+    }
+    if (previousSquad) {
+      saveSquad(previousSquad);
+      setPreviousSquad(null);
+      setToast({ message: "Planned squad restored." });
+    }
   };
   const saveManager = (next: ManagerSettings) => {
-    setManager(next);
-    void saveUserPreferences(next);
+    const applied = fplAccount ? { ...next, bank: manager.bank } : next;
+    setManager(applied);
+    if (fplAccount) void saveManagerAssumptions(fplAccount.teamId, { freeTransfers: applied.freeTransfers });
+    else void saveUserPreferences(applied);
     setSettingsOpen(false);
   };
   const compareTransfer = (t: Transfer) => {
@@ -859,7 +955,7 @@ function App() {
     });
   };
 
-  const unstageSignalReview = (signalId: number) => {
+  const unstageSignalReview = (signalId: string | number) => {
     setStagedSignalReviews((prev) => {
       const next = { ...prev };
       delete next[signalId];
@@ -869,7 +965,7 @@ function App() {
 
   const applyBatchReview = async () => {
     const requestedUpdates = Object.entries(stagedSignalReviews).map(([id, status]) => ({
-      id: Number(id),
+      id,
       status,
     }));
     if (!requestedUpdates.length) return;
@@ -971,21 +1067,20 @@ function App() {
       const ids = res.picks
         .map((p) => p.element)
         .filter((id) => catalog.some((x) => x.id === id));
-      if (ids.length === 15) {
-        saveSquad(ids);
+      const hydratedIds = res.selectedIds.filter((id) => catalog.some((x) => x.id === id));
+      if (hydratedIds.length) {
+        setSelectedIds(hydratedIds);
+        setLockedIds(res.lockedIds);
+        setHadSavedSquad(true);
       }
       setFplAccount(res.account);
+      setActivePlanId(res.planId || null);
+      setActivePlanParentId(res.parentPlanId || null);
+      setOfficialSellingPrices(res.sellingPrices);
+      setManager({ bank: res.planBank ?? res.account.bank, freeTransfers: res.planFreeTransfers });
       if (res.account.managerName) {
         setUserName(res.account.managerName);
       }
-      saveUserProfile(res.account, ids.length === 15 ? ids : selectedIds);
-
-      if (res.account.bank !== undefined) {
-        const updatedManager = { ...manager, bank: res.account.bank };
-        setManager(updatedManager);
-        void saveUserPreferences(updatedManager);
-      }
-
       setToast({
         message: `FPL Account Synced: ${res.account.teamName} (${res.account.totalPoints} pts, GW${res.account.currentGameweek}: ${res.account.gameweekPoints} pts)`,
       });
@@ -1004,9 +1099,18 @@ function App() {
 
   const doImport = () => syncAccount();
 
-  const unlinkAccount = () => {
+  const unlinkAccount = async () => {
+    if (!(await deleteUserProfile())) {
+      setToast({ message: "The FPL account could not be unlinked." });
+      return;
+    }
     setFplAccount(null);
-    deleteUserProfile();
+    setActivePlanId(null);
+    setActivePlanParentId(null);
+    setOfficialSellingPrices({});
+    setSelectedIds([]);
+    setLockedIds([]);
+    setHadSavedSquad(false);
     setImportModalOpen(false);
     setToast({ message: "Season FPL account unlinked." });
   };
@@ -1024,16 +1128,17 @@ function App() {
       const ids = res.picks
         .map((p) => p.element)
         .filter((id) => catalog.some((x) => x.id === id));
-      if (ids.length === 15) {
-        saveSquad(ids);
+      const hydratedIds = res.selectedIds.filter((id) => catalog.some((x) => x.id === id));
+      if (hydratedIds.length) {
+        setSelectedIds(hydratedIds);
+        setLockedIds(res.lockedIds);
+        setHadSavedSquad(true);
       }
       setFplAccount(res.account);
-      saveUserProfile(res.account, ids.length === 15 ? ids : selectedIds);
-      if (res.account.bank !== undefined) {
-        const updatedManager = { ...manager, bank: res.account.bank };
-        setManager(updatedManager);
-        void saveUserPreferences(updatedManager);
-      }
+      setActivePlanId(res.planId || null);
+      setActivePlanParentId(res.parentPlanId || null);
+      setOfficialSellingPrices(res.sellingPrices);
+      setManager({ bank: res.planBank ?? res.account.bank, freeTransfers: res.planFreeTransfers });
       return { success: true, managerName: res.account.managerName };
     } catch {
       return { success: false, error: "Could not find FPL account with that ID." };
@@ -1317,6 +1422,8 @@ function App() {
             userSquad={squad}
             onSyncAccount={(id) => syncAccount(id)}
           />
+        ) : tab === "Review" ? (
+          <ReviewView />
         ) : tab === "Signals" ? (
           <SignalsTab
             catalog={catalog}
@@ -1340,6 +1447,11 @@ function App() {
             squad={squad}
             catalog={catalog}
             effectiveBank={effectiveBank}
+            canonicalRecommendation={canonicalRecommendation}
+            canonicalLoading={canonicalRecommendationLoading}
+            onGenerateCanonical={generateCanonicalRecommendation}
+            onApplyCanonical={applyCanonicalCandidate}
+            onDismissCanonical={dismissCanonicalCandidate}
           />
         ) : null}
       </main>
@@ -1649,7 +1761,7 @@ function ChipPlannerBar({
               title={`${item.description} - ${item.notes}`}
             >
               <span>{item.name}</span>
-              <span className="chip-gain-tag">+{item.projectedGain} xPts</span>
+              {item.projectedGain === null ? <span className="chip-gain-tag">Unavailable</span> : <span className="chip-gain-tag">+{item.projectedGain} xPts</span>}
             </button>
           );
         })}
@@ -3151,21 +3263,48 @@ function Players({
     </div>
   );
 }
+function ReviewView() {
+  const [backtest, setBacktest] = useState<any>(null);
+  const [decisions, setDecisions] = useState<any[]>([]);
+  const [error, setError] = useState<string | null>(null);
+  useEffect(() => {
+    let active = true;
+    Promise.all([fetchBacktest(), fetchDecisionHistory()]).then(([nextBacktest, nextDecisions]) => {
+      if (active) { setBacktest(nextBacktest); setDecisions(nextDecisions); }
+    }).catch(reason => { if (active) setError(reason instanceof Error ? reason.message : 'Review data unavailable'); });
+    return () => { active = false; };
+  }, []);
+  return (
+    <div className="content">
+      <div className="page-intro"><div><p className="eyebrow">MEASUREMENT · SAVED EVIDENCE</p><h2>Decision and model review</h2><p className="muted">Forecast accuracy and saved manager choices remain separate; retrospective differences are not causal proof.</p></div></div>
+      {error && <div className="panel"><p className="muted">{error}</p></div>}
+      {backtest && <div className="panel">
+        <div className="panel-head"><div><h2>Backtest status</h2><p>{backtest.observationCount ? `${backtest.observationCount} eligible pre-deadline observations` : 'Insufficient sample: no completed eligible forecasts yet.'}</p></div><span className={`pill ${backtest.status === 'CALIBRATED' ? 'green' : 'amber'}`}>{backtest.status === 'CALIBRATED' ? 'CALIBRATED' : 'UNCALIBRATED'}</span></div>
+        {backtest.models?.map((model: any) => <div className="review-strip" key={model.modelVersion}><span><b>Model</b>{model.modelVersion}</span><span><b>Sample</b>{model.observationCount}</span><span><b>Training cutoff</b>{model.trainingCutoff || '—'}</span><span><b>MAE</b>{Number(model.summary?.mae || 0).toFixed(2)}</span><span><b>Coverage</b>{Math.round(Number(model.summary?.intervalCoverage || 0) * 100)}%</span></div>)}
+      </div>}
+      <div className="panel">
+        <div className="panel-head"><div><h2>Decision history</h2><p>Expected values at decision time versus realized saved-plan outcomes.</p></div><span className="filter-pill">{decisions.length} records</span></div>
+        {!decisions.length ? <p className="muted">No accepted, rejected, ignored, or custom decisions have been recorded yet.</p> : decisions.map(decision => <div className="review-card" key={decision.id}>
+          <div className="card-agent-header"><b>{decision.decision}</b><span className="pill">{decision.outcome?.status || 'PENDING'}</span></div>
+          <p>Expected candidate gain: {decision.expectedCandidateGain == null ? '—' : Number(decision.expectedCandidateGain).toFixed(2)} pts · Realized manager decision result: {decision.realizedPointsDelta == null ? 'Pending' : `${Number(decision.realizedPointsDelta).toFixed(2)} pts`}</p>
+          <small>Model forecast error: {decision.outcome?.modelForecastError == null ? 'Pending' : Number(decision.outcome.modelForecastError).toFixed(2)} · {decision.outcome?.wording}</small>
+        </div>)}
+      </div>
+    </div>
+  );
+}
+
 function ModelDebug({ horizon }: { horizon: number }) {
-  const rows = players
-    .map((p) => ({
-      player: p,
-      one: projectionBreakdown(p, 1),
-      three: projectionBreakdown(p, 3),
-      five: projectionBreakdown(p, 5),
-    }))
-    .sort((a, b) => b.five.finalExpectedPoints - a.five.finalExpectedPoints);
+  const [catalogue, setCatalogue] = useState<Awaited<ReturnType<typeof fetchProjectionCatalog>> | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  useEffect(() => { let active = true; fetchProjectionCatalog().then(value => { if (active) setCatalogue(value); }).catch(reason => { if (active) setError(reason instanceof Error ? reason.message : 'Catalogue unavailable'); }); return () => { active = false; }; }, []);
+  const rows = catalogue?.players || [];
   return (
     <div className="content">
       <div className="page-intro">
         <div>
           <p className="eyebrow">
-            DEVELOPER DIAGNOSTICS · MODEL {rows[0]?.one.modelVersion}
+            DEVELOPER DIAGNOSTICS · CATALOGUE INPUTS
           </p>
           <h2>Projection breakdown</h2>
           <p className="muted">
@@ -3177,46 +3316,29 @@ function ModelDebug({ horizon }: { horizon: number }) {
           {rows.length} players · selected {horizon} GW
         </div>
       </div>
+      {catalogue && <p className="muted" aria-label="Catalogue source freshness">
+        {Object.entries(catalogue.freshness).map(([source, freshness]) => `${source}: ${freshness.status === 'FRESH' ? 'Fresh' : freshness.status === 'STALE' ? 'Stale' : 'Missing'}`).join(' · ')}
+      </p>}
       <div className="panel debug-table">
         <div className="debug-row debug-head">
           <span>PLAYER</span>
-          <span>BASELINE</span>
-          <span>FIXTURE</span>
-          <span>MINUTES</span>
-          <span>ATTACK</span>
-          <span>CS</span>
-          <span>BONUS</span>
-          <span>CARDS</span>
-          <span>1 GW</span>
-          <span>3 GW</span>
-          <span>5 GW</span>
+          <span>OFFICIAL</span><span>UNDERLYING</span><span>SIGNALS</span><span>FIXTURES</span><span>MARKET</span><span>PROVENANCE</span>
         </div>
-        {rows.map(({ player, one, three, five }) => (
+        {error && <p className="muted">{error}</p>}
+        {rows.map((player) => (
           <div className="debug-row" key={player.id}>
             <div className="debug-name">
               <b>{player.name}</b>
               <small>
-                {player.club} · {one.modelVersion}
+                {player.team.shortName} · FPL #{player.fplId}
               </small>
             </div>
-            <span>{one.baseline.toFixed(1)}</span>
-            <span className={one.fixtureAdjustment < 0 ? "negative" : ""}>
-              {one.fixtureAdjustment >= 0 ? "+" : ""}
-              {one.fixtureAdjustment.toFixed(1)}
-            </span>
-            <span
-              className={one.expectedMinutesAdjustment < 0 ? "negative" : ""}
-            >
-              {one.expectedMinutesAdjustment >= 0 ? "+" : ""}
-              {one.expectedMinutesAdjustment.toFixed(1)}
-            </span>
-            <span>+{one.attackingContribution.toFixed(1)}</span>
-            <span>+{one.cleanSheetContribution.toFixed(1)}</span>
-            <span>+{one.bonus.toFixed(1)}</span>
-            <span className="negative">{one.cardDeduction.toFixed(1)}</span>
-            <strong>{one.finalExpectedPoints.toFixed(1)}</strong>
-            <strong>{three.finalExpectedPoints.toFixed(1)}</strong>
-            <strong>{five.finalExpectedPoints.toFixed(1)}</strong>
+            <span>{player.provenance.officialObservationId}</span>
+            <span>{player.provenance.underlyingObservationId || '—'}</span>
+            <span>{player.roleSignals.map(signal => signal.id).join(', ') || '—'}</span>
+            <span>{player.fixtures.length}</span>
+            <span>{player.fixtures.some(fixture => fixture.market) ? 'selected' : '—'}</span>
+            <strong>{player.provenance.manualOverrideSignalIds.length ? 'manual override' : 'standard'}</strong>
           </div>
         ))}
       </div>
@@ -3254,8 +3376,8 @@ function EvidencePanel({
     signal: PlayerSignal,
     status: "VERIFIED" | "REJECTED",
   ) => void;
-  stagedSignalReviews: Record<number, "VERIFIED" | "REJECTED">;
-  onUnstageSignal: (signalId: number) => void;
+  stagedSignalReviews: Record<string, "VERIFIED" | "REJECTED">;
+  onUnstageSignal: (signalId: string | number) => void;
   onSelectPlayer?: (p: Player) => void;
   setTab?: (tab: string) => void;
   onManualOverride?: (playerId: number, startProbability: number, note?: string) => void;
@@ -3593,7 +3715,7 @@ function EvidencePanel({
                         <span className={`staged-pill ${stagedStatus === "REJECTED" ? "rejected" : ""}`}>STAGED: {stagedStatus === "VERIFIED" ? "APPROVE" : "REJECT"}</span>
                         <button className="undo-staged-btn" onClick={() => onUnstageSignal(signal.id)}>Undo</button>
                       </div>
-                    ) : effectiveStatus === "PENDING" && (
+                    ) : signal.status === "PENDING" && (
                       <>
                         <button
                           className="dark-btn"
@@ -3705,8 +3827,8 @@ function MyTeamV2({
     signal: PlayerSignal,
     status: "VERIFIED" | "REJECTED",
   ) => void;
-  stagedSignalReviews: Record<number, "VERIFIED" | "REJECTED">;
-  onUnstageSignal: (signalId: number) => void;
+  stagedSignalReviews: Record<string, "VERIFIED" | "REJECTED">;
+  onUnstageSignal: (signalId: string | number) => void;
   onManualOverride?: (
     playerId: number,
     startProbability: number,
@@ -4092,8 +4214,8 @@ function SignalsTab({
   currentGameweek: number;
   onSelectPlayer: (p: Player) => void;
   onReviewSignal: (signal: PlayerSignal, status: "VERIFIED" | "REJECTED") => void;
-  stagedSignalReviews: Record<number, "VERIFIED" | "REJECTED">;
-  onUnstageSignal: (signalId: number) => void;
+  stagedSignalReviews: Record<string, "VERIFIED" | "REJECTED">;
+  onUnstageSignal: (signalId: string | number) => void;
   onApplyBatch: () => void;
   applyingBatch: boolean;
 }) {
@@ -4635,7 +4757,7 @@ function SignalsTab({
                     <span className={`staged-pill ${stagedStatus === "REJECTED" ? "rejected" : ""}`}>STAGED: {stagedStatus === "VERIFIED" ? "APPROVE" : "REJECT"}</span>
                     <button className="undo-staged-btn" onClick={() => onUnstageSignal(signal.id)}>Undo</button>
                   </div>
-                ) : effectiveStatus === "PENDING" && (
+                ) : signal.status === "PENDING" && (
                   <div className="signal-actions">
                     <button
                       className="dark-btn"
@@ -5042,7 +5164,7 @@ function LeaguesView({
               <div className="leagues-card-header">
                 <div>
                   <h3>{details.league.name}</h3>
-                  <span className="muted-text">Analyzed top {details.totalAnalyzed} rivals</span>
+                  <span className="muted-text">Sampled {details.sampledManagerCount ?? details.totalAnalyzed} of {details.totalManagerCount ?? details.totalAnalyzed} managers</span>
                 </div>
                 <span className="badge-info">Gameweek {currentGameweek}</span>
               </div>
@@ -5125,7 +5247,7 @@ function LeaguesView({
                 <div>
                   <h4 style={{ margin: "0 0 4px 0" }}>League Effective Ownership (EO)</h4>
                   <p className="muted-text" style={{ margin: 0, fontSize: "13px" }}>
-                    Effective Ownership combines starting ownership + captaincy % + 2x Triple Captain % across the top managers in this league.
+                    Effective Ownership combines starting ownership + captaincy % + 2x Triple Captain % across the sampled managers; it is not league-wide unless every standings page is fetched.
                   </p>
                 </div>
                 <div className="eo-filters">
@@ -5377,6 +5499,10 @@ function DashboardV2({
     ? validateInitialSquad(squad)
     : validateSquad(squad, bank);
   const score = xi.reduce((sum, p) => sum + horizonProjection(p, horizon), 0);
+  const storedRanges = xi.map(player => player.storedForecast).filter((value): value is NonNullable<Player['storedForecast']> => Boolean(value && value.horizon === horizon));
+  const outcomeRange = storedRanges.length === xi.length && xi.length > 0
+    ? { p10: storedRanges.reduce((sum, value) => sum + value.p10Points, 0), p90: storedRanges.reduce((sum, value) => sum + value.p90Points, 0) }
+    : null;
   return (
     <div className="content">
       <section className="decision-grid">
@@ -5438,6 +5564,7 @@ function DashboardV2({
           <div className="big-number">
             {score.toFixed(1)} <small>pts</small>
           </div>
+          {outcomeRange && <p className="muted">Outcome range under current assumptions: {outcomeRange.p10.toFixed(1)}–{outcomeRange.p90.toFixed(1)} pts (p10–p90)</p>}
           <div className="score-bars">
             <span style={{ width: "74%" }} />
             <span style={{ width: "52%" }} />
@@ -5827,6 +5954,11 @@ function TransfersV2({
   squad,
   catalog,
   effectiveBank = 0,
+  canonicalRecommendation,
+  canonicalLoading = false,
+  onGenerateCanonical,
+  onApplyCanonical,
+  onDismissCanonical,
 }: {
   data: Transfer[];
   horizon: number;
@@ -5838,6 +5970,11 @@ function TransfersV2({
   squad?: Player[];
   catalog?: Player[];
   effectiveBank?: number;
+  canonicalRecommendation?: CanonicalRecommendation | null;
+  canonicalLoading?: boolean;
+  onGenerateCanonical?: (chip?: 'TRIPLE_CAPTAIN' | 'BENCH_BOOST' | 'FREE_HIT' | 'WILDCARD' | null) => void;
+  onApplyCanonical?: (candidate: CanonicalRecommendation['candidates'][number]) => void;
+  onDismissCanonical?: (candidate: CanonicalRecommendation['candidates'][number], decision: 'REJECTED' | 'IGNORED') => void;
 }) {
   const [limit, setLimit] = useState(8);
   const visibleData = data.slice(0, limit);
@@ -5885,6 +6022,28 @@ function TransfersV2({
       {squad && squad.some(p => (p.roleProfile?.derivedFromSignalIds?.length ?? 0) > 0 && (p.roleProfile?.startProbability ?? 1) < 0.6) && (
         <SignalRiskStrip players={squad} />
       )}
+      <div className="panel priority-card">
+        <div className="panel-head"><div><h2>Stored multi-transfer recommendation</h2><p>Uses the latest immutable forecast run, exact selling economics, hit costs, uncertainty penalty, and the 60% decision rule.</p></div><button className="dark-btn" disabled={canonicalLoading} onClick={() => onGenerateCanonical?.(null)}>{canonicalLoading ? 'Calculating…' : 'Generate plan'}</button></div>
+        <div className="recommend-actions">
+          {([['TRIPLE_CAPTAIN','TC'],['BENCH_BOOST','BB'],['FREE_HIT','FH'],['WILDCARD','WC']] as const).map(([chip,label]) => <button className="ghost-btn" disabled={canonicalLoading} onClick={() => onGenerateCanonical?.(chip)} key={chip}>{label} counterfactual</button>)}
+        </div>
+        {canonicalRecommendation && <>
+          <p className="muted">Forecast {canonicalRecommendation.forecastRunId.slice(0, 8)} · status {canonicalRecommendation.status} · {canonicalRecommendation.cacheStatus === 'HIT' ? 'reused stored result' : 'new result stored'} · ordering saved for reproducibility</p>
+          {canonicalRecommendation.candidates.map(candidate => {
+            const names = candidate.apiMoves?.map(move => `${catalog?.find(player => player.id === move.outId)?.name || `#${move.outId}`} → ${catalog?.find(player => player.id === move.inId)?.name || `#${move.inId}`}`) || [];
+            const primary = candidate.id === canonicalRecommendation.primaryCandidateId;
+            return <article className="review-card" key={candidate.id}>
+              <div className="card-agent-header"><b>{primary ? 'PRIMARY · ' : ''}{candidate.action}</b><span className={`pill ${candidate.affordabilityStatus === 'EXACT' ? 'green' : 'amber'}`}>{candidate.affordabilityStatus}</span></div>
+              <p>{names.length ? names.join(' · ') : candidate.action === 'CHIP' ? 'Optimised chip counterfactual' : 'Roll the transfer'} · net {Number(candidate.netExpectedGain).toFixed(2)} pts · hit {candidate.hitCost} · P(beats roll) {candidate.probabilityBeatsRoll == null ? '—' : `${Math.round(candidate.probabilityBeatsRoll * 100)}%`}</p>
+              {candidate.p10Points != null && candidate.p90Points != null && <small>Outcome range under current assumptions: {Number(candidate.p10Points).toFixed(1)}–{Number(candidate.p90Points).toFixed(1)} pts (p10–p90)</small>}
+              <div className="recommend-actions">
+                {(candidate.apiMoves?.length || candidate.action === 'CHIP') ? <button className="dark-btn" onClick={() => onApplyCanonical?.(candidate)}>{candidate.action === 'CHIP' ? 'Record chip plan' : 'Apply local plan'}</button> : null}
+                <button className="ghost-btn" onClick={() => onDismissCanonical?.(candidate, 'REJECTED')}>Reject</button><button className="ghost-btn" onClick={() => onDismissCanonical?.(candidate, 'IGNORED')}>Ignore</button>
+              </div>
+            </article>;
+          })}
+        </>}
+      </div>
       <div className="page-intro">
         <div>
           <p className="eyebrow">TRANSFER PLAN</p>
@@ -7321,6 +7480,9 @@ function PlayerDrawer({
             <div className="hero-stat-meta">
               {horizon}-GW projected score · {roleProjection.expectedMinutes.toFixed(0)} expected mins
             </div>
+            {player.storedForecast?.horizon === horizon && (
+              <div className="hero-stat-meta">Outcome range under current assumptions: {player.storedForecast.p10Points.toFixed(1)}–{player.storedForecast.p90Points.toFixed(1)} pts (p10–p90)</div>
+            )}
           </div>
         </div>
         {player.status === "i" || player.minutes === 0 ? (

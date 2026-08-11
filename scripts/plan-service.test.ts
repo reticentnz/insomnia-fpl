@@ -87,4 +87,67 @@ describe('WP-04 immutable plans', () => {
     expect(saved.status).toBe('SAVED')
     expect((await getActivePlan(db, { fplEntryId: 123456 })).id).toBe(manager.activePlan.id)
   })
+
+  it('serializes concurrent active-plan writes on the shared SQLite connection', async () => {
+    const { db, manager } = await seededManager()
+    const [first, second] = await Promise.all([
+      createPlan(db, { fplEntryId: 123456, parentPlanId: manager.activePlan.id, name: 'Concurrent A', createdAt: '2026-08-15T19:10:00Z' }),
+      createPlan(db, { fplEntryId: 123456, parentPlanId: manager.activePlan.id, name: 'Concurrent B', createdAt: '2026-08-15T19:11:00Z' }),
+    ])
+    expect(first.id).not.toBe(second.id)
+    expect((await getActivePlan(db, { fplEntryId: 123456 })).id).toBe(second.id)
+    expect(Number((await db.query('SELECT COUNT(*) AS count FROM "Plan" WHERE "status"=\'ACTIVE\'')).rows[0].count)).toBe(1)
+  })
+
+  it('derives exact revision bank and persists locks in the immutable plan', async () => {
+    const { db, manager } = await seededManager()
+    const feedRun = (await db.query('SELECT "id" FROM "FeedRun" ORDER BY "started_at" DESC LIMIT 1')).rows[0]
+    const team = (await db.query('SELECT "id" FROM "Team" WHERE "season"=\'2026/27\' ORDER BY "fpl_id" LIMIT 1')).rows[0]
+    await db.query(
+      `INSERT INTO "Player" ("id", "season", "fpl_id", "web_name", "created_at", "updated_at")
+       VALUES ('player:2026%2F27:12', '2026/27', 12, 'Replacement', $1, $1)`,
+      ['2026-08-15T18:30:00Z'],
+    )
+    await db.query(
+      `INSERT INTO "PlayerObservation" (
+        "id", "player_id", "feed_run_id", "observed_at", "team_id", "position", "active",
+        "price_tenths", "raw_payload_json"
+      ) VALUES ('observation-12', 'player:2026%2F27:12', $1, $2, $3, 'MID', 1, 54, '{}')`,
+      [feedRun.id, '2026-08-15T18:30:00Z', team.id],
+    )
+    const child = await createPlan(db, {
+      fplEntryId: 123456,
+      parentPlanId: manager.activePlan.id,
+      playerIds: [12, 11],
+      lockedPlayerIds: [12],
+      createdAt: '2026-08-15T19:10:00Z',
+    })
+    expect(child.bankTenths).toBe(3)
+    expect(child.players.find(player => player.fplId === 12)?.locked).toBe(true)
+    expect(child.changeSummary.economics).toMatchObject({ affordability: 'EXACT', bankBeforeTenths: 5, bankAfterTenths: 3, hitCost: 4 })
+  })
+
+  it('keeps affordability unknown instead of substituting current price', async () => {
+    const { db, manager } = await seededManager()
+    const feedRun = (await db.query('SELECT "id" FROM "FeedRun" ORDER BY "started_at" DESC LIMIT 1')).rows[0]
+    const team = (await db.query('SELECT "id" FROM "Team" WHERE "season"=\'2026/27\' ORDER BY "fpl_id" LIMIT 1')).rows[0]
+    await db.query(
+      `INSERT INTO "Player" ("id", "season", "fpl_id", "web_name", "created_at", "updated_at")
+       VALUES ('player:2026%2F27:12', '2026/27', 12, 'Replacement', $1, $1)`,
+      ['2026-08-15T18:30:00Z'],
+    )
+    await db.query(
+      `INSERT INTO "PlayerObservation" ("id", "player_id", "feed_run_id", "observed_at", "team_id", "position", "active", "price_tenths", "raw_payload_json")
+       VALUES ('observation-12', 'player:2026%2F27:12', $1, $2, $3, 'DEF', 1, 48, '{}')`,
+      [feedRun.id, '2026-08-15T18:30:00Z', team.id],
+    )
+    const child = await createPlan(db, {
+      fplEntryId: 123456,
+      parentPlanId: manager.activePlan.id,
+      playerIds: [10, 12],
+      createdAt: '2026-08-15T19:10:00Z',
+    })
+    expect(child.bankTenths).toBeNull()
+    expect(child.changeSummary.economics.affordability).toBe('AFFORDABILITY_UNKNOWN')
+  })
 })

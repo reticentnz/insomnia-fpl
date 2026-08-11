@@ -1,0 +1,18 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64">
+  <defs>
+    <linearGradient id="bg" x1="8" y1="5" x2="56" y2="59" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#15233b"/>
+      <stop offset="1" stop-color="#080c14"/>
+    </linearGradient>
+    <linearGradient id="ball" x1="17" y1="13" x2="48" y2="52" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#7dffbd"/>
+      <stop offset="1" stop-color="#00ff87"/>
+    </linearGradient>
+  </defs>
+  <rect x="2" y="2" width="60" height="60" rx="15" fill="url(#bg)"/>
+  <rect x="2.75" y="2.75" width="58.5" height="58.5" rx="14.25" fill="none" stroke="#00ff87" stroke-opacity=".3" stroke-width="1.5"/>
+  <circle cx="32" cy="32" r="20" fill="url(#ball)"/>
+  <path d="m32 22.2 8 5.8-3.1 9.4h-9.8L24 28l8-5.8Z" fill="#0a1321"/>
+  <path d="m32 12 0 10.2M13 25.8 24 28M20.3 48.2l6.8-10.8M43.7 48.2l-6.8-10.8M51 25.8 40 28" fill="none" stroke="#0a1321" stroke-width="3.2" stroke-linejoin="round"/>
+  <path d="m18 17.3 5.5 10.9-10.1 7.1M46 17.3l-5.5 10.9 10.1 7.1M20.3 48.2l11.7 3.7 11.7-3.7" fill="none" stroke="#0a1321" stroke-width="3.2" stroke-linejoin="round"/>
+</svg>

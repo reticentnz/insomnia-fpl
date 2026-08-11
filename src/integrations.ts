@@ -1,5 +1,6 @@
 import { findTransferRoutesToTarget, horizonProjection, type Player, type Transfer } from './domain.ts'
 import type { PlayerSignal } from './player-signals'
+import type { ProjectionInputCatalog } from './core/types'
 
 // Keep the public FPL response shape outside the domain layer. A server-side
 // ingestion job can use the same normalizer and persist snapshots later.
@@ -17,6 +18,12 @@ export type TeamMarketSnapshot = {
   drawProb: number | null;
   awayWinProb: number | null;
 };
+
+function apiErrorMessage(data: any, fallback: string) {
+  if (typeof data?.error === 'string') return data.error
+  if (typeof data?.error?.message === 'string') return data.error.message
+  return fallback
+}
 
 export function parseTeamId(input:string): number|null { const match=input.trim().match(/(?:entry\/|^)(\d+)/); return match?Number(match[1]):null }
 
@@ -176,7 +183,7 @@ export function buildExplanationContext(args:ExplanationContext,question='') {
   const wantsCaptain=/\b(captain|captaincy|armband|vice captain)\b/.test(normalized)
   const wantsLineup=/\b(starting xi|lineup|line up|start|bench|team selection)\b/.test(normalized)
   const wantsTransfer=/\b(transfer|buy|sell|replace|swap|afford|get|bring|into the team|move)\b/.test(normalized)
-  const base={currentGameweek:args.currentGameweek||1,horizonGameweeks:args.horizon,bank:args.bank,freeTransfers:args.freeTransfers,pricingBasis:'Current catalogue prices; verify official selling prices before acting.'}
+  const base={currentGameweek:args.currentGameweek||1,horizonGameweeks:args.horizon,bank:args.bank,freeTransfers:args.freeTransfers,pricingBasis:'Current catalogue prices; affordability requires an imported or user-confirmed selling price.'}
 
   if(mentionedPlayers.length>=2 || (mentionedPlayers.length===1 && isComparisonQuery && !wantsTransfer && !wantsCaptain)){
     const playersToCompare=mentionedPlayers.slice(0,3)
@@ -366,6 +373,9 @@ export interface LeagueDetailsResponse {
   };
   standings: LeagueRival[];
   totalAnalyzed: number;
+  sampledManagerCount: number;
+  totalManagerCount: number;
+  pagination: { policy: 'FIRST_PAGE_SAMPLE'; fetchedPages: number; complete: boolean };
   isPreSeason?: boolean;
   effectiveOwnership: LeaguePlayerEO[];
 }
@@ -373,6 +383,13 @@ export interface LeagueDetailsResponse {
 export async function fetchFplAccount(teamId: number, gameweek?: number): Promise<{
   account: FplAccount;
   picks: Array<{ element: number; position?: number; multiplier?: number; is_captain?: boolean; is_vice_captain?: boolean; purchase_price?: number | null; selling_price?: number | null }>;
+  planId?: string | null;
+  parentPlanId?: string | null;
+  sellingPrices: Record<number, number | null>;
+  selectedIds: number[];
+  lockedIds: number[];
+  planBank: number | null;
+  planFreeTransfers: number;
 }> {
   const response = await fetch('/api/manager/import', {
     method: 'POST',
@@ -380,7 +397,7 @@ export async function fetchFplAccount(teamId: number, gameweek?: number): Promis
     body: JSON.stringify({ teamId, gameweek }),
   })
   const data = await response.json().catch(() => ({}))
-  if (!response.ok) throw new Error(data.error || `FPL account import failed: HTTP ${response.status}`)
+  if (!response.ok) throw new Error(apiErrorMessage(data, `FPL account import failed: HTTP ${response.status}`))
   const account = data.account || {}
   return {
     account: {
@@ -408,12 +425,24 @@ export async function fetchFplAccount(teamId: number, gameweek?: number): Promis
       purchase_price: player.purchasePriceTenths,
       selling_price: player.sellingPriceTenths,
     })),
+    planId: data.activePlan?.id || null,
+    parentPlanId: data.activePlan?.parentPlanId || null,
+    sellingPrices: Object.fromEntries((Array.isArray(data.squad) ? data.squad : []).map((player: any) => [Number(player.fplId), player.sellingPriceTenths == null ? null : Number(player.sellingPriceTenths)])),
+    selectedIds: Array.isArray(data.activePlan?.players)
+      ? data.activePlan.players.map((player: any) => Number(player.fplId)).filter(Number.isInteger)
+      : (Array.isArray(data.squad) ? data.squad : []).map((player: any) => Number(player.fplId)).filter(Number.isInteger),
+    lockedIds: Array.isArray(data.activePlan?.players)
+      ? data.activePlan.players.filter((player: any) => player.locked).map((player: any) => Number(player.fplId)).filter(Number.isInteger)
+      : [],
+    planBank: data.activePlan?.bankTenths == null ? null : Number(data.activePlan.bankTenths) / 10,
+    planFreeTransfers: Number(data.activePlan?.freeTransfers ?? 0),
   }
 }
 
-export async function getUserProfile(): Promise<{ account: FplAccount | null; selectedIds: number[] | null; planId?: string | null; preferences?: UserPreferences }> {
+export async function getUserProfile(): Promise<{ account: FplAccount | null; selectedIds: number[] | null; planId?: string | null; parentPlanId?: string | null; sellingPrices?: Record<number, number | null>; preferences?: UserPreferences }> {
   try {
-    const res = await fetch('/api/manager/current')
+    const [res, preferenceRes] = await Promise.all([fetch('/api/manager/current'), fetch('/api/user-preferences')])
+    const storedPreferences = preferenceRes.ok ? await preferenceRes.json() : null
     if (res.ok) {
       const data = await res.json()
       const activePlanIds = Array.isArray(data.activePlan?.players)
@@ -427,49 +456,55 @@ export async function getUserProfile(): Promise<{ account: FplAccount | null; se
         account: data.account || null,
         selectedIds: selectedIds.length ? selectedIds : null,
         planId: data.activePlan?.id || null,
+        parentPlanId: data.activePlan?.parentPlanId || null,
+        sellingPrices: Object.fromEntries((Array.isArray(data.squad) ? data.squad : []).map((player: any) => [Number(player.fplId), player.sellingPriceTenths == null ? null : Number(player.sellingPriceTenths)])),
         preferences: {
-          userName: data.account?.managerName || '',
+          userName: storedPreferences?.userName || data.account?.managerName || '',
           selectedIds,
           lockedIds: Array.isArray(data.activePlan?.players)
             ? data.activePlan.players.filter((player: { locked?: boolean }) => player.locked).map((player: { fplId?: number }) => Number(player.fplId)).filter(Number.isInteger)
             : [],
-          bank: data.account?.bank == null ? null : Number(data.account.bank),
-          freeTransfers: data.freeTransfers == null ? 0 : Number(data.freeTransfers),
-          defaultLeagueId: null,
-          onboardingCompleted: Boolean(data.account),
-          challengeResult: null,
-          stagedReviews: {},
+          bank: data.activePlan?.bankTenths == null ? (data.account?.bank == null ? null : Number(data.account.bank)) : Number(data.activePlan.bankTenths) / 10,
+          freeTransfers: data.activePlan?.freeTransfers == null ? (storedPreferences?.freeTransfers ?? 0) : Number(data.activePlan.freeTransfers),
+          defaultLeagueId: storedPreferences?.defaultLeagueId ?? null,
+          onboardingCompleted: storedPreferences?.onboardingCompleted ?? Boolean(data.account),
+          challengeResult: storedPreferences?.challengeResult ?? null,
+          stagedReviews: storedPreferences?.stagedReviews || {},
         },
       }
     }
+    if (storedPreferences) return { account: null, selectedIds: null, preferences: { ...storedPreferences, selectedIds: [], lockedIds: [] } }
   } catch (error) {
     if (error instanceof Error && error.name !== 'TypeError') throw error
   }
   return { account: null, selectedIds: null }
 }
 
-export async function saveUserProfile(account: FplAccount, selectedIds?: number[], parentPlanId?: string | null): Promise<{ ok: boolean; planId?: string }> {
+export async function saveUserProfile(account: FplAccount, selectedIds?: number[], parentPlanId?: string | null, lockedPlayerIds: number[] = []): Promise<{ ok: boolean; planId?: string; parentPlanId?: string | null; bankTenths?: number | null; freeTransfers?: number; error?: string }> {
   try {
     if (!Array.isArray(selectedIds) || !selectedIds.length) return { ok: true }
     const res = await fetch('/api/plans', {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ teamId: account.teamId, parentPlanId: parentPlanId || undefined, playerIds: selectedIds, name: 'Active plan', status: 'ACTIVE' })
+      body: JSON.stringify({ teamId: account.teamId, parentPlanId: parentPlanId || undefined, playerIds: selectedIds, lockedPlayerIds, name: 'Active plan', status: 'ACTIVE' })
     })
     const data = await res.json().catch(() => ({}))
-    return { ok: res.ok, planId: data.id }
+    return { ok: res.ok, planId: data.id, parentPlanId: data.parentPlanId, bankTenths: data.bankTenths, freeTransfers: data.freeTransfers, error: data.error }
   } catch {
-    return { ok: false }
+    return { ok: false, error: 'Plan save request failed' }
   }
 }
 
 export async function deleteUserProfile(): Promise<boolean> {
-  return true
+  try {
+    const res = await fetch('/api/manager/current', { method: 'DELETE' })
+    return res.ok
+  } catch { return false }
 }
 
 export async function saveUserPreferences(update: Partial<UserPreferences>): Promise<boolean> {
   try {
-    const { selectedIds: _selectedIds, ...preferenceUpdate } = update
+    const { selectedIds: _selectedIds, lockedIds: _lockedIds, ...preferenceUpdate } = update
     if (!Object.keys(preferenceUpdate).length) return true
     const res = await fetch('/api/user-preferences', {
       method: 'POST',
@@ -482,19 +517,78 @@ export async function saveUserPreferences(update: Partial<UserPreferences>): Pro
   }
 }
 
+export async function selectPlanRevision(planId: string): Promise<{ ok: boolean; plan?: any }> {
+  try {
+    const res = await fetch(`/api/plans/${encodeURIComponent(planId)}/select`, { method: 'POST' })
+    const plan = await res.json().catch(() => null)
+    return { ok: res.ok, plan }
+  } catch { return { ok: false } }
+}
+
+export async function saveManagerAssumptions(teamId: number, update: { bank?: number; freeTransfers?: number }): Promise<boolean> {
+  try {
+    const body: Record<string, unknown> = { teamId }
+    if (Number.isInteger(update.freeTransfers)) body.freeTransfers = update.freeTransfers
+    if (!Object.prototype.hasOwnProperty.call(body, 'freeTransfers')) return true
+    const res = await fetch('/api/manager/assumptions', {
+      method: 'PATCH', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body),
+    })
+    return res.ok
+  } catch { return false }
+}
+
 export async function fetchPublicSquad(teamId:number, gameweek?:number):Promise<{picks:Array<{element:number}>; gameweek:number}> {
   const res = await fetchFplAccount(teamId, gameweek)
   return { picks: res.picks, gameweek: res.account.currentGameweek }
 }
+export async function fetchProjectionCatalog(asOf?: string): Promise<ProjectionInputCatalog> {
+  const query = asOf ? `?asOf=${encodeURIComponent(asOf)}` : ''
+  const response = await fetch(`/api/catalog${query}`)
+  if (!response.ok) throw new Error(`Catalogue unavailable: ${response.status}`)
+  return await response.json() as ProjectionInputCatalog
+}
+
+function playerFromProjectionCatalog(item: ProjectionInputCatalog['players'][number]): Player {
+  const official = item.official as Record<string, unknown>
+  const fixture = item.fixtures[0]
+  const position = String(official.position || 'MID') as Player['position']
+  return {
+    id: item.fplId,
+    name: item.name,
+    club: item.team.shortName,
+    position,
+    price: Number(official.price_tenths || 0) / 10,
+    form: Number(official.form || 0),
+    ownership: Number(official.ownership_percent || 0),
+    minutes: Number(official.chance_of_playing ?? 100),
+    expectedMinutes: Number(official.chance_of_playing ?? 100) * .9,
+    fixture: fixture ? `${fixture.opponent.shortName} (${fixture.difficulty || '-'})` : 'BLANK',
+    difficulty: fixture?.difficulty || 5,
+    projection: Number(official.ep_next || 0),
+    colour: '#64748b',
+    status: String(official.status || 'a'),
+    chanceOfPlaying: official.chance_of_playing == null ? undefined : Number(official.chance_of_playing),
+    news: official.news == null ? undefined : String(official.news),
+    transfersIn: Number(official.transfers_in || 0),
+    transfersOut: Number(official.transfers_out || 0),
+    active: Boolean(official.active),
+    stats: { minutes: Number(official.minutes || 0), starts: Number(official.starts || 0), expectedGoals: Number(official.expected_goals || 0), expectedAssists: Number(official.expected_assists || 0) },
+    upcomingFixtures: item.fixtures.map(value => ({ gameweek: value.gameweekFplId || 0, opponent: value.opponent.shortName, venue: value.isHome ? 'H' : 'A', difficulty: value.difficulty || 5 })),
+  }
+}
+
 export async function fetchLiveCatalog(retries = 3): Promise<{capturedAt:string;currentGameweek:number|null;deadline:string|null;players:Player[]}> {
   let lastError: Error | null = null
   for (let attempt = 0; attempt <= retries; attempt++) {
     const controller = new AbortController()
     const timeoutId = window.setTimeout(() => controller.abort(), 12000)
     try {
-      const response = await fetch('/api/fpl-data', { signal: controller.signal })
+      const response = await fetch('/api/catalog', { signal: controller.signal })
       if (response.ok) {
-        return await response.json() as {capturedAt:string;currentGameweek:number|null;deadline:string|null;players:Player[]}
+        const catalogue = await response.json() as ProjectionInputCatalog
+        const gameweeks = catalogue.players.flatMap(player => player.fixtures.map(fixture => ({ gameweek: fixture.gameweekFplId, kickoffAt: fixture.kickoffAt }))).filter(item => item.gameweek != null)
+        const next = gameweeks.sort((a, b) => Number(a.gameweek) - Number(b.gameweek))[0]
+        return { capturedAt: catalogue.freshness.official.observedAt || catalogue.asOf, currentGameweek: next?.gameweek || null, deadline: null, players: catalogue.players.map(playerFromProjectionCatalog) }
       }
       lastError = new Error(`Live FPL data unavailable: ${response.status}`)
     } catch (err) {
@@ -507,6 +601,53 @@ export async function fetchLiveCatalog(retries = 3): Promise<{capturedAt:string;
     }
   }
   throw lastError || new Error('Live FPL data unavailable')
+}
+
+export type ForecastSummary = {
+  id: string; modelVersion: string; asOf: string; createdAt: string; horizon: number; gameweeks: number[];
+  players: Array<{ playerId: number; meanPoints: number; standardDeviation: number; p10Points: number; p50Points: number; p90Points: number; fixtureCount: number }>;
+}
+
+export async function fetchLatestForecast(horizon: 1 | 3 | 5): Promise<ForecastSummary | null> {
+  const response = await fetch(`/api/forecast-runs/latest?horizon=${horizon}`)
+  if (response.status === 404) return null
+  const data = await response.json().catch(() => null)
+  if (!response.ok) throw new Error(apiErrorMessage(data, `Forecast unavailable: HTTP ${response.status}`))
+  return data.forecast as ForecastSummary
+}
+
+export async function fetchBacktest(modelVersion?: string): Promise<any> {
+  const query = modelVersion ? `?modelVersion=${encodeURIComponent(modelVersion)}` : ''
+  const response = await fetch(`/api/backtests${query}`)
+  const data = await response.json().catch(() => null)
+  if (!response.ok) throw new Error(apiErrorMessage(data, `Backtest unavailable: HTTP ${response.status}`))
+  return data
+}
+
+export async function fetchDecisionHistory(limit = 50): Promise<any[]> {
+  const response = await fetch(`/api/decisions?limit=${encodeURIComponent(String(limit))}`)
+  const data = await response.json().catch(() => null)
+  if (!response.ok) throw new Error(apiErrorMessage(data, `Decision history unavailable: HTTP ${response.status}`))
+  return data.decisions || []
+}
+
+export type CanonicalRecommendation = {
+  id: string; planId: string; forecastRunId: string; horizon: number; status: string; primaryCandidateId: string; cacheStatus: 'HIT' | 'MISS';
+  candidates: Array<{ id: string; rank: number; action: string; apiMoves: Array<{ outId: number; inId: number }>; netExpectedGain: number; rawGain: number; hitCost: number; uncertaintyPenalty: number; probabilityBeatsRoll: number | null; affordabilityStatus: string; bankAfterTenths: number | null; p10Points: number | null; p50Points: number | null; p90Points: number | null; chip?: string; chipReason?: string }>;
+}
+
+export async function createPlanRecommendation(planId: string, options: { horizon: 1 | 3 | 5; maxTransfers?: number; chip?: 'TRIPLE_CAPTAIN' | 'BENCH_BOOST' | 'FREE_HIT' | 'WILDCARD' | null }): Promise<CanonicalRecommendation> {
+  const response = await fetch(`/api/plans/${encodeURIComponent(planId)}/recommendations`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ horizon: options.horizon, maxTransfers: options.maxTransfers ?? 5, chip: options.chip || null }) })
+  const data = await response.json().catch(() => null)
+  if (!response.ok) throw new Error(apiErrorMessage(data, `Recommendation unavailable: HTTP ${response.status}`))
+  return data as CanonicalRecommendation
+}
+
+export async function recordRecommendationDecision(input: { recommendationSetId: string; candidateId?: string | null; decision: 'ACCEPTED' | 'REJECTED' | 'IGNORED' | 'CUSTOM'; selectedPlanId?: string | null; reason?: string | null }) {
+  const response = await fetch('/api/decisions', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(input) })
+  const data = await response.json().catch(() => null)
+  if (!response.ok) throw new Error(apiErrorMessage(data, `Decision could not be recorded: HTTP ${response.status}`))
+  return data
 }
 export async function fetchLLMExplanation(question:string, context:ExplanationContext, config?:{apiKey?:string; provider?:string; model?:string}):Promise<{answer:string|null; provider:string; error?:string}|null> {
   const controller = new AbortController()
@@ -528,7 +669,7 @@ export async function fetchLLMExplanation(question:string, context:ExplanationCo
     clearTimeout(timeoutId)
     const data = await response.json().catch(() => null)
     if (!response.ok) {
-      return { answer: null, provider: config?.provider || 'API Error', error: data?.error || `HTTP ${response.status} error` }
+      return { answer: null, provider: config?.provider || 'API Error', error: apiErrorMessage(data, `HTTP ${response.status} error`) }
     }
     return data as { answer:string|null; provider:string; error?:string }
   } catch (err) {
@@ -594,7 +735,7 @@ export async function challengeSquad(
     }),
   })
   const data = await response.json().catch(() => null)
-  if (!response.ok) throw new Error(data?.error || `Squad challenge failed: HTTP ${response.status}`)
+  if (!response.ok) throw new Error(apiErrorMessage(data, `Squad challenge failed: HTTP ${response.status}`))
   // Backward-compatible with a server that still returns the completed result.
   if (!data?.jobId) return data as SquadChallengeResult
   const pollDeadline = Date.now() + 10 * 60 * 1000
@@ -602,7 +743,7 @@ export async function challengeSquad(
     await new Promise((resolve) => window.setTimeout(resolve, 2500))
     const pollResponse = await fetch(`/api/challenge-squad/${encodeURIComponent(data.jobId)}`)
     const poll = await pollResponse.json().catch(() => null)
-    if (!pollResponse.ok) throw new Error(poll?.error || `Unable to check research status: HTTP ${pollResponse.status}`)
+    if (!pollResponse.ok) throw new Error(apiErrorMessage(poll, `Unable to check research status: HTTP ${pollResponse.status}`))
     if (poll?.status === 'completed') return poll.result as SquadChallengeResult
     if (poll?.status === 'failed') throw new SquadChallengeError(poll.error || 'Squad challenge failed', poll.rawOutput || '', poll.outputTypes || [])
   }
@@ -627,12 +768,12 @@ export async function updatePlayerSignalStatus(
     throw error
   }
   const data = await response.json().catch(() => null)
-  if (!response.ok) throw new Error(data?.error || `Could not update evidence: HTTP ${response.status}`)
+  if (!response.ok) throw new Error(apiErrorMessage(data, `Could not update evidence: HTTP ${response.status}`))
   return (data.signal || data) as PlayerSignal
 }
 
 export async function updatePlayerSignalStatusesBatch(
-  updates: Array<{ id: number; status: 'VERIFIED' | 'REJECTED' }>,
+  updates: Array<{ id: string | number; status: 'VERIFIED' | 'REJECTED' }>,
 ): Promise<PlayerSignal[]> {
   if (!updates.length) return []
   try {
@@ -649,7 +790,7 @@ export async function updatePlayerSignalStatusesBatch(
     // Only fall back when the endpoint itself is unavailable on an older server.
     if (response.status !== 404 && response.status !== 405) {
       const data = await response.clone().json().catch(() => null)
-      throw new Error(data?.error || `Could not apply evidence changes: HTTP ${response.status}`)
+      throw new Error(apiErrorMessage(data, `Could not apply evidence changes: HTTP ${response.status}`))
     }
   } catch (error) {
     if (error instanceof Error && error.name !== 'TypeError') throw error
@@ -679,7 +820,7 @@ export async function createManualPlayerSignal(
     }),
   })
   const data = await response.json().catch(() => null)
-  if (!response.ok) throw new Error(data?.error || `Could not create manual override: HTTP ${response.status}`)
+  if (!response.ok) throw new Error(apiErrorMessage(data, `Could not create manual override: HTTP ${response.status}`))
   return (data.signal || data) as PlayerSignal
 }
 
@@ -741,7 +882,7 @@ export async function ingestSignalText(payload: {
     body: JSON.stringify(payload),
   })
   const data = await response.json().catch(() => null)
-  if (!response.ok) throw new Error(data?.error || `Ingest failed: HTTP ${response.status}`)
+  if (!response.ok) throw new Error(apiErrorMessage(data, `Ingest failed: HTTP ${response.status}`))
   return data as { created: number; signals: PlayerSignal[] }
 }
 
@@ -864,7 +1005,7 @@ export async function fetchSystemStatus(): Promise<SystemStatus> {
 
 export type ServerAiConfig = {
   provider?: string;
-  apiKey?: string;
+  configured?: boolean;
 };
 
 export async function fetchServerAiConfig(): Promise<ServerAiConfig> {

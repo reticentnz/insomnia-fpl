@@ -7,6 +7,7 @@ export type FixtureItem = {
   opponent: string;
   venue: "H" | "A";
   difficulty: number;
+  strength?: { method: "MARKET_XG" | "OFFICIAL_STRENGTH"; attackMultiplier: number; defenceMultiplier: number };
 };
 export type PlayerStats = {
   minutes: number;
@@ -44,6 +45,8 @@ export type Player = {
   transferredRecently?: boolean;
   position: Position;
   price: number;
+  /** Exact FPL selling price for an owned player; null means affordability is unknown. */
+  sellingPrice?: number | null;
   form: number;
   ownership: number;
   minutes: number;
@@ -64,6 +67,7 @@ export type Player = {
   calibrationFactor?: number;
   dataConfidence?: "LOW" | "MEDIUM" | "HIGH";
   coldStart?: boolean;
+  storedForecast?: { runId: string; horizon: number; meanPoints: number; standardDeviation: number; p10Points: number; p50Points: number; p90Points: number; fixtureCount: number };
 };
 
 export function isPlayerInjured(p: Player): boolean {
@@ -1499,6 +1503,7 @@ export function horizonMultiplier(h: number) {
   return h === 1 ? 1 : h === 3 ? 2.82 : 4.5;
 }
 export function horizonProjection(p: Player, h: number) {
+  if (p.storedForecast?.horizon === h) return p.storedForecast.meanPoints;
   return modelHorizonProjection(
     { ...p, upcomingFixtures: getPlayerUpcomingFixtures(p, h) },
     h,
@@ -1579,16 +1584,19 @@ export function isLegalTransfer(
   inc: Player,
   bank = 0,
 ) {
+  const sellingPrice = out.sellingPrice === undefined ? out.price : out.sellingPrice;
   if (
     !squad.some((p) => p.id === out.id) ||
     inc.active === false ||
     out.position !== inc.position ||
-    squad.some((p) => p.id === inc.id)
+    squad.some((p) => p.id === inc.id) ||
+    sellingPrice === null
   )
     return false;
   const next = squad.map((p) => (p.id === out.id ? inc : p));
   return (
-    inc.price - out.price <= bank && validateSquad(next, bank).length === 0
+    inc.price - sellingPrice <= bank &&
+    validateSquad(next, 1000).filter((issue) => issue.rule !== "Budget").length === 0
   );
 }
 
@@ -1635,8 +1643,10 @@ export function findTransferRoutesToTarget(
     (player) => player.position === target.position,
   );
   const directShortfalls = targetOuts.map((out) =>
-    Math.max(0, +(target.price - out.price - bank).toFixed(1)),
-  );
+    out.sellingPrice === null
+      ? Number.POSITIVE_INFINITY
+      : Math.max(0, +(target.price - (out.sellingPrice ?? out.price) - bank).toFixed(1)),
+  ).filter(Number.isFinite);
   const routes: TargetTransferRoute[] = [];
   const seen = new Set<string>();
 
@@ -1647,8 +1657,9 @@ export function findTransferRoutesToTarget(
       ...squad.filter((player) => !outgoingIds.has(player.id)),
       ...incoming,
     ];
+    if (moves.some((move) => move.out.sellingPrice === null)) return;
     const totalPriceDelta = +moves
-      .reduce((sum, move) => sum + move.in.price - move.out.price, 0)
+      .reduce((sum, move) => sum + move.in.price - (move.out.sellingPrice ?? move.out.price), 0)
       .toFixed(1);
     if (totalPriceDelta > bank + 0.0001 || !isLegalRouteSquad(finalSquad))
       return;
@@ -1663,7 +1674,7 @@ export function findTransferRoutesToTarget(
       in: move.in,
       outProjection: +horizonProjection(move.out, horizon).toFixed(1),
       inProjection: +horizonProjection(move.in, horizon).toFixed(1),
-      priceDelta: +(move.in.price - move.out.price).toFixed(1),
+      priceDelta: +(move.in.price - (move.out.sellingPrice ?? move.out.price)).toFixed(1),
     }));
     const rawGain = +detailed
       .reduce((sum, move) => sum + move.inProjection - move.outProjection, 0)
@@ -1758,7 +1769,7 @@ export function transfers(
             in: inc,
             gain,
             net: +(gain - hitCost).toFixed(1),
-            priceDelta: +(inc.price - out.price).toFixed(1),
+            priceDelta: +(inc.price - (out.sellingPrice ?? out.price)).toFixed(1),
             priceAlert: alert,
             sellOffWarning: sellOff,
             outProjection,
@@ -2348,7 +2359,7 @@ export type ChipImpact = {
   name: string;
   shortName: string;
   description: string;
-  projectedGain: number;
+  projectedGain: number | null;
   notes: string;
 };
 
@@ -2396,8 +2407,6 @@ export function calculateChipImpact(
   );
   const bbGain = +benchXpts.toFixed(1);
 
-  const wcGain = +(Math.max(2.5, benchXpts * 0.2 + 2.0)).toFixed(1);
-  const fhGain = +(Math.max(3.0, benchXpts * 0.3 + 3.0)).toFixed(1);
 
   return [
     {
@@ -2424,16 +2433,16 @@ export function calculateChipImpact(
       shortName: "WC",
       description:
         "Unlimited free transfers to permanently restructure your squad with £0 hit cost.",
-      projectedGain: wcGain,
-      notes: "Allows full squad overhaul before major fixture swings",
+      projectedGain: null,
+      notes: "Generate a forecast-backed chip recommendation to calculate this counterfactual.",
     },
     {
       chip: "FH",
       name: "Free Hit",
       shortName: "FH",
       description: "Make unlimited free transfers for one single gameweek only.",
-      projectedGain: fhGain,
-      notes: "Ideal for target blank or double gameweeks",
+      projectedGain: null,
+      notes: "Generate a forecast-backed chip recommendation to calculate this counterfactual.",
     },
   ];
 }
@@ -2641,4 +2650,3 @@ export function calculateRivalEO(
     effectiveOwnership: eo,
   };
 }
-

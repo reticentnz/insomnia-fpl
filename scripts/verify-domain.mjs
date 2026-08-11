@@ -34,8 +34,8 @@ if(goalkeeperReturn.total!==7)throw new Error('goalkeeper scoring failed')
 if(scorePlayerMatch({position:'DEF',minutes:59,cleanSheet:true}).cleanSheet!==0)throw new Error('60-minute clean-sheet threshold failed')
 const tiedBonus=allocateBonusPoints([{playerId:1,bps:30},{playerId:2,bps:30},{playerId:3,bps:25}])
 if(tiedBonus[1]!==3||tiedBonus[2]!==3||tiedBonus[3]!==1)throw new Error('BPS tie allocation failed')
-const calibration=evaluateCalibration(Array.from({length:20},()=>({position:'MID',expectedPoints:4,actualPoints:8}))).find(row=>row.position==='MID')
-if(calibration?.factor!==1.25)throw new Error('calibration bounds failed')
+const calibration=evaluateCalibration(Array.from({length:100},()=>({position:'MID',expectedPoints:4,actualPoints:8}))).find(row=>row.position==='MID')
+if(calibration?.factor!==1.15)throw new Error('calibration bounds failed')
 const knownDefender={...players.find(player=>player.position==='DEF'),expectedMinutes:45,dataConfidence:'HIGH',coldStart:false,stats:{minutes:1800},upcomingFixtures:[{gameweek:1,opponent:'SUN',venue:'H',difficulty:2}]}
 const coldStartDefender={...knownDefender,id:999,coldStart:true,dataConfidence:'LOW',stats:{minutes:0}}
 const { horizonProjection } = await import('../src/domain.ts')

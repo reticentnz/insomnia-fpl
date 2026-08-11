@@ -3,14 +3,11 @@ import fs from 'node:fs'
 import path from 'node:path'
 import { randomUUID, timingSafeEqual } from 'node:crypto'
 import { resolvePlayerRole } from '../src/player-signals.ts'
-import { matchCreatorClaim, normalizeCreatorPayload, normalizeEntityText, signalDraftFromClaim } from './creator-signals.mjs'
+import { matchCreatorClaim, normalizeCreatorPayload, signalDraftFromClaim } from './creator-signals.mjs'
 
 const port = Number(process.env.PORT || 4173)
 const host = process.env.HOST || '127.0.0.1'
 const RESEARCH_AUDIT_LIMIT = 6
-const ROLE_BEARING_SIGNAL_KINDS = new Set(['DEPTH_CHART', 'EXPECTED_ROLE', 'START_PROBABILITY'])
-export const EMPIRICAL_EXPIRY_MIN_MINUTES = 75
-export const EMPIRICAL_EXPIRY_LOOKBACK_GW = 3
 const mime = {
   '.html': 'text/html; charset=utf-8',
   '.js': 'application/javascript; charset=utf-8',
@@ -35,8 +32,18 @@ const colours = ['#e74c3c', '#3b82f6', '#8b5cf6', '#dc2626', '#22c55e', '#f59e0b
 
 import { getDb } from './db.mjs'
 import { migrateDatabase } from './db-migrate.mjs'
-import { fetchManagerPayload, getCurrentManager, importManagerPayload, updateManagerAssumptions } from './manager-service.mjs'
+import { fetchManagerPayload, getCurrentManager, importManagerPayload, unlinkCurrentManager, updateManagerAssumptions } from './manager-service.mjs'
 import { createPlan, getActivePlan, selectPlan } from './plan-service.mjs'
+import { createRecommendationSet } from './recommendation-service.mjs'
+import { evaluateDecision, listDecisions, recordDecision } from './decision-journal-service.mjs'
+import { getUserState, updateAiState, updateUserState } from './user-state-service.mjs'
+import { assembleProjectionInputCatalog, projectionCatalogInputVersions } from '../src/server/catalog-service.ts'
+import { runBacktest } from '../src/server/backtest-service.ts'
+import { latestForecastSummary } from '../src/server/forecast-service.ts'
+import { CatalogueCache, catalogueCacheKey, catalogueRequestKey } from '../src/server/catalog-cache.ts'
+import { ConcurrencyLimiter, TtlCache } from '../src/server/upstream-control.ts'
+import { HttpRequestError, MAX_JSON_BODY_BYTES, readJsonBody, sanitizeError } from '../src/server/http-security.mjs'
+import { createPlayerSignal, listPlayerSignals, updatePlayerSignalStatuses } from '../src/server/signal-service.ts'
 
 let systemStatus = {
   status: 'initializing',
@@ -51,66 +58,6 @@ let systemStatus = {
 
 let scheduledIngestTimer = null
 
-export async function expirePriorRoleSignals(db, playerId, kind) {
-  if (!ROLE_BEARING_SIGNAL_KINDS.has(kind)) return 0
-  const result = await db.query(
-    `UPDATE "PlayerSignal"
-     SET status='EXPIRED', "updatedAt"=CURRENT_TIMESTAMP
-     WHERE "playerId"=$1 AND kind=$2 AND status IN ('VERIFIED','PENDING')
-       AND "sourceType" <> 'MANUAL_OVERRIDE'`,
-    [playerId, kind],
-  )
-  return Number(result.changes || 0)
-}
-
-export async function expireContradictedSignals(db, currentGameweek) {
-  const completed = await db.query(
-    `SELECT id FROM "Gameweek"
-     WHERE finished=true AND id < $1
-     ORDER BY id DESC LIMIT $2`,
-    [currentGameweek, EMPIRICAL_EXPIRY_LOOKBACK_GW],
-  )
-  if (!completed.rows.length) return 0
-
-  const gameweeks = completed.rows.map(row => Number(row.id))
-  const placeholders = gameweeks.map((_, index) => `$${index + 1}`).join(',')
-  const averages = await db.query(
-    `SELECT "playerId", AVG(minutes) AS averageMinutes
-     FROM "PlayerMatchStat"
-     WHERE gameweek IN (${placeholders})
-     GROUP BY "playerId"
-     HAVING AVG(minutes) >= $${gameweeks.length + 1}`,
-    [...gameweeks, EMPIRICAL_EXPIRY_MIN_MINUTES],
-  )
-  let expired = 0
-  for (const row of averages.rows) {
-    const playerId = Number(row.playerId)
-    const signals = await db.query(
-      `SELECT id, kind, value FROM "PlayerSignal"
-       WHERE "playerId"=$1 AND status IN ('VERIFIED','PENDING')`,
-      [playerId],
-    )
-    for (const signal of signals.rows) {
-      const value = parseJson(signal.value, {})
-      const depthRole = value.depthRole
-      const startProbability = Number(value.startProbability)
-      const contradicted = depthRole === 'BACKUP' || depthRole === 'ROTATION' ||
-        (Number.isFinite(startProbability) && startProbability < 0.4)
-      if (!contradicted) continue
-      const reasons = []
-      if (depthRole === 'BACKUP' || depthRole === 'ROTATION') reasons.push(`depthRole=${depthRole}`)
-      if (Number.isFinite(startProbability) && startProbability < 0.4) reasons.push(`startProbability=${startProbability}`)
-      const reason = `Empirical expiry: average ${Number(row.averageMinutes).toFixed(1)} minutes/game across last ${gameweeks.length} completed gameweeks contradicts ${reasons.join(' and ')}`
-      await db.query(
-        `UPDATE "PlayerSignal" SET status='EXPIRED', "updatedAt"=CURRENT_TIMESTAMP WHERE id=$1 AND status IN ('VERIFIED','PENDING')`,
-        [signal.id],
-      )
-      console.log(`⏳ Expired signal ${signal.id} for player ${playerId}: ${reason}`)
-      expired += 1
-    }
-  }
-  return expired
-}
 
 function setupScheduledIngestion() {
   const hoursRaw = process.env.FPL_INGEST_INTERVAL_HOURS ?? '12'
@@ -161,7 +108,7 @@ async function performColdStartInitialization() {
 
     setupScheduledIngestion()
   } catch (err) {
-    console.error('⚠️ Cold-start setup warning:', err.message)
+    console.error('⚠️ Cold-start setup warning:', sanitizeError(err))
     systemStatus.status = 'error'
     systemStatus.message = `Initialization note: ${err.message}`
   }
@@ -179,10 +126,10 @@ async function triggerBackgroundIngest() {
     execFile(process.execPath, ['--experimental-strip-types', scriptPath], async (error) => {
       systemStatus.isIngesting = false
       if (error) {
-        console.error('⚠️ Background FPL ingestion note:', error.message)
+        console.error('⚠️ Background FPL ingestion note:', sanitizeError(error))
         systemStatus.status = 'error'
         systemStatus.isSeeding = false
-        systemStatus.message = `Ingestion error: ${error.message}`
+        systemStatus.message = `Ingestion error: ${sanitizeError(error)}`
       } else {
         console.log('✅ Background FPL ingestion completed.')
         systemStatus.status = 'ready'
@@ -196,36 +143,37 @@ async function triggerBackgroundIngest() {
           const db = await getDb()
           const result = await db.query('SELECT COUNT(*) as count FROM "Player"').catch(() => ({ rows: [{ count: 0 }] }))
           systemStatus.playerCount = Number(result.rows[0]?.count || 0)
-          const current = await db.query('SELECT id FROM "Gameweek" WHERE "isCurrent"=true ORDER BY id DESC LIMIT 1').catch(() => ({ rows: [] }))
-          if (current.rows[0]?.id != null) {
-            await expireContradictedSignals(db, Number(current.rows[0].id))
-          }
         } catch {}
       }
     })
     return true
   } catch (err) {
     systemStatus.isIngesting = false
-    console.error('⚠️ Background ingestion launch error:', err)
+    console.error('⚠️ Background ingestion launch error:', sanitizeError(err))
     systemStatus.status = 'ready'
     systemStatus.isSeeding = false
     return false
   }
 }
 
-function invalidateLiveDataCache() {}
+function readRequestBody(req) { return readJsonBody(req) }
 
-function readRequestBody(req){
-  return new Promise((resolve,reject)=>{
-    let body=''
-    req.on('data',chunk=>{body+=chunk;if(body.length>1_000_000)reject(new Error('Request body too large'))})
-    req.on('end',()=>{try{resolve(JSON.parse(body||'{}'))}catch(error){reject(error)}})
-    req.on('error',reject)
-  })
+function errorStatus(error, fallback = 500) {
+  return error instanceof HttpRequestError ? error.status : fallback
 }
 
 function sendJson(res,status,payload){
-  res.writeHead(status,{'content-type':'application/json; charset=utf-8','cache-control':'no-store'}).end(JSON.stringify(payload))
+  let safePayload = payload
+  if (status >= 400) {
+    const rawError = payload && typeof payload === 'object' ? payload.error : null
+    const message = sanitizeError(typeof rawError === 'string' ? rawError : rawError?.message || 'Request failed')
+    const code = typeof rawError === 'object' && rawError?.code ? String(rawError.code) : ({ 400: 'BAD_REQUEST', 404: 'NOT_FOUND', 405: 'METHOD_NOT_ALLOWED', 409: 'CONFLICT', 410: 'GONE', 413: 'PAYLOAD_TOO_LARGE', 415: 'UNSUPPORTED_MEDIA_TYPE', 429: 'RATE_LIMITED', 503: 'SERVICE_UNAVAILABLE' })[status] || (status >= 500 ? 'INTERNAL_ERROR' : `HTTP_${status}`)
+    const { error: _discardedError, schemaVersion: _discardedVersion, ...context } = payload && typeof payload === 'object' ? payload : {}
+    safePayload = { schemaVersion: 1, ...context, error: { code, message, requestId: res.requestId || 'unknown' } }
+  }
+  const headers={'content-type':'application/json; charset=utf-8','cache-control':'no-store'}
+  if(res.requestId)headers['x-request-id']=res.requestId
+  res.writeHead(status,headers).end(JSON.stringify(safePayload))
 }
 
 // ── Signal source config (persisted beside the SQLite database) ─────────────
@@ -262,10 +210,20 @@ function saveSignalConfig(config) {
 }
 
 const AI_SETTINGS_PATH = process.env.AI_SETTINGS_FILE || appDataFile('ai-settings.json')
+const catalogueCache = new CatalogueCache({
+  ttlMs: Number(process.env.FPL_CATALOG_CACHE_TTL_MS || 60_000),
+  maxStaleMs: Number(process.env.FPL_CATALOG_CACHE_MAX_STALE_MS || 24 * 60 * 60 * 1000),
+  filePath: process.env.FPL_CATALOG_CACHE_FILE || appDataFile('cache/projection-catalog.json'),
+})
+const leagueCache = new TtlCache(5 * 60 * 1000)
+const leagueUpstream = new ConcurrencyLimiter(5)
 
 function loadAiSettings() {
   try {
     if (fs.existsSync(AI_SETTINGS_PATH)) {
+      // Existing files are tightened on read to avoid leaving credentials in a
+      // world-readable application-data directory after an upgrade.
+      fs.chmodSync(AI_SETTINGS_PATH, 0o600)
       return JSON.parse(fs.readFileSync(AI_SETTINGS_PATH, 'utf8'))
     }
   } catch {}
@@ -273,11 +231,15 @@ function loadAiSettings() {
 }
 
 function saveAiSettings(settings) {
+  fs.mkdirSync(path.dirname(AI_SETTINGS_PATH), { recursive: true })
+  const temporaryPath = `${AI_SETTINGS_PATH}.${process.pid}.tmp`
   try {
-    fs.mkdirSync(path.dirname(AI_SETTINGS_PATH), { recursive: true })
-    fs.writeFileSync(AI_SETTINGS_PATH, JSON.stringify(settings, null, 2))
-  } catch (err) {
-    console.error('Failed to save AI settings:', err)
+    fs.writeFileSync(temporaryPath, JSON.stringify(settings, null, 2), { mode: 0o600 })
+    fs.chmodSync(temporaryPath, 0o600)
+    fs.renameSync(temporaryPath, AI_SETTINGS_PATH)
+  } catch (error) {
+    try { fs.rmSync(temporaryPath, { force: true }) } catch {}
+    throw new Error(`Could not save local AI configuration: ${sanitizeError(error)}`)
   }
 }
 function shouldAutoApprove(sourceType, confidence, config) {
@@ -323,49 +285,34 @@ function validityDeadline(timeHorizon){
 }
 
 async function createSignalForCreatorClaim(db,claimRow,source,gameweek){
-  if(claimRow.signalId){
-    const existing=await db.query('SELECT * FROM "PlayerSignal" WHERE id=$1',[claimRow.signalId])
-    if(existing.rows[0])return {signal:existing.rows[0],created:false}
-  }
   const signalValue=parseJson(claimRow.signalValue,{})
   const draft=signalDraftFromClaim({...claimRow,...signalValue,numericClaims:parseJson(claimRow.numericClaims,[]),relatedMentions:parseJson(claimRow.relatedMentions,[])},Number(claimRow.resolvedPlayerId),source)
   const confidence=Math.max(0,Math.min(1,Number(draft.confidence)||.65))
   const status=shouldAutoApprove('YOUTUBE_TRANSCRIPT',confidence,loadSignalConfig())?'VERIFIED':'PENDING'
   const observedAt=new Date().toISOString()
-  await expirePriorRoleSignals(db, Number(draft.playerId), draft.kind)
-  const inserted=await db.query('INSERT INTO "PlayerSignal" ("playerId","gameweekId",kind,value,"sourceType","sourceUrl","evidenceSummary",confidence,"observedAt","validUntil",status) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11) RETURNING *',[draft.playerId,gameweek,draft.kind,JSON.stringify(draft.value),draft.sourceType,draft.sourceUrl,draft.evidenceSummary,confidence,observedAt,validityDeadline(claimRow.timeHorizon),status])
-  const signal=inserted.rows[0]
-  await db.query('UPDATE "CreatorClaim" SET "signalId"=$1,"updatedAt"=CURRENT_TIMESTAMP WHERE id=$2',[signal.id,claimRow.id])
-  if(status==='VERIFIED')await materializePlayerOutlook(Number(claimRow.resolvedPlayerId))
+  const id=`creator:${String(claimRow.externalClaimId||claimRow.id).slice(0,220)}`
+  const existing=await listPlayerSignals(db,{playerId:draft.playerId,limit:500})
+  if(existing.some(signal=>signal.id===id))return {signal:existing.find(signal=>signal.id===id),created:false}
+  const signal=await createPlayerSignal(db,{id,playerId:draft.playerId,gameweek,kind:draft.kind,value:draft.value,sourceType:draft.sourceType,sourceUrl:draft.sourceUrl,evidenceSummary:draft.evidenceSummary,confidence,observedAt,validUntil:validityDeadline(claimRow.timeHorizon),status,actorType:'INGESTION'})
   return {signal,created:true}
 }
 
 async function processCreatorPayload(rawPayload){
   const payload=normalizeCreatorPayload(rawPayload),db=await getDb(),data=await liveData()
   const contentId=`${payload.source.platform}:${payload.source.externalId}`
-  const aliases=(await db.query('SELECT * FROM "PlayerAlias"')).rows
-  const receivedAt=new Date().toISOString()
-  await db.query(`INSERT INTO "CreatorContent" (id,platform,"externalId",creator,title,url,"publishedAt",payload,status,"receivedAt") VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10) ON CONFLICT (id) DO UPDATE SET creator=EXCLUDED.creator,title=EXCLUDED.title,url=EXCLUDED.url,"publishedAt"=EXCLUDED."publishedAt",payload=EXCLUDED.payload`,[contentId,payload.source.platform,payload.source.externalId,payload.source.creator,payload.source.title,payload.source.url,payload.source.publishedAt,JSON.stringify(payload),'PENDING',receivedAt])
   const results=[]
   for(const claim of payload.claims){
-    const existing=(await db.query('SELECT * FROM "CreatorClaim" WHERE id=$1',[claim.externalClaimId])).rows[0]
-    const match=existing?.signalId
-      ? {status:existing.matchStatus,player:data.players.find(player=>player.id===Number(existing.resolvedPlayerId))||null,confidence:Number(existing.matchConfidence),candidates:parseJson(existing.matchCandidates,[])}
-      : matchCreatorClaim(claim,data.players,aliases)
-    const resolvedPlayerId=match.player?.id||existing?.resolvedPlayerId||null
+    const match=matchCreatorClaim(claim,data.players,[])
+    const resolvedPlayerId=match.player?.id||null
     const signalValue=Object.fromEntries(['startProbability','minutesIfStarting','substituteProbabilityWhenBenched','minutesIfSubstitute','depthRole','confidence'].filter(key=>claim[key]!=null).map(key=>[key,claim[key]]))
     const candidates=Array.isArray(match.candidates)&&match.candidates[0]?.player?compactCandidates(match.candidates):match.candidates||[]
-    await db.query(`INSERT INTO "CreatorClaim" (id,"contentId","rawPlayerName","normalizedPlayerName","resolvedPlayerId","clubHint","positionHint","priceHint",category,sentiment,summary,"evidenceText","timestampSeconds","timeHorizon","numericClaims","relatedMentions","signalValue","matchStatus","matchConfidence","matchCandidates","signalId") VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21) ON CONFLICT (id) DO UPDATE SET "rawPlayerName"=EXCLUDED."rawPlayerName","clubHint"=EXCLUDED."clubHint","positionHint"=EXCLUDED."positionHint","priceHint"=EXCLUDED."priceHint",category=EXCLUDED.category,sentiment=EXCLUDED.sentiment,summary=EXCLUDED.summary,"evidenceText"=EXCLUDED."evidenceText","timestampSeconds"=EXCLUDED."timestampSeconds","timeHorizon"=EXCLUDED."timeHorizon","numericClaims"=EXCLUDED."numericClaims","relatedMentions"=EXCLUDED."relatedMentions","signalValue"=EXCLUDED."signalValue","resolvedPlayerId"=COALESCE("CreatorClaim"."resolvedPlayerId",EXCLUDED."resolvedPlayerId"),"matchStatus"=CASE WHEN "CreatorClaim"."signalId" IS NULL THEN EXCLUDED."matchStatus" ELSE "CreatorClaim"."matchStatus" END,"matchConfidence"=CASE WHEN "CreatorClaim"."signalId" IS NULL THEN EXCLUDED."matchConfidence" ELSE "CreatorClaim"."matchConfidence" END,"matchCandidates"=CASE WHEN "CreatorClaim"."signalId" IS NULL THEN EXCLUDED."matchCandidates" ELSE "CreatorClaim"."matchCandidates" END`,[claim.externalClaimId,contentId,claim.rawPlayerName,normalizeEntityText(claim.rawPlayerName),resolvedPlayerId,claim.clubHint,claim.positionHint,claim.priceHint,claim.category,claim.sentiment,claim.summary,claim.evidenceText,claim.timestampSeconds,claim.timeHorizon,JSON.stringify(claim.numericClaims),JSON.stringify(claim.relatedMentions),JSON.stringify(signalValue),match.status,match.confidence,JSON.stringify(candidates),existing?.signalId||null])
     let signalResult=null
     if(match.status==='MATCHED'&&resolvedPlayerId){
-      const stored=(await db.query('SELECT * FROM "CreatorClaim" WHERE id=$1',[claim.externalClaimId])).rows[0]
-      signalResult=await createSignalForCreatorClaim(db,stored,payload.source,data.currentGameweek)
+      signalResult=await createSignalForCreatorClaim(db,{...claim,id:claim.externalClaimId,externalClaimId:claim.externalClaimId,resolvedPlayerId,signalValue},payload.source,data.currentGameweek)
     }
-    results.push({id:claim.externalClaimId,rawPlayerName:claim.rawPlayerName,matchStatus:match.status,resolvedPlayerId,confidence:match.confidence,candidates,signalId:signalResult?.signal?.id||existing?.signalId||null,created:Boolean(signalResult?.created)})
+    results.push({id:claim.externalClaimId,rawPlayerName:claim.rawPlayerName,matchStatus:match.status,resolvedPlayerId,confidence:match.confidence,candidates,signalId:signalResult?.signal?.id||null,created:Boolean(signalResult?.created)})
   }
   const unresolved=results.filter(row=>row.matchStatus!=='MATCHED').length
-  await db.query('UPDATE "CreatorContent" SET status=$1,"processedAt"=CURRENT_TIMESTAMP,"processingError"=NULL WHERE id=$2',[unresolved?'NEEDS_REVIEW':'PROCESSED',contentId])
-  invalidateLiveDataCache()
   return {contentId,created:results.filter(row=>row.created).length,matched:results.length-unresolved,unresolved,claims:results}
 }
 
@@ -375,121 +322,21 @@ async function liveData() {
 }
 
 async function refreshLiveData() {
-  const db = await getDb()
-  const gw = await db.query('SELECT id, deadline FROM "Gameweek" WHERE "isCurrent"=true OR ("finished"=false AND "deadline" >= NOW()) ORDER BY "isCurrent" DESC, "deadline" ASC NULLS LAST, id ASC LIMIT 1')
-  const currentGameweek=gw.rows[0]?.id||1
-  const result=await db.query(`SELECT p.*,t."shortName" AS club,t.name AS "clubName" FROM "Player" p JOIN "Team" t ON t.id=p."clubId" WHERE p.active=true AND p.status!='u' ORDER BY p.id`)
-  const underlyingResult=await db.query(`SELECT s.* FROM "PlayerUnderlyingSnapshot" s JOIN (SELECT "playerId", MAX("capturedAt") AS capturedAt FROM "PlayerUnderlyingSnapshot" WHERE "source"='UNDERSTAT' GROUP BY "playerId") latest ON latest."playerId"=s."playerId" AND latest.capturedAt=s."capturedAt"`).catch(()=>({rows:[]}))
-  const fixtureResult=await db.query(`SELECT f."gameweekId" AS gameweek,f."homeTeamId",f."awayTeamId",f."difficultyHome",f."difficultyAway",home."shortName" AS home,away."shortName" AS away FROM "Fixture" f JOIN "Gameweek" g ON g.id=f."gameweekId" JOIN "Team" home ON home.id=f."homeTeamId" JOIN "Team" away ON away.id=f."awayTeamId" WHERE g.finished=false AND f."gameweekId">=$1 ORDER BY f."gameweekId",f.kickoff NULLS LAST`,[currentGameweek])
-  const calibrationResult=await db.query('SELECT position,factor FROM "ModelCalibration" WHERE "modelVersion"=$1',['role-aware-v2.0']).catch(()=>({rows:[]}))
-  const signalResult=await db.query('SELECT * FROM "PlayerSignal" WHERE status=$1 AND "validUntil">=NOW() AND ("gameweekId" IS NULL OR "gameweekId"=$2) ORDER BY "observedAt" DESC',['VERIFIED',currentGameweek]).catch(()=>({rows:[]}))
-  const outlookResult=await db.query('SELECT * FROM "PlayerOutlook" WHERE "gameweekId"=$1',[''+currentGameweek]).catch(()=>({rows:[]}))
-  const fixturesByTeam=new Map()
-  for(const fixture of fixtureResult.rows){
-    const homeRows=fixturesByTeam.get(fixture.homeTeamId)||[]
-    homeRows.push({gameweek:fixture.gameweek,opponent:fixture.away,venue:'H',difficulty:Number(fixture.difficultyHome)||3})
-    fixturesByTeam.set(fixture.homeTeamId,homeRows)
-    const awayRows=fixturesByTeam.get(fixture.awayTeamId)||[]
-    awayRows.push({gameweek:fixture.gameweek,opponent:fixture.home,venue:'A',difficulty:Number(fixture.difficultyAway)||3})
-    fixturesByTeam.set(fixture.awayTeamId,awayRows)
-  }
-  const calibration=Object.fromEntries(calibrationResult.rows.map(row=>[row.position,Number(row.factor)]))
-  const signalsByPlayer=new Map()
-  for(const signal of signalResult.rows){
-    const parsedValue = typeof signal.value === 'string' ? JSON.parse(signal.value) : (signal.value || {})
-    const existing=signalsByPlayer.get(signal.playerId)||[]
-    existing.push({...signal, value: parsedValue, gameweek:signal.gameweekId})
-    signalsByPlayer.set(signal.playerId,existing)
-  }
-  const outlookByPlayer=new Map(outlookResult.rows.map(row=>[Number(row.playerId),row]))
-  const underlyingByPlayer=new Map(underlyingResult.rows.map(row=>[Number(row.playerId),row]))
-  const staleOutlookPlayerIds=new Set()
-  const players = result.rows.map(p => {
-    const underlying=underlyingByPlayer.get(Number(p.id))
-    const availability = p.chanceOfPlaying ?? (p.status === 'i'||p.status === 'u' ? 0 : p.status === 'd' ? 75 : 100)
-    const completedGameweeks=Math.max(0,currentGameweek-1)
-    const historicalMinutes=Number(p.minutes)||0
-    const coldStart=historicalMinutes===0
-    const epNext=Number(p.epNext)||0
-    const roleMinutes=completedGameweeks?Math.min(90,historicalMinutes/completedGameweeks):coldStart?Math.min(55,Math.max(30,30+epNext*15)):Math.min(90,historicalMinutes/38)
-    const projectedMinutes=roleMinutes*availability/100
-    const transferredRecently=p.clubChangedAt&&Date.now()-new Date(p.clubChangedAt).getTime()<60*24*60*60*1000
-    const goalkeeper=p.position==='GK'
-    const minutesIfStarting=goalkeeper?90:86
-    const substituteProbabilityWhenBenched=goalkeeper ? .005 : .2
-    const minutesIfSubstitute=goalkeeper?5:18
-    const cameoMinutes=substituteProbabilityWhenBenched*minutesIfSubstitute
-    const baseStartProbability=Math.max(0,Math.min(1,(projectedMinutes-cameoMinutes)/(minutesIfStarting-cameoMinutes)))
-    const baseRole=transferredRecently?{
-      startProbability:.55*availability/100,minutesIfStarting:p.position==='GK'?90:84,
-      substituteProbabilityWhenBenched:p.position==='GK' ? .01 : .3,minutesIfSubstitute:p.position==='GK' ? 5 : 20,
-      confidence:'LOW',derivedFromSignalIds:[]
-    }:{startProbability:baseStartProbability,minutesIfStarting,substituteProbabilityWhenBenched,minutesIfSubstitute,confidence:coldStart?'LOW':historicalMinutes>=900?'HIGH':'MEDIUM',derivedFromSignalIds:[]}
-    const outlook=outlookByPlayer.get(Number(p.id))
-    const playerSignals=signalsByPlayer.get(p.id)||[]
-    let outlookSignalIds=[]
-    try{outlookSignalIds=Array.isArray(outlook?.derivedSignalIds)?outlook.derivedSignalIds:JSON.parse(outlook?.derivedSignalIds||'[]')}catch{}
-    const trustedStandaloneOutlook=outlook&&outlookSignalIds.length===0
-    if(outlook&&outlookSignalIds.length>0&&!playerSignals.length)staleOutlookPlayerIds.add(Number(p.id))
-    const roleProfile=playerSignals.length
-      ? resolvePlayerRole(baseRole,playerSignals,{gameweek:currentGameweek})
-      : trustedStandaloneOutlook
-        ? {startProbability:Number(outlook.startProbability),minutesIfStarting:Number(outlook.minutesIfStarting),substituteProbabilityWhenBenched:Number(outlook.substituteProbabilityWhenBenched),minutesIfSubstitute:Number(outlook.minutesIfSubstitute),confidence:outlook.confidence,derivedFromSignalIds:outlookSignalIds}
-        : resolvePlayerRole(baseRole,[],{gameweek:currentGameweek})
-    const actualExpectedMinutes=roleProfile.startProbability*roleProfile.minutesIfStarting+(1-roleProfile.startProbability)*roleProfile.substituteProbabilityWhenBenched*roleProfile.minutesIfSubstitute
-    const rawBasePoints=Number(p.epNext)||(Number(p.pointsPerGame)||0)*.7+(Number(p.form)||0)*.3
-    const minutesFactor=actualExpectedMinutes/90
-    const singleGwProjection=+Math.max(.1,rawBasePoints*minutesFactor).toFixed(2)
-    const form = Number(p.form) || 0
-    const ppg = Number(p.pointsPerGame) || 0
-    const upcomingFixtures=(fixturesByTeam.get(p.clubId)||[]).slice(0,5)
-    const firstFixture=upcomingFixtures[0]
-    return {
-      id: p.id,
-      name: p.name,
-      club: p.club,
-      transferredRecently:Boolean(transferredRecently),
-      position: p.position,
-      price: Number(p.price),
-      form,
-      ownership: Number(p.ownership) || 0,
-      minutes: availability,
-      expectedMinutes:+actualExpectedMinutes.toFixed(1),
-      roleProfile,
-      fixture:firstFixture?`${firstFixture.opponent} (${firstFixture.venue})`:'Blank',
-      difficulty:firstFixture?.difficulty||3,
-      projection:singleGwProjection,
-      colour:colours[p.id%colours.length],
-      status: p.status || (availability === 0 ? 'i' : availability < 100 ? 'd' : 'a'),
-      chanceOfPlaying: p.chanceOfPlaying ?? availability,
-      news: p.news || (p.status === 'i' || availability === 0 ? 'Injured - 0% chance of playing' : p.status === 'd' || availability < 100 ? `Doubtful - ${availability}% chance of playing` : null),
-      transfersIn:Number(p.transfersIn)||0,
-      transfersOut:Number(p.transfersOut)||0,
-      active:Boolean(p.active),
-      coldStart,
-      dataConfidence:coldStart?'LOW':historicalMinutes>=900?'HIGH':'MEDIUM',
-      calibrationFactor:calibration[p.position]||1,
-      upcomingFixtures,
-      stats:{minutes:Number(p.minutes)||0,starts:Number(p.starts)||0,totalPoints:Number(p.totalPoints)||0,goals:Number(p.goals)||0,assists:Number(p.assists)||0,cleanSheets:Number(p.cleanSheets)||0,goalsConceded:Number(p.goalsConceded)||0,saves:Number(p.saves)||0,bonus:Number(p.bonus)||0,bps:Number(p.bps)||0,yellowCards:Number(p.yellowCards)||0,redCards:Number(p.redCards)||0,ownGoals:Number(p.ownGoals)||0,penaltiesMissed:Number(p.penaltiesMissed)||0,penaltiesSaved:Number(p.penaltiesSaved)||0,expectedGoals:Number(p.expectedGoals)||0,expectedAssists:Number(p.expectedAssists)||0,expectedGoalsConceded:Number(p.expectedGC)||0,expectedGoalsPer90:Number(underlying?.xgPer90 ?? p.expectedGoalsPer90)||0,expectedAssistsPer90:Number(underlying?.xaPer90 ?? p.expectedAssistsPer90)||0,expectedGoalsConcededPer90:Number(p.expectedGCPer90)||0,savesPer90:Number(p.savesPer90)||0,clearancesBlocksInterceptions:Number(p.clearancesBlocksInterceptions)||0,tackles:Number(p.tackles)||0,recoveries:Number(p.recoveries)||0,defensiveContribution:Number(p.defensiveContribution)||0,defensiveContributionPer90:Number(p.defensiveContributionPer90)||0}
-    }
+  const db=await getDb(),asOf=new Date().toISOString()
+  const catalog=await assembleProjectionInputCatalog(db,{asOf})
+  const futureFixtures=catalog.players.flatMap(player=>player.fixtures).filter(fixture=>fixture.gameweekId&&fixture.kickoffAt&&Date.parse(fixture.kickoffAt)>=Date.parse(asOf)).sort((left,right)=>(left.gameweekFplId||Infinity)-(right.gameweekFplId||Infinity))
+  const next=futureFixtures[0]||null,currentGameweek=next?.gameweekFplId||null
+  const deadline=next?.gameweekId?(await db.query(`SELECT "deadline_at" FROM "GameweekObservation" WHERE "gameweek_id"=$1 AND datetime("observed_at")<=datetime($2) ORDER BY datetime("observed_at") DESC,"id" DESC LIMIT 1`,[next.gameweekId,asOf])).rows[0]?.deadline_at||null:null
+  const players=catalog.players.map((item,index)=>{
+    const official=item.official||{},first=item.fixtures[0]
+    const availability=Number(official.chance_of_playing??100)
+    const baseRole={startProbability:Math.max(0,Math.min(1,availability/100)),minutesIfStarting:item.official.position==='GK'?90:86,substituteProbabilityWhenBenched:item.official.position==='GK'?.005:.2,minutesIfSubstitute:item.official.position==='GK'?5:18,confidence:'MEDIUM',derivedFromSignalIds:[]}
+    const signals=item.roleSignals.map(signal=>({id:signal.id,playerId:item.fplId,gameweek:null,kind:signal.kind,value:signal.value,sourceType:signal.sourceType,sourceUrl:signal.sourceUrl||null,evidenceSummary:signal.evidenceSummary||'',confidence:Number(signal.confidence??1),observedAt:signal.observedAt,validUntil:signal.validUntil,status:'VERIFIED'}))
+    const roleProfile=resolvePlayerRole(baseRole,signals,{now:new Date(asOf),gameweek:currentGameweek||undefined})
+    const expectedMinutes=roleProfile.startProbability*roleProfile.minutesIfStarting+(1-roleProfile.startProbability)*roleProfile.substituteProbabilityWhenBenched*roleProfile.minutesIfSubstitute
+    return {id:item.fplId,name:item.name,club:item.team.shortName,clubName:item.team.name,position:official.position,price:Number(official.price_tenths||0)/10,form:Number(official.form||0),ownership:Number(official.ownership_percent||0),minutes:availability,expectedMinutes,roleProfile,fixture:first?`${first.opponent.shortName} (${first.isHome?'H':'A'})`:'Blank',difficulty:first?.difficulty||3,projection:Number(official.ep_next||0),colour:colours[index%colours.length],status:String(official.status||'a'),chanceOfPlaying:official.chance_of_playing==null?undefined:Number(official.chance_of_playing),news:official.news||null,transfersIn:Number(official.transfers_in||0),transfersOut:Number(official.transfers_out||0),active:Boolean(official.active),dataConfidence:item.provenance.underlyingObservationId?'HIGH':'MEDIUM',upcomingFixtures:item.fixtures.map(fixture=>({gameweek:fixture.gameweekFplId||0,opponent:fixture.opponent.shortName,venue:fixture.isHome?'H':'A',difficulty:fixture.difficulty||3})),stats:{minutes:Number(official.minutes||0),starts:Number(official.starts||0),totalPoints:Number(official.total_points||0),goals:Number(official.goals_scored||0),assists:Number(official.assists||0),cleanSheets:Number(official.clean_sheets||0),goalsConceded:Number(official.goals_conceded||0),saves:Number(official.saves||0),bonus:Number(official.bonus||0),bps:Number(official.bps||0),yellowCards:Number(official.yellow_cards||0),redCards:Number(official.red_cards||0),ownGoals:Number(official.own_goals||0),penaltiesMissed:Number(official.penalties_missed||0),penaltiesSaved:Number(official.penalties_saved||0),expectedGoals:Number(official.expected_goals||0),expectedAssists:Number(official.expected_assists||0),expectedGoalsConceded:Number(official.expected_goals_conceded||0)}}
   })
-  for(const playerId of staleOutlookPlayerIds){
-    await db.query('DELETE FROM "PlayerOutlook" WHERE "playerId"=$1 AND "gameweekId"=$2',[playerId,currentGameweek]).catch(()=>{})
-  }
-  return { capturedAt: new Date().toISOString(), currentGameweek, deadline: gw.rows[0]?.deadline || null, modelVersion:'role-aware-v2.0', players }
-}
-
-async function materializePlayerOutlook(playerId, { invalidate = true } = {}) {
-  if (invalidate) invalidateLiveDataCache()
-  const db=await getDb()
-  const current=await db.query('SELECT id FROM "Gameweek" WHERE "isCurrent"=true OR (finished=false AND deadline>=CURRENT_TIMESTAMP) ORDER BY "isCurrent" DESC,deadline ASC LIMIT 1')
-  const currentGameweek=Number(current.rows[0]?.id)||1
-  await db.query('DELETE FROM "PlayerOutlook" WHERE "playerId"=$1 AND "gameweekId"=$2',[playerId,currentGameweek])
-  const data=await liveData()
-  const player=data.players.find(candidate=>candidate.id===playerId)
-  if(!player?.roleProfile||!data.currentGameweek||!(player.roleProfile.derivedFromSignalIds||[]).length)return
-  const role=player.roleProfile
-  await db.query(`INSERT INTO "PlayerOutlook" ("playerId","gameweekId","startProbability","minutesIfStarting","substituteProbabilityWhenBenched","minutesIfSubstitute",confidence,"derivedSignalIds","updatedAt") VALUES ($1,$2,$3,$4,$5,$6,$7,$8,CURRENT_TIMESTAMP) ON CONFLICT ("playerId","gameweekId") DO UPDATE SET "startProbability"=EXCLUDED."startProbability","minutesIfStarting"=EXCLUDED."minutesIfStarting","substituteProbabilityWhenBenched"=EXCLUDED."substituteProbabilityWhenBenched","minutesIfSubstitute"=EXCLUDED."minutesIfSubstitute",confidence=EXCLUDED.confidence,"derivedSignalIds"=EXCLUDED."derivedSignalIds","updatedAt"=CURRENT_TIMESTAMP`,[playerId,data.currentGameweek,role.startProbability,role.minutesIfStarting,role.substituteProbabilityWhenBenched,role.minutesIfSubstitute,role.confidence,JSON.stringify(role.derivedFromSignalIds)])
+  return {capturedAt:catalog.freshness.official.observedAt||catalog.asOf,currentGameweek,deadline,modelVersion:'role-aware-v2.0',players,freshness:catalog.freshness,inputHash:catalog.inputHash}
 }
 
 function formatProviderAnswer(raw) {
@@ -896,14 +743,12 @@ async function persistChallengeSignals(challenge,currentGameweek){
   for(const signal of challenge.signals){
     const validUntil=new Date(signal.validUntil)
     if(!Number.isFinite(validUntil.getTime()))continue
-    const existing=await db.query('SELECT id,"observedAt" FROM "PlayerSignal" WHERE "playerId"=$1 AND "gameweekId"=$2 AND kind=$3 AND "sourceUrl"=$4 AND status=$5 ORDER BY id DESC LIMIT 1',[signal.playerId,currentGameweek,signal.kind,signal.sourceUrl,'PENDING'])
-    if(existing.rows[0]){
-      stored.push({...signal,id:existing.rows[0].id,status:'PENDING',observedAt:existing.rows[0].observedAt})
+    const existing=(await listPlayerSignals(db,{playerId:signal.playerId,status:'PENDING',limit:500})).find(row=>row.gameweek===currentGameweek&&row.kind===signal.kind&&row.sourceUrl===signal.sourceUrl)
+    if(existing){
+      stored.push(existing)
       continue
     }
-    await expirePriorRoleSignals(db, Number(signal.playerId), signal.kind)
-    const result=await db.query('INSERT INTO "PlayerSignal" ("playerId","gameweekId",kind,value,"sourceType","sourceUrl","evidenceSummary",confidence,"observedAt","validUntil",status) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11) RETURNING id',[signal.playerId,currentGameweek,signal.kind,JSON.stringify(signal.value),signal.sourceType,signal.sourceUrl,signal.evidenceSummary,signal.confidence,observedAt,validUntil.toISOString(),'PENDING'])
-    stored.push({...signal,id:result.rows[0].id,status:'PENDING',observedAt})
+    stored.push(await createPlayerSignal(db,{playerId:signal.playerId,gameweek:currentGameweek,kind:signal.kind,value:signal.value,sourceType:signal.sourceType,sourceUrl:signal.sourceUrl,evidenceSummary:signal.evidenceSummary,confidence:signal.confidence,observedAt,validUntil:validUntil.toISOString(),status:'PENDING',actorType:'RESEARCH'}))
   }
   return {...challenge,signals:stored}
 }
@@ -915,7 +760,27 @@ function pruneSquadChallengeJobs(){
 
 function startServerOnAvailablePort(targetPort) {
   const server = http.createServer(async (req, res) => {
+    res.requestId = randomUUID()
     const request = (req.url || '/').split('?')[0]
+
+    // Every API write that carries a payload is JSON-only. Empty command
+    // endpoints are explicitly listed rather than silently accepting an
+    // arbitrary content type.
+    const isApiWrite = request.startsWith('/api/') && ['POST', 'PUT', 'PATCH'].includes(req.method || '')
+    const noBodyWrite = request === '/api/fpl-refresh' || /^\/api\/plans\/[^/]+\/select$/.test(request) || /^\/api\/decisions\/[^/]+\/evaluate$/.test(request)
+    if (isApiWrite && !noBodyWrite) {
+      const contentLength = Number(req.headers['content-length'] || 0)
+      if (Number.isFinite(contentLength) && contentLength > MAX_JSON_BODY_BYTES) {
+        sendJson(res, 413, { error: 'Request body too large' })
+        req.resume()
+        return
+      }
+      if (!String(req.headers['content-type'] || '').toLowerCase().startsWith('application/json')) {
+        sendJson(res, 415, { error: 'Content-Type must be application/json' })
+        req.resume()
+        return
+      }
+    }
 
     if (request === '/api/health') {
       res.writeHead(200, {
@@ -937,14 +802,15 @@ function startServerOnAvailablePort(targetPort) {
       if (req.method === 'GET') {
         try {
           const db = await getDb()
-          const resDb = await db.query('SELECT "aiProvider", "apiKey" FROM "UserAccount" WHERE id=\'default\' LIMIT 1')
-          if (resDb.rows.length > 0 && resDb.rows[0].apiKey) {
-            sendJson(res, 200, { provider: resDb.rows[0].aiProvider || '', apiKey: resDb.rows[0].apiKey || '' })
-            return
-          }
+          const state = await getUserState(db)
+          const stored = loadAiSettings()
+          const provider = state.ai.provider || stored.provider || ''
+          const configuredKey = stored.apiKey || (provider === 'openai' && process.env.OPENAI_API_KEY) || (provider === 'gemini' && process.env.GEMINI_API_KEY) || (provider === 'anthropic' && process.env.ANTHROPIC_API_KEY) || (provider === 'deepseek' && process.env.DEEPSEEK_API_KEY) || ''
+          sendJson(res, 200, { provider, configured: Boolean(configuredKey), suffix: configuredKey ? String(configuredKey).slice(-4) : null })
+          return
         } catch {}
         const stored = loadAiSettings()
-        sendJson(res, 200, { provider: stored.provider || '', apiKey: stored.apiKey || '' })
+        sendJson(res, 200, { provider: stored.provider || '', configured: Boolean(stored.apiKey), suffix: stored.apiKey ? String(stored.apiKey).slice(-4) : null })
         return
       }
       if (req.method === 'POST' || req.method === 'PUT') {
@@ -953,14 +819,63 @@ function startServerOnAvailablePort(targetPort) {
           saveAiSettings({ provider: body.provider || '', apiKey: body.apiKey || '' })
           try {
             const db = await getDb()
-            await db.query('UPDATE "UserAccount" SET "aiProvider" = $1, "apiKey" = $2, "updatedAt" = NOW() WHERE id=\'default\'', [body.provider || '', body.apiKey || ''])
+            await updateAiState(db, { provider: body.provider || '' })
           } catch {}
-          sendJson(res, 200, { success: true, provider: body.provider || '', apiKey: body.apiKey || '' })
+          sendJson(res, 200, { success: true, provider: body.provider || '', configured: Boolean(body.apiKey) })
         } catch (err) {
-          sendJson(res, 500, { error: err.message })
+          sendJson(res, errorStatus(err), { error: sanitizeError(err) })
         }
         return
       }
+    }
+
+    if (request === '/api/catalog' && req.method === 'GET') {
+      const params = new URL(req.url || '/', `http://${host}`).searchParams
+      const options = { asOf: params.get('asOf') || undefined, season: params.get('season') || undefined }
+      const requestKey = catalogueRequestKey(options)
+      try {
+        const db = await getDb()
+        const key = catalogueCacheKey(requestKey, await projectionCatalogInputVersions(db, options.season))
+        const cached = catalogueCache.get(key)
+        if (cached) {
+          sendJson(res, 200, { schemaVersion: 1, ...cached, cache: { status: 'FRESH' } })
+          return
+        }
+        const catalogue = await assembleProjectionInputCatalog(db, options)
+        await catalogueCache.put(key, requestKey, catalogue)
+        sendJson(res, 200, { schemaVersion: 1, ...catalogue, cache: { status: 'MISS' } })
+      } catch (error) {
+        const restart = await catalogueCache.getRestart(requestKey)
+        if (restart) {
+          sendJson(res, 200, { schemaVersion: 1, ...restart, cache: { status: 'STALE' } })
+          return
+        }
+        sendJson(res, 503, { schemaVersion: 1, cache: { status: 'MISS' }, error: error instanceof Error ? error.message : 'Catalogue unavailable' })
+      }
+      return
+    }
+
+    if (request === '/api/backtests' && req.method === 'GET') {
+      try {
+        const params = new URL(req.url || '/', `http://${host}`).searchParams
+        const modelVersion = params.get('modelVersion') || undefined
+        const backtest = await runBacktest(await getDb(), { modelVersion })
+        sendJson(res, 200, { schemaVersion: 1, ...backtest })
+      } catch (error) {
+        sendJson(res, 500, { schemaVersion: 1, error: error instanceof Error ? error.message : 'Backtest unavailable' })
+      }
+      return
+    }
+
+    if (request === '/api/forecast-runs/latest' && req.method === 'GET') {
+      try {
+        const horizon = Number(new URL(req.url || '/', `http://${host}`).searchParams.get('horizon') || 1)
+        const forecast = await latestForecastSummary(await getDb(), { horizon })
+        sendJson(res, forecast ? 200 : 404, { schemaVersion: 1, forecast })
+      } catch (error) {
+        sendJson(res, 400, { schemaVersion: 1, error: error instanceof Error ? error.message : 'Forecast unavailable' })
+      }
+      return
     }
 
     if (request === '/api/fpl-data') {
@@ -970,8 +885,7 @@ function startServerOnAvailablePort(targetPort) {
           .end(JSON.stringify(data))
       } catch (error) {
         if (!res.headersSent) {
-          res.writeHead(503, { 'content-type': 'application/json; charset=utf-8' })
-            .end(JSON.stringify({ error: error instanceof Error ? error.message : 'Live data unavailable' }))
+          sendJson(res, 503, { error: error instanceof Error ? error.message : 'Live data unavailable' })
         }
       }
       return
@@ -998,10 +912,9 @@ function startServerOnAvailablePort(targetPort) {
     if(request==='/api/player-signals'&&req.method==='GET'){
       try{
         const db=await getDb(),params=new URL(req.url||'/',`http://${host}`).searchParams
-        const playerId=Number(params.get('playerId'))||null,status=params.get('status')||null,sourceType=params.get('sourceType')||null
+        const playerId=params.get('playerId')||null,status=params.get('status')||null,sourceType=params.get('sourceType')||null
         const limit=Math.min(500,Math.max(1,Number(params.get('limit'))||200))
-        const result=await db.query('SELECT * FROM "PlayerSignal" WHERE ($1 IS NULL OR "playerId"=$1) AND ($2 IS NULL OR status=$2) AND ($3 IS NULL OR "sourceType"=$3) ORDER BY "observedAt" DESC LIMIT $4',[playerId,status,sourceType,limit])
-        sendJson(res,200,{signals:result.rows.map(row=>({...row,value:typeof row.value==='string'?JSON.parse(row.value):(row.value||{}),confidence:Number(row.confidence),gameweek:row.gameweekId}))})
+        sendJson(res,200,{signals:await listPlayerSignals(db,{playerId,status,sourceType,limit})})
       }catch(error){sendJson(res,500,{error:error instanceof Error?error.message:'Unable to read signals'})}
       return
     }
@@ -1010,8 +923,8 @@ function startServerOnAvailablePort(targetPort) {
       try{
         const db=await getDb(),params=new URL(req.url||'/',`http://${host}`).searchParams
         const limit=Math.min(50,Math.max(1,Number(params.get('limit'))||12))
-        const result=await db.query('SELECT id,source,"externalEventId",capturedAt,kickoff,"homeTeam","awayTeam","homeWinProb","drawProb","awayWinProb" FROM "TeamMarketSnapshot" ORDER BY COALESCE(kickoff,capturedAt) ASC,capturedAt DESC LIMIT $1',[limit])
-        sendJson(res,200,{snapshots:result.rows.map(row=>({...row,id:Number(row.id),homeWinProb:row.homeWinProb==null?null:Number(row.homeWinProb),drawProb:row.drawProb==null?null:Number(row.drawProb),awayWinProb:row.awayWinProb==null?null:Number(row.awayWinProb)}))})
+        const result=await db.query('SELECT "id","source","external_event_id","captured_at","kickoff_at","home_team_name","away_team_name","home_win_probability","draw_probability","away_win_probability" FROM "MarketFixtureObservation" ORDER BY COALESCE("kickoff_at","captured_at") ASC,"captured_at" DESC LIMIT $1',[limit])
+        sendJson(res,200,{snapshots:result.rows.map(row=>({id:row.id,source:row.source,externalEventId:row.external_event_id,capturedAt:row.captured_at,kickoff:row.kickoff_at,homeTeam:row.home_team_name,awayTeam:row.away_team_name,homeWinProb:row.home_win_probability==null?null:Number(row.home_win_probability),drawProb:row.draw_probability==null?null:Number(row.draw_probability),awayWinProb:row.away_win_probability==null?null:Number(row.away_win_probability)}))})
       }catch(error){sendJson(res,500,{error:error instanceof Error?error.message:'Unable to read market snapshots'})}
       return
     }
@@ -1019,61 +932,37 @@ function startServerOnAvailablePort(targetPort) {
     if(request==='/api/player-signals'&&req.method==='POST'){
       try{
         const payload=await readRequestBody(req),db=await getDb()
-        if(!Number.isInteger(payload.playerId)||!payload.kind||!payload.evidenceSummary)throw new Error('playerId, kind and evidenceSummary are required')
+        if(payload.playerId==null||!payload.kind||!payload.evidenceSummary)throw new Error('playerId, kind and evidenceSummary are required')
         const manual=payload.manualOverride===true
         const observedAt=new Date().toISOString(),validUntil=new Date(payload.validUntil||Date.now()+7*24*60*60*1000)
         if(!Number.isFinite(validUntil.getTime()))throw new Error('validUntil must be a valid timestamp')
-        await expirePriorRoleSignals(db, Number(payload.playerId), payload.kind)
-        const result=await db.query('INSERT INTO "PlayerSignal" ("playerId","gameweekId",kind,value,"sourceType","sourceUrl","evidenceSummary",confidence,"observedAt","validUntil",status) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11) RETURNING *',[payload.playerId,payload.gameweek||null,payload.kind,JSON.stringify(payload.value||{}),manual?'MANUAL_OVERRIDE':'USER_FEEDBACK',payload.sourceUrl||null,payload.evidenceSummary,manual?1:Math.max(0,Math.min(1,Number(payload.confidence)||.4)),observedAt,validUntil.toISOString(),manual?'VERIFIED':'PENDING'])
-        invalidateLiveDataCache()
-        if(manual)await materializePlayerOutlook(payload.playerId)
-        sendJson(res,201,{signal:result.rows[0]})
+        const signal=await createPlayerSignal(db,{playerId:payload.playerId,gameweek:payload.gameweek||null,kind:payload.kind,value:payload.value||{},sourceType:manual?'MANUAL_OVERRIDE':'USER_FEEDBACK',sourceUrl:payload.sourceUrl||null,evidenceSummary:payload.evidenceSummary,confidence:manual?1:Math.max(0,Math.min(1,Number(payload.confidence)||.4)),observedAt,validUntil:validUntil.toISOString(),status:manual?'VERIFIED':'PENDING'})
+        sendJson(res,201,{signal})
       }catch(error){sendJson(res,400,{error:error instanceof Error?error.message:'Unable to create signal'})}
       return
     }
 
-    const signalStatusMatch=request.match(/^\/api\/player-signals\/(\d+)$/)
+    const signalStatusMatch=request.match(/^\/api\/player-signals\/([^/]+)$/)
     if(signalStatusMatch&&req.method==='PATCH'){
       try{
         const payload=await readRequestBody(req),allowed=new Set(['PENDING','VERIFIED','REJECTED','EXPIRED'])
         if(!allowed.has(payload.status))throw new Error('Invalid signal status')
-        const db=await getDb(),result=await db.query('UPDATE "PlayerSignal" SET status=$1,"updatedAt"=CURRENT_TIMESTAMP WHERE id=$2 RETURNING *',[payload.status,Number(signalStatusMatch[1])])
-        if(!result.rows[0])return sendJson(res,404,{error:'Signal not found'})
-        invalidateLiveDataCache()
-        await materializePlayerOutlook(result.rows[0].playerId)
-        sendJson(res,200,{signal:result.rows[0]})
+        const signals=await updatePlayerSignalStatuses(await getDb(),[{id:decodeURIComponent(signalStatusMatch[1]),status:payload.status}])
+        sendJson(res,200,{signal:signals[0]})
       }catch(error){sendJson(res,400,{error:error instanceof Error?error.message:'Unable to update signal'})}
       return
     }
 
     if(request==='/api/player-signals/batch-status'&&req.method==='POST'){
-      let transactionStarted=false
       try{
         const payload=await readRequestBody(req)
         const updates=Array.isArray(payload.updates)?payload.updates:[]
         if(!updates.length)throw new Error('updates array is required')
         const allowed=new Set(['PENDING','VERIFIED','REJECTED'])
-        if(updates.some((item)=>!item||!Number.isInteger(Number(item.id))||Number(item.id)<=0||!allowed.has(item.status)))throw new Error('Each update must include a positive integer id and a valid status')
-        const db=await getDb()
-        const updatedSignals=[]
-        const affectedPlayerIds=new Set()
-        await db.query('BEGIN')
-        transactionStarted=true
-        for(const item of updates){
-          const result=await db.query('UPDATE "PlayerSignal" SET status=$1,"updatedAt"=CURRENT_TIMESTAMP WHERE id=$2 RETURNING *',[item.status,Number(item.id)])
-          if(!result.rows[0])throw new Error(`Signal ${item.id} not found`)
-          updatedSignals.push(result.rows[0])
-          affectedPlayerIds.add(result.rows[0].playerId)
-        }
-        await db.query('COMMIT')
-        transactionStarted=false
-        invalidateLiveDataCache()
-        for(const playerId of affectedPlayerIds){
-          await materializePlayerOutlook(playerId,{invalidate:false})
-        }
+        if(updates.some((item)=>!item||!String(item.id||'').trim()||!allowed.has(item.status)))throw new Error('Each update must include an id and a valid status')
+        const updatedSignals=await updatePlayerSignalStatuses(await getDb(),updates)
         sendJson(res,200,{signals:updatedSignals,count:updatedSignals.length})
       }catch(error){
-        if(transactionStarted)await getDb().query('ROLLBACK').catch(()=>{})
         sendJson(res,400,{error:error instanceof Error?error.message:'Unable to batch update signals'})
       }
       return
@@ -1121,53 +1010,22 @@ function startServerOnAvailablePort(targetPort) {
           const observedAt=new Date().toISOString()
           const validUntil=new Date(Date.now()+7*24*60*60*1000).toISOString()
           const status='PENDING'
-          await expirePriorRoleSignals(db, Number(player.id), 'EXPECTED_ROLE')
-          const result=await db.query(
-            'INSERT INTO "PlayerSignal" ("playerId","gameweekId",kind,value,"sourceType","sourceUrl","evidenceSummary",confidence,"observedAt","validUntil",status) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11) RETURNING *',
-            [player.id,gameweek,'EXPECTED_ROLE',JSON.stringify({note:summary}),sourceType,sourceUrl,`[${player.name}] ${summary}`,payloadConfidence,observedAt,validUntil,status]
-          )
-          if(result.rows[0]){
-            created.push({...result.rows[0],value:{note:summary},confidence:payloadConfidence,gameweek,autoApproved:false})
-          }
+          const signal=await createPlayerSignal(db,{playerId:player.id,gameweek,kind:'EXPECTED_ROLE',value:{note:summary},sourceType,sourceUrl,evidenceSummary:`[${player.name}] ${summary}`,confidence:payloadConfidence,observedAt,validUntil,status})
+          created.push({...signal,autoApproved:false})
         }
-        invalidateLiveDataCache()
         sendJson(res,201,{created:created.length,signals:created,autoApproved:false})
       }catch(error){sendJson(res,400,{error:error instanceof Error?error.message:'Ingest failed'})}
       return
     }
 
     if(request==='/api/creator-claims'&&req.method==='GET'){
-      try{
-        const db=await getDb(),params=new URL(req.url||'/',`http://${host}`).searchParams
-        const matchStatus=params.get('matchStatus')||null,limit=Math.min(300,Math.max(1,Number(params.get('limit'))||100))
-        const result=await db.query(`SELECT claim.*,content.creator,content.title AS "contentTitle",content.url AS "contentUrl",content.platform FROM "CreatorClaim" claim JOIN "CreatorContent" content ON content.id=claim."contentId" WHERE ($1 IS NULL OR claim."matchStatus"=$1) ORDER BY claim."createdAt" DESC LIMIT $2`,[matchStatus,limit])
-        sendJson(res,200,{claims:result.rows.map(row=>({...row,numericClaims:parseJson(row.numericClaims,[]),relatedMentions:parseJson(row.relatedMentions,[]),signalValue:parseJson(row.signalValue,{}),matchCandidates:parseJson(row.matchCandidates,[])}))})
-      }catch(error){sendJson(res,500,{error:error instanceof Error?error.message:'Unable to read creator claims'})}
+      sendJson(res,200,{claims:[],notice:'Unmatched creator claims are returned synchronously by the ingestion response and are not retained.'})
       return
     }
 
     const creatorClaimMatch=request.match(/^\/api\/creator-claims\/(.+)$/)
     if(creatorClaimMatch&&req.method==='PATCH'){
-      try{
-        const claimId=decodeURIComponent(creatorClaimMatch[1]),payload=await readRequestBody(req),db=await getDb()
-        const joined=(await db.query(`SELECT claim.*,content.platform,content."externalId",content.creator,content.title,content.url,content."publishedAt" FROM "CreatorClaim" claim JOIN "CreatorContent" content ON content.id=claim."contentId" WHERE claim.id=$1`,[claimId])).rows[0]
-        if(!joined)return sendJson(res,404,{error:'Creator claim not found'})
-        if(payload.dismiss===true){
-          await db.query('UPDATE "CreatorClaim" SET "matchStatus"=$1,"updatedAt"=CURRENT_TIMESTAMP WHERE id=$2',['DISMISSED',claimId])
-          sendJson(res,200,{claim:{...joined,matchStatus:'DISMISSED'}});return
-        }
-        const playerId=Number(payload.playerId),data=await liveData(),player=data.players.find(candidate=>candidate.id===playerId)
-        if(!player)throw new Error('A valid playerId is required')
-        await db.query('UPDATE "CreatorClaim" SET "resolvedPlayerId"=$1,"matchStatus"=$2,"matchConfidence"=1,"updatedAt"=CURRENT_TIMESTAMP WHERE id=$3',[playerId,'MATCHED',claimId])
-        if(payload.rememberAlias!==false){
-          const alias=normalizeEntityText(joined.rawPlayerName)
-          await db.query(`INSERT INTO "PlayerAlias" (alias,"playerId","canonicalName") VALUES ($1,$2,$3) ON CONFLICT (alias) DO UPDATE SET "playerId"=EXCLUDED."playerId","canonicalName"=EXCLUDED."canonicalName","updatedAt"=CURRENT_TIMESTAMP`,[alias,playerId,player.name])
-        }
-        const updated={...joined,resolvedPlayerId:playerId,matchStatus:'MATCHED',matchConfidence:1}
-        const source={platform:joined.platform,externalId:joined.externalId,creator:joined.creator,title:joined.title,url:joined.url,publishedAt:joined.publishedAt}
-        const signalResult=await createSignalForCreatorClaim(db,updated,source,data.currentGameweek)
-        sendJson(res,200,{claim:{...updated,signalId:signalResult.signal.id},signal:signalResult.signal,created:signalResult.created})
-      }catch(error){sendJson(res,400,{error:error instanceof Error?error.message:'Unable to resolve creator claim'})}
+      sendJson(res,410,{error:'Unmatched creator claims are not persisted. Correct the source payload and ingest it again.'})
       return
     }
 
@@ -1263,6 +1121,17 @@ function startServerOnAvailablePort(targetPort) {
       return
     }
 
+    if (request === '/api/manager/current' && req.method === 'DELETE') {
+      try {
+        const db = await getDb()
+        await unlinkCurrentManager(db)
+        sendJson(res, 200, { success: true })
+      } catch (error) {
+        sendJson(res, 400, { error: error instanceof Error ? error.message : 'Manager could not be unlinked' })
+      }
+      return
+    }
+
     if (request === '/api/manager/assumptions' && req.method === 'PATCH') {
       try {
         const body = await readRequestBody(req)
@@ -1277,6 +1146,19 @@ function startServerOnAvailablePort(targetPort) {
           sellingPrices: body.sellingPrices || body.selling_prices,
           createdAt: new Date().toISOString(),
         })
+        if (body.freeTransfers !== undefined && manager.activePlan) {
+          manager.activePlan = await createPlan(db, {
+            fplEntryId,
+            parentPlanId: manager.activePlan.id,
+            playerIds: manager.activePlan.players.map(player => player.fplId),
+            lockedPlayerIds: manager.activePlan.players.filter(player => player.locked).map(player => player.fplId),
+            freeTransfers: body.freeTransfers,
+            name: manager.activePlan.name,
+            status: 'ACTIVE',
+            changeSummary: { kind: 'FREE_TRANSFERS_CONFIRMED' },
+            createdAt: new Date().toISOString(),
+          })
+        }
         sendJson(res, 200, manager)
       } catch (error) {
         sendJson(res, 400, { error: error instanceof Error ? error.message : 'Manager assumptions could not be saved' })
@@ -1296,6 +1178,7 @@ function startServerOnAvailablePort(targetPort) {
           name: body.name,
           status: body.status,
           playerIds: body.playerIds,
+          lockedPlayerIds: body.lockedPlayerIds,
           bankTenths: body.bankTenths,
           freeTransfers: body.freeTransfers,
           changeSummary: body.changeSummary || {},
@@ -1332,20 +1215,84 @@ function startServerOnAvailablePort(targetPort) {
       return
     }
 
+    const planRecommendationMatch = request.match(/^\/api\/plans\/([^/]+)\/recommendations$/)
+    if (planRecommendationMatch && req.method === 'POST') {
+      try {
+        const body = await readRequestBody(req)
+        const recommendation = await createRecommendationSet(await getDb(), {
+          planId: decodeURIComponent(planRecommendationMatch[1]),
+          forecastRunId: body.forecastRunId,
+          horizon: body.horizon ?? 1,
+          maxTransfers: body.maxTransfers ?? 5,
+          uncertaintyPenaltyRate: body.uncertaintyPenaltyRate ?? .15,
+          chip: body.chip ?? null,
+        })
+        sendJson(res, 201, { schemaVersion: 1, ...recommendation })
+      } catch (error) {
+        sendJson(res, 400, { schemaVersion: 1, error: error instanceof Error ? error.message : 'Recommendation could not be generated' })
+      }
+      return
+    }
+
+    if (request === '/api/decisions' && req.method === 'POST') {
+      try {
+        const body = await readRequestBody(req)
+        const decision = await recordDecision(await getDb(), {
+          recommendationSetId: body.recommendationSetId,
+          candidateId: body.candidateId ?? null,
+          decision: body.decision,
+          selectedPlanId: body.selectedPlanId ?? null,
+          reason: body.reason ?? null,
+        })
+        sendJson(res, 201, { schemaVersion: 1, ...decision })
+      } catch (error) {
+        sendJson(res, 400, { schemaVersion: 1, error: error instanceof Error ? error.message : 'Decision could not be recorded' })
+      }
+      return
+    }
+
+    if (request.startsWith('/api/decisions') && req.method === 'GET') {
+      try {
+        const limit = Number(new URL(req.url || '/', 'http://localhost').searchParams.get('limit') || 50)
+        sendJson(res, 200, { schemaVersion: 1, decisions: await listDecisions(await getDb(), { limit }) })
+      } catch (error) {
+        sendJson(res, 400, { schemaVersion: 1, error: error instanceof Error ? error.message : 'Decision history could not be loaded' })
+      }
+      return
+    }
+
+    const decisionEvaluateMatch = request.match(/^\/api\/decisions\/([^/]+)\/evaluate$/)
+    if (decisionEvaluateMatch && req.method === 'POST') {
+      try {
+        const decision = await evaluateDecision(await getDb(), decodeURIComponent(decisionEvaluateMatch[1]))
+        sendJson(res, 200, { schemaVersion: 1, ...decision })
+      } catch (error) {
+        sendJson(res, 400, { schemaVersion: 1, error: error instanceof Error ? error.message : 'Decision could not be evaluated' })
+      }
+      return
+    }
+
     if (request === '/api/fpl-league-details') {
       const urlParams = new URLSearchParams((req.url || '').split('?')[1] || '')
       const leagueIdStr = urlParams.get('leagueId')
       const leagueId = leagueIdStr ? Number(leagueIdStr) : null
       if (!leagueId || isNaN(leagueId)) {
-        res.writeHead(400, { 'content-type': 'application/json' })
-          .end(JSON.stringify({ error: 'Valid numeric leagueId parameter is required' }))
+        sendJson(res, 400, { error: 'Valid numeric leagueId parameter is required' })
+        return
+      }
+
+      const requestedGameweek = urlParams.get('gameweek') || ''
+      const leagueKey = `${leagueId}:${requestedGameweek}`
+      const cachedLeague = leagueCache.get(leagueKey)
+      if (cachedLeague) {
+        sendJson(res, 200, cachedLeague)
         return
       }
 
       try {
-        const standingsRes = await fetch(`https://fantasy.premierleague.com/api/leagues-classic/${leagueId}/standings/`, {
+        const standingsRes = await leagueUpstream.run(() => fetch(`https://fantasy.premierleague.com/api/leagues-classic/${leagueId}/standings/?page_new_entries=1&page_standings=1`, {
           headers: { 'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7)' }
-        })
+        }))
         if (!standingsRes.ok) {
           throw new Error(`FPL league fetch failed: HTTP ${standingsRes.status}`)
         }
@@ -1375,12 +1322,12 @@ function startServerOnAvailablePort(targetPort) {
         const enrichedRivals = await Promise.all(
           topRivals.map(async (rival) => {
             try {
-              const picksRes = await fetch(`https://fantasy.premierleague.com/api/entry/${rival.entry}/event/${defaultGw}/picks/`, {
+              const picksRes = await leagueUpstream.run(() => fetch(`https://fantasy.premierleague.com/api/entry/${rival.entry}/event/${defaultGw}/picks/`, {
                 headers: { 'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7)' }
-              })
-              const historyRes = await fetch(`https://fantasy.premierleague.com/api/entry/${rival.entry}/history/`, {
+              }))
+              const historyRes = await leagueUpstream.run(() => fetch(`https://fantasy.premierleague.com/api/entry/${rival.entry}/history/`, {
                 headers: { 'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7)' }
-              })
+              }))
 
               let picksData = null
               let historyData = null
@@ -1438,18 +1385,21 @@ function startServerOnAvailablePort(targetPort) {
           }
         }).sort((a, b) => b.effectiveOwnership - a.effectiveOwnership)
 
-        res.writeHead(200, { 'content-type': 'application/json; charset=utf-8' })
-          .end(JSON.stringify({
+        const response = {
             league: standingsData.league,
             standings: enrichedRivals,
             totalAnalyzed,
+            sampledManagerCount: enrichedRivals.length,
+            totalManagerCount: Number(standingsData.standings?.total_results || results.length),
+            pagination: { policy: 'FIRST_PAGE_SAMPLE', fetchedPages: 1, complete: false },
             isPreSeason: Boolean(isPreSeason),
             effectiveOwnership
-          }))
+          }
+        leagueCache.set(leagueKey, response)
+        sendJson(res, 200, response)
       } catch (err) {
         if (!res.headersSent) {
-          res.writeHead(500, { 'content-type': 'application/json' })
-            .end(JSON.stringify({ error: err instanceof Error ? err.message : 'FPL league details fetch failed' }))
+          sendJson(res, 500, { error: err instanceof Error ? err.message : 'FPL league details fetch failed' })
         }
       }
       return
@@ -1457,180 +1407,62 @@ function startServerOnAvailablePort(targetPort) {
 
     if (request === '/api/user-profile') {
       if (req.method === 'GET') {
-        try {
-          const db = await getDb()
-          const resDb = await db.query('SELECT * FROM "UserAccount" WHERE id=\'default\' LIMIT 1')
-          const prefDb = await db.query('SELECT * FROM "UserPreference" WHERE id=\'default\' LIMIT 1').catch(() => ({ rows: [] }))
-          const pref = prefDb.rows[0] || {}
-          if (resDb.rows.length === 0) {
-            let selectedIds = []
-            try { selectedIds = JSON.parse(pref.selectedIds || '[]') } catch {}
-            let challengeResult = null
-            try { challengeResult = pref.challengeResult ? JSON.parse(pref.challengeResult) : null } catch {}
-            let stagedReviews = {}
-            try { stagedReviews = JSON.parse(pref.stagedReviews || '{}') } catch {}
-            res.writeHead(200, { 'content-type': 'application/json' }).end(JSON.stringify({
-              account: null,
-              selectedIds: selectedIds.length ? selectedIds : null,
-              preferences: {
-                userName: pref.userName || '', selectedIds, lockedIds: JSON.parse(pref.lockedIds || '[]'),
-                bank: pref.bank == null ? null : Number(pref.bank), freeTransfers: Number(pref.freeTransfers ?? 1),
-                defaultLeagueId: pref.defaultLeagueId == null ? null : Number(pref.defaultLeagueId),
-                onboardingCompleted: Boolean(pref.onboardingCompleted), challengeResult, stagedReviews,
-              },
-            }))
-            return
-          }
-          const row = resDb.rows[0]
-          let selectedIds = []
-          try { selectedIds = JSON.parse(row.selectedIds) } catch {}
-          const account = {
-            teamId: Number(row.teamId),
-            teamName: row.teamName,
-            managerName: row.managerName,
-            totalPoints: Number(row.totalPoints),
-            gameweekPoints: Number(row.gameweekPoints),
-            squadValue: Number(row.squadValue),
-            bank: Number(row.bank),
-            overallRank: row.overallRank ? Number(row.overallRank) : null,
-            transfersCost: Number(row.transfersCost),
-            eventTransfers: Number(row.eventTransfers),
-            totalTransfers: Number(row.totalTransfers),
-            currentGameweek: Number(row.currentGameweek),
-            aiProvider: row.aiProvider || undefined,
-            apiKey: row.apiKey || undefined,
-            lastSynced: row.lastSynced ? new Date(row.lastSynced).toISOString() : new Date().toISOString()
-          }
-          let preferenceSelectedIds = selectedIds
-          try { preferenceSelectedIds = JSON.parse(pref.selectedIds || JSON.stringify(selectedIds)) } catch {}
-          let challengeResult = null
-          try { challengeResult = pref.challengeResult ? JSON.parse(pref.challengeResult) : null } catch {}
-          let stagedReviews = {}
-          try { stagedReviews = JSON.parse(pref.stagedReviews || '{}') } catch {}
-          let lockedIds = []
-          try { lockedIds = JSON.parse(pref.lockedIds || '[]') } catch {}
-          res.writeHead(200, { 'content-type': 'application/json' }).end(JSON.stringify({
-            account,
-            selectedIds: preferenceSelectedIds,
-            preferences: {
-              userName: pref.userName || account.managerName || '', selectedIds: preferenceSelectedIds, lockedIds,
-              bank: pref.bank == null ? account.bank : Number(pref.bank), freeTransfers: Number(pref.freeTransfers ?? 1),
-              defaultLeagueId: pref.defaultLeagueId == null ? null : Number(pref.defaultLeagueId),
-              onboardingCompleted: Boolean(pref.onboardingCompleted), challengeResult, stagedReviews,
-            },
-          }))
-        } catch (err) {
-          res.writeHead(200, { 'content-type': 'application/json' }).end(JSON.stringify({ account: null, selectedIds: null }))
-        }
-        return
-      }
-
-      if (req.method === 'POST') {
-        let body = ''
-        req.on('data', chunk => { body += chunk })
-        req.on('end', async () => {
-          try {
-            const { account, selectedIds } = JSON.parse(body || '{}')
-            if (!account || !account.teamId) {
-              res.writeHead(400, { 'content-type': 'application/json' }).end(JSON.stringify({ error: 'Account object with teamId required' }))
-              return
-            }
-            const db = await getDb()
-            const idsJson = JSON.stringify(Array.isArray(selectedIds) ? selectedIds : [])
-            await db.query(
-              `INSERT INTO "UserAccount" ("id", "teamId", "teamName", "managerName", "totalPoints", "gameweekPoints", "squadValue", "bank", "overallRank", "transfersCost", "eventTransfers", "totalTransfers", "currentGameweek", "selectedIds", "aiProvider", "apiKey", "lastSynced", "updatedAt")
-               VALUES ('default', $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, NOW(), NOW())
-               ON CONFLICT ("id") DO UPDATE SET
-                 "teamId" = EXCLUDED."teamId",
-                 "teamName" = EXCLUDED."teamName",
-                 "managerName" = EXCLUDED."managerName",
-                 "totalPoints" = EXCLUDED."totalPoints",
-                 "gameweekPoints" = EXCLUDED."gameweekPoints",
-                 "squadValue" = EXCLUDED."squadValue",
-                 "bank" = EXCLUDED."bank",
-                 "overallRank" = EXCLUDED."overallRank",
-                 "transfersCost" = EXCLUDED."transfersCost",
-                 "eventTransfers" = EXCLUDED."eventTransfers",
-                 "totalTransfers" = EXCLUDED."totalTransfers",
-                 "currentGameweek" = EXCLUDED."currentGameweek",
-                 "selectedIds" = EXCLUDED."selectedIds",
-                 "aiProvider" = COALESCE(EXCLUDED."aiProvider", "UserAccount"."aiProvider"),
-                 "apiKey" = COALESCE(EXCLUDED."apiKey", "UserAccount"."apiKey"),
-                 "lastSynced" = NOW(),
-                 "updatedAt" = NOW()`,
-              [
-                account.teamId,
-                account.teamName || '',
-                account.managerName || '',
-                account.totalPoints || 0,
-                account.gameweekPoints || 0,
-                account.squadValue || 100,
-                account.bank || 0,
-                account.overallRank || null,
-                account.transfersCost || 0,
-                account.eventTransfers || 0,
-                account.totalTransfers || 0,
-                account.currentGameweek || 1,
-                idsJson,
-                account.aiProvider || null,
-                account.apiKey || null
-              ]
-            )
-            await db.query(`INSERT INTO "UserPreference" ("id","userName","selectedIds","bank","updatedAt") VALUES ('default',$1,$2,$3,NOW()) ON CONFLICT ("id") DO UPDATE SET "userName"=EXCLUDED."userName","selectedIds"=EXCLUDED."selectedIds","bank"=EXCLUDED."bank","updatedAt"=NOW()`, [account.managerName || '', idsJson, account.bank ?? null])
-            res.writeHead(200, { 'content-type': 'application/json' }).end(JSON.stringify({ success: true }))
-          } catch (err) {
-            res.writeHead(500, { 'content-type': 'application/json' }).end(JSON.stringify({ error: err instanceof Error ? err.message : 'Save failed' }))
-          }
+        const db = await getDb()
+        const [manager, state] = await Promise.all([getCurrentManager(db), getUserState(db)])
+        const selectedIds = manager.activePlan?.players?.map(player => player.fplId) || null
+        sendJson(res, 200, {
+          account: manager.account,
+          selectedIds,
+          preferences: {
+            ...state.preferences,
+            selectedIds: selectedIds || [],
+            lockedIds: manager.activePlan?.players?.filter(player => player.locked).map(player => player.fplId) || [],
+            bank: manager.activePlan?.bankTenths == null ? state.preferences.bank : manager.activePlan.bankTenths / 10,
+            freeTransfers: manager.activePlan?.freeTransfers ?? state.preferences.freeTransfers,
+          },
         })
         return
       }
-
-      if (req.method === 'DELETE') {
-        try {
-          const db = await getDb()
-          await db.query('DELETE FROM "UserAccount" WHERE id=\'default\'')
-          await db.query('DELETE FROM "UserPreference" WHERE id=\'default\'')
-          res.writeHead(200, { 'content-type': 'application/json' }).end(JSON.stringify({ success: true }))
-        } catch (err) {
-          res.writeHead(500, { 'content-type': 'application/json' }).end(JSON.stringify({ error: 'Delete failed' }))
-        }
+      if (req.method === 'POST') {
+        sendJson(res, 410, { error: 'Use /api/manager/import and /api/plans; legacy profile writes are disabled' })
         return
       }
+      if (req.method === 'DELETE') {
+        await unlinkCurrentManager(await getDb())
+        sendJson(res, 200, { success: true })
+        return
+      }
+      sendJson(res, 405, { error: 'Method not allowed' })
+      return
     }
 
     if (request === '/api/user-preferences' && req.method === 'POST') {
       try {
         const body = await readRequestBody(req)
         const db = await getDb()
-        await db.query(`INSERT INTO "UserPreference" ("id") VALUES ('default') ON CONFLICT ("id") DO NOTHING`)
-        const sets = []
-        const params = []
-        const add = (column, value) => { sets.push(`"${column}"=$${params.length + 1}`); params.push(value) }
-        if (Array.isArray(body.selectedIds)) add('selectedIds', JSON.stringify(body.selectedIds.filter(Number.isInteger)))
-        if (Array.isArray(body.lockedIds)) add('lockedIds', JSON.stringify(body.lockedIds.filter(Number.isInteger)))
-        if (Object.prototype.hasOwnProperty.call(body, 'challengeResult')) add('challengeResult', body.challengeResult == null ? null : JSON.stringify(body.challengeResult))
-        if (Object.prototype.hasOwnProperty.call(body, 'stagedReviews')) add('stagedReviews', JSON.stringify(body.stagedReviews || {}))
-        if (typeof body.userName === 'string') add('userName', body.userName.slice(0, 120))
-        if (body.bank === null || Number.isFinite(Number(body.bank))) add('bank', body.bank === null ? null : Number(body.bank))
-        if (Number.isFinite(Number(body.freeTransfers))) add('freeTransfers', Math.max(0, Math.min(5, Math.round(Number(body.freeTransfers)))))
-        if (body.defaultLeagueId === null || Number.isInteger(Number(body.defaultLeagueId))) add('defaultLeagueId', body.defaultLeagueId == null ? null : Number(body.defaultLeagueId))
-        if (Object.prototype.hasOwnProperty.call(body, 'onboardingCompleted')) add('onboardingCompleted', body.onboardingCompleted ? 1 : 0)
-        if (sets.length) await db.query(`UPDATE "UserPreference" SET ${sets.join(',')},"updatedAt"=NOW() WHERE id='default'`, params)
-        sendJson(res, 200, { success: true })
+        const state = await updateUserState(db, body)
+        sendJson(res, 200, { success: true, preferences: state.preferences })
       } catch (error) { sendJson(res, 400, { error: error instanceof Error ? error.message : 'Could not save user preferences' }) }
+      return
+    }
+
+    if (request === '/api/user-preferences' && req.method === 'GET') {
+      try {
+        const state = await getUserState(await getDb())
+        sendJson(res, 200, state.preferences)
+      } catch (error) {
+        sendJson(res, 400, { error: error instanceof Error ? error.message : 'Could not load user preferences' })
+      }
       return
     }
 
 
     if (request === '/api/ask' && req.method === 'POST') {
-      let body = ''
-      req.on('data', chunk => { body += chunk })
-      req.on('end', async () => {
-        try {
-          const payload = JSON.parse(body || '{}')
+      try {
+          const payload = await readRequestBody(req)
           const { question, context, userApiKey, userProvider, userModel } = payload
           if (!question) {
-            res.writeHead(400, { 'content-type': 'application/json' }).end(JSON.stringify({ error: 'Question is required' }))
+            sendJson(res, 400, { error: 'Question is required' })
             return
           }
 
@@ -1652,20 +1484,16 @@ function startServerOnAvailablePort(targetPort) {
 
           const llmResult = await callLLMProvider(prompt, { userApiKey, userProvider, userModel })
           if (llmResult) {
-            res.writeHead(200, { 'content-type': 'application/json; charset=utf-8' }).end(JSON.stringify(llmResult))
+            sendJson(res, 200, llmResult)
           } else {
-            res.writeHead(200, { 'content-type': 'application/json; charset=utf-8' }).end(JSON.stringify({
+            sendJson(res, 200, {
               answer: null,
               provider: 'Deterministic Engine (No API Key)'
-            }))
+            })
           }
-        } catch (err) {
-          if (!res.headersSent) {
-            res.writeHead(500, { 'content-type': 'application/json' })
-              .end(JSON.stringify({ error: err instanceof Error ? err.message : 'LLM processing failed' }))
-          }
-        }
-      })
+      } catch (err) {
+        if (!res.headersSent) sendJson(res, errorStatus(err), { error: sanitizeError(err) })
+      }
       return
     }
 
@@ -1691,14 +1519,14 @@ function startServerOnAvailablePort(targetPort) {
       console.log(`⚠️ Port ${targetPort} in use, trying ${targetPort + 1}...`)
       startServerOnAvailablePort(targetPort + 1)
     } else {
-      console.error(`❌ Dev server error: ${err.message}`)
+      console.error(`❌ Dev server error: ${sanitizeError(err)}`)
       process.exit(1)
     }
   })
 
   server.listen(targetPort, host, () => {
     console.log(`Insomnia FPL running at http://${host}:${targetPort}`)
-    performColdStartInitialization().catch(err => console.error('Cold-start initialization failed:', err))
+    performColdStartInitialization().catch(err => console.error('Cold-start initialization failed:', sanitizeError(err)))
   })
 }
 

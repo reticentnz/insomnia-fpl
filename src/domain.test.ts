@@ -92,6 +92,13 @@ describe('FPL domain rules', () => {
     const incoming = {...players.find(p => p.name === 'Wood')!, id: 900, name: 'External forward', club: 'WHU'}
     expect(isLegalTransfer(squad, outside, incoming, 5)).toBe(false)
   })
+  it('uses exact selling price and blocks unknown affordability', () => {
+    const squad = getSquad()
+    const baseOut = squad.find(player => player.position === 'MID')!
+    const incoming = { ...players.find(player => player.position === 'MID' && !squad.some(owned => owned.id === player.id))!, price: baseOut.price + 0.3 }
+    expect(isLegalTransfer(squad.map(player => player.id === baseOut.id ? { ...player, sellingPrice: baseOut.price - 0.2 } : player), { ...baseOut, sellingPrice: baseOut.price - 0.2 }, incoming, 0.4)).toBe(false)
+    expect(isLegalTransfer(squad.map(player => player.id === baseOut.id ? { ...player, sellingPrice: null } : player), { ...baseOut, sellingPrice: null }, incoming, 10)).toBe(false)
+  })
   it('optimises the starting formation across legal shapes', () => {
     const fix = [{gameweek:1, opponent:'COV' as const, venue:'H' as const, difficulty:2}]
     const squad = getSquad().map(p => p.position === 'DEF'
@@ -254,9 +261,10 @@ describe('2026/27 scoring engine',()=>{
     const double={...players[8],upcomingFixtures:[{gameweek:1,opponent:'ARS',venue:'H' as const,difficulty:4},{gameweek:1,opponent:'EVE',venue:'A' as const,difficulty:2}]}
     expect(horizonProjection(double,2)).toBeGreaterThan(horizonProjection({...double,upcomingFixtures:double.upcomingFixtures.slice(0,1)},1))
   })
-  it('produces bounded position calibration factors',()=>{
-    const rows=Array.from({length:20},()=>({position:'MID' as const,expectedPoints:4,actualPoints:8}))
-    expect(evaluateCalibration(rows).find(row=>row.position==='MID')?.factor).toBe(1.25)
+  it('withholds calibration below the evidence threshold and caps qualified factors',()=>{
+    const rows=Array.from({length:99},()=>({position:'MID' as const,expectedPoints:4,actualPoints:8}))
+    expect(evaluateCalibration(rows).find(row=>row.position==='MID')?.factor).toBe(1)
+    expect(evaluateCalibration([...rows,rows[0]]).find(row=>row.position==='MID')?.factor).toBe(1.15)
   })
 })
 

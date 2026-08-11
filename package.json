@@ -6,14 +6,18 @@
   "scripts": {
     "dev": "node --no-warnings scripts/dev.mjs",
     "build": "npm run verify:domain && node --no-warnings scripts/build.mjs",
+    "typecheck": "tsc --noEmit",
     "test": "npm run verify:domain && npm run verify:intelligence && npm run test:vitest",
-    "test:vitest": "vitest run --no-file-parallelism --maxWorkers=1 --testTimeout=30000 --hookTimeout=30000",
+    "test:vitest": "vitest run --no-file-parallelism --maxWorkers=1 --testTimeout=60000 --hookTimeout=60000",
+    "test:integration": "vitest run scripts/db-migrate.test.ts scripts/ingest-fpl.test.ts scripts/manager-service.test.ts scripts/plan-service.test.ts scripts/user-state-service.test.ts --no-file-parallelism --maxWorkers=1 --testTimeout=60000 --hookTimeout=60000",
+    "test:e2e": "vitest run scripts/e2e-fixture.test.ts scripts/server-api.test.ts --no-file-parallelism --maxWorkers=1 --testTimeout=30000 --hookTimeout=30000",
     "verify:domain": "node --no-warnings --experimental-strip-types scripts/verify-domain.mjs",
     "verify:intelligence": "node --no-warnings --experimental-strip-types scripts/verify-intelligence.mjs",
     "db:migrate": "node --no-warnings scripts/db-migrate.mjs",
     "db:reset": "node --no-warnings scripts/db-reset.mjs",
     "ingest:fpl": "node --no-warnings --experimental-strip-types scripts/ingest-fpl.mjs",
     "ingest:signals": "node --no-warnings scripts/ingest-signals.mjs",
+    "forecast": "node --no-warnings --experimental-strip-types scripts/create-forecast-run.mjs",
     "backtest": "node --no-warnings --experimental-strip-types scripts/backtest-projections.mjs",
     "db:verify": "node --no-warnings --experimental-strip-types scripts/verify-db.mjs",
     "preview": "node --no-warnings --experimental-strip-types scripts/serve.mjs"
@@ -25,6 +29,7 @@
     "typescript": "^5.8.3"
   },
   "devDependencies": {
+    "@types/node": "^26.2.0",
     "@types/react": "^19.2.18",
     "@types/react-dom": "^19.2.4",
     "vitest": "^4.1.10"

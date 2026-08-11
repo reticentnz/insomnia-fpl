@@ -1,23 +1,26 @@
 import fs from 'node:fs'
 import path from 'node:path'
-import { getDb } from './db.mjs'
+import { pathToFileURL } from 'node:url'
+import { randomUUID } from 'node:crypto'
+import { closeDb, getDb } from './db.mjs'
 import { migrateDatabase } from './db-migrate.mjs'
+import { failFeedRun, hashPayload, startFeedRun, succeedFeedRun } from './feed-run.mjs'
 
-const SOURCE_UNDERSTAT = 'UNDERSTAT'
-const SOURCE_ODDS = 'ODDS_MARKET'
-const seasonStart = Number(process.env.FPL_SEASON_START_YEAR || new Date().getUTCFullYear())
+export const UNDERLYING_SOURCE = 'UNDERSTAT'
+export const MARKET_SOURCE = 'ODDS_MARKET'
+export const MARKET_XG_METHOD = 'POISSON_MARKETS_V1'
+
 const defaultCacheDir = process.env.FPL_DATA_CACHE_FILE
   ? path.join(path.dirname(process.env.FPL_DATA_CACHE_FILE), 'signal-feeds')
   : path.resolve(process.cwd(), '.cache', 'signal-feeds')
-const cacheDir = process.env.SIGNAL_CACHE_DIR || defaultCacheDir
 const headers = { 'user-agent': 'Insomnia-FPL/1.0 (+local analytics)', accept: 'text/html,application/json' }
 
-function number(value) {
+const finite = value => {
   const parsed = Number(value)
   return Number.isFinite(parsed) ? parsed : 0
 }
 
-function normalize(value) {
+export function normalizeIdentity(value) {
   return String(value || '').toLowerCase().normalize('NFKD').replace(/[\u0300-\u036f]/g, '')
     .replace(/\b(fc|afc|football club)\b/g, '').replace(/[^a-z0-9]/g, '')
 }
@@ -40,15 +43,12 @@ function decodeSingleQuotedJs(value) {
   return output
 }
 
-function extractUnderstatJson(html, variable) {
+export function extractUnderstatJson(html, variable) {
   const prefix = `(?:var|let|const)?\\s*${variable}\\s*=\\s*`
   const single = html.match(new RegExp(`${prefix}JSON\\.parse\\(\\s*'((?:\\\\.|[^'])*)'\\s*\\)`, 'i'))
   const double = html.match(new RegExp(`${prefix}JSON\\.parse\\(\\s*"((?:\\\\.|[^"])*)"\\s*\\)`, 'i'))
   const match = single || double
   if (match) return JSON.parse(decodeSingleQuotedJs(match[1]))
-
-  // Some cached/alternate Understat responses assign the decoded array
-  // directly rather than wrapping it in JSON.parse().
   const direct = html.match(new RegExp(`${prefix}([\\[]|[\\{])`, 'i'))
   if (direct) {
     const start = direct.index + direct[0].length - 1
@@ -74,124 +74,191 @@ function extractUnderstatJson(html, variable) {
   throw new Error(`Understat response did not contain ${variable}${pageHint}`)
 }
 
-async function fetchJson(url, options = {}) {
-  const response = await fetch(url, { headers, ...options })
-  if (!response.ok) throw new Error(`${url} returned HTTP ${response.status}`)
-  return response.json()
+export function matchUnderlyingPlayer(row, players) {
+  const nameMatches = players.filter(player => normalizeIdentity(player.web_name) === normalizeIdentity(row.player_name))
+  const teamMatches = row.team_title
+    ? nameMatches.filter(player => normalizeIdentity(player.team_name) === normalizeIdentity(row.team_title))
+    : nameMatches
+  if (teamMatches.length === 1) return { status: 'MATCHED', confidence: 1, playerId: teamMatches[0].id }
+  if (teamMatches.length > 1 || (nameMatches.length > 0 && row.team_title)) return { status: 'AMBIGUOUS', confidence: 0, playerId: null }
+  return { status: 'UNMATCHED', confidence: 0, playerId: null }
 }
 
-async function fetchText(url) {
-  const response = await fetch(url, { headers })
-  if (!response.ok) throw new Error(`${url} returned HTTP ${response.status}`)
-  return response.text()
-}
-
-async function withCache(name, loader) {
-  fs.mkdirSync(cacheDir, { recursive: true })
-  const filename = path.join(cacheDir, name)
-  try {
-    const fresh = await loader()
-    fs.writeFileSync(filename, JSON.stringify({ capturedAt: new Date().toISOString(), payload: fresh }))
-    return fresh
-  } catch (error) {
-    if (fs.existsSync(filename)) {
-      const cached = JSON.parse(fs.readFileSync(filename, 'utf8'))
-      console.warn(`source refresh failed; using cached ${name}: ${error.message}`)
-      return cached.payload
-    }
-    throw error
-  }
-}
-
-function playerIndex(players, teams) {
-  const teamNames = new Map(teams.map(team => [team.id, team.name]))
-  const byName = new Map()
-  for (const player of players) {
-    const key = normalize(player.name)
-    const list = byName.get(key) || []
-    list.push({ ...player, teamName: teamNames.get(player.clubId) || '' })
-    byName.set(key, list)
-  }
-  return { byName, teamNames }
-}
-
-async function ingestUnderstat(db, index) {
-  const url = `https://understat.com/league/EPL/${seasonStart}`
-  const html = await withCache(`understat-epl-${seasonStart}.json`, () => fetchText(url))
-  const rows = extractUnderstatJson(html, 'playersData')
-  if (!Array.isArray(rows)) throw new Error('Understat playersData was not an array')
-  const capturedAt = new Date().toISOString()
-  let inserted = 0
-  let unmatched = 0
-  for (const row of rows) {
-    const candidates = index.byName.get(normalize(row.player_name)) || []
-    const match = candidates.find(candidate => !row.team_title || normalize(candidate.teamName) === normalize(row.team_title)) || candidates[0]
-    if (!match) { unmatched += 1; continue }
-    const minutes = number(row.time)
-    const expectedGoals = number(row.xG)
-    const expectedAssists = number(row.xA)
-    await db.query(`INSERT INTO "PlayerUnderlyingSnapshot" ("playerId","source","sourcePlayerId","capturedAt","games","minutes","goals","assists","expectedGoals","expectedAssists","nonPenaltyExpectedGoals","shots","keyPasses","xgPer90","xaPer90","rawPayload") VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16)`, [
-      match.id, SOURCE_UNDERSTAT, String(row.id || row.player_id), capturedAt, number(row.games), minutes, number(row.goals), number(row.assists), expectedGoals, expectedAssists,
-      number(row.npxG), number(row.shots), number(row.key_passes), minutes ? expectedGoals / minutes * 90 : 0, minutes ? expectedAssists / minutes * 90 : 0, JSON.stringify(row)
-    ])
-    inserted += 1
-  }
-  console.log(`Understat: saved ${inserted} player snapshots (${unmatched} unmatched)`)
-}
-
-function marketProbabilities(bookmakers, marketKey) {
+export function marketProbabilities(bookmakers, marketKey) {
   const observations = []
   for (const bookmaker of bookmakers || []) {
     const market = (bookmaker.markets || []).find(candidate => candidate.key === marketKey)
     if (!market) continue
-    const prices = (market.outcomes || []).map(outcome => ({ name: outcome.name, price: number(outcome.price) })).filter(item => item.price > 1)
+    const prices = (market.outcomes || []).map(outcome => ({ name: outcome.name, price: finite(outcome.price) })).filter(item => item.price > 1)
     const denominator = prices.reduce((sum, item) => sum + 1 / item.price, 0)
     if (!denominator) continue
     observations.push(Object.fromEntries(prices.map(item => [item.name, (1 / item.price) / denominator])))
   }
   if (!observations.length) return null
-  const names = [...new Set(observations.flatMap(observation => Object.keys(observation)))]
+  const names = [...new Set(observations.flatMap(observation => Object.keys(observation)))].sort()
   return Object.fromEntries(names.map(name => [name, observations.reduce((sum, observation) => sum + (observation[name] || 0), 0) / observations.length]))
 }
 
-async function ingestOdds(db) {
-  const apiKey = process.env.ODDS_API_KEY
-  if (!apiKey) { console.warn('Odds: skipped; set ODDS_API_KEY to enable the importer'); return }
-  const url = `https://api.the-odds-api.com/v4/sports/soccer_epl/odds?regions=${encodeURIComponent(process.env.ODDS_API_REGIONS || 'uk')}&markets=h2h&oddsFormat=decimal&dateFormat=iso&apiKey=${encodeURIComponent(apiKey)}`
-  const events = await withCache('odds-epl.json', () => fetchJson(url))
-  const capturedAt = new Date().toISOString()
-  let inserted = 0
-  for (const event of events) {
-    const probabilities = marketProbabilities(event.bookmakers, 'h2h')
-    if (!probabilities) continue
-    const home = probabilities[event.home_team] ?? null
-    const draw = probabilities.Draw ?? null
-    const away = probabilities[event.away_team] ?? null
-    await db.query(`INSERT INTO "TeamMarketSnapshot" ("source","externalEventId","capturedAt","kickoff","homeTeam","awayTeam","homeWinProb","drawProb","awayWinProb","rawPayload") VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)`, [
-      SOURCE_ODDS, String(event.id), capturedAt, event.commence_time || null, event.home_team, event.away_team, home, draw, away, JSON.stringify(event)
-    ])
-    inserted += 1
-  }
-  console.log(`Odds: saved ${inserted} de-vigged match snapshots`)
+function poisson(value, lambda) {
+  let term = Math.exp(-lambda)
+  let sum = term
+  for (let index = 1; index <= value; index += 1) { term *= lambda / index; sum += term }
+  return sum
 }
 
-let db = null
-try {
-  await migrateDatabase()
-  db = getDb()
-  const bootstrap = await withCache('fpl-bootstrap-static.json', () => fetchJson('https://fantasy.premierleague.com/api/bootstrap-static/'))
-  const teams = bootstrap.teams.map(team => ({ id: team.id, name: team.name, shortName: team.short_name }))
-  const players = bootstrap.elements.map(player => ({ id: player.id, name: player.web_name || `${player.first_name} ${player.second_name}`, clubId: player.team }))
-  const index = playerIndex(players, teams)
-  try {
-    await ingestUnderstat(db, index)
-  } catch (error) {
-    console.warn(`Understat: skipped; ${error.message}`)
+function marketMetrics(home, away) {
+  let homeWin = 0; let draw = 0; let over25 = 0; let btts = 0
+  for (let homeGoals = 0; homeGoals <= 12; homeGoals += 1) for (let awayGoals = 0; awayGoals <= 12; awayGoals += 1) {
+    const probability = poisson(homeGoals, home) * poisson(awayGoals, away)
+    if (homeGoals > awayGoals) homeWin += probability
+    if (homeGoals === awayGoals) draw += probability
+    if (homeGoals + awayGoals > 2) over25 += probability
+    if (homeGoals > 0 && awayGoals > 0) btts += probability
   }
-  await ingestOdds(db)
-} catch (error) {
-  console.error(`signal ingestion failed: ${error.stack || error.message}`)
-  process.exitCode = 1
-} finally {
-  await db?.end()
+  return { homeWin, draw, over25, btts }
+}
+
+/** Fit independent home/away Poisson rates to de-vigged H2H, totals and BTTS markets. */
+export function deriveExpectedGoals(probabilities) {
+  const homeWin = finite(probabilities?.homeWin)
+  const draw = finite(probabilities?.draw)
+  const awayWin = finite(probabilities?.awayWin)
+  const over25 = finite(probabilities?.over25)
+  const btts = finite(probabilities?.btts)
+  if (![homeWin, draw, awayWin, over25, btts].every(value => value > 0 && value < 1)) return null
+  if (Math.abs(homeWin + draw + awayWin - 1) > 0.04) return null
+  let best = null
+  for (let home = 0.2; home <= 4.5; home += 0.05) for (let away = 0.2; away <= 4.5; away += 0.05) {
+    const fit = marketMetrics(home, away)
+    const score = (fit.homeWin - homeWin) ** 2 + (fit.draw - draw) ** 2 + ((1 - fit.homeWin - fit.draw) - awayWin) ** 2 + (fit.over25 - over25) ** 2 + (fit.btts - btts) ** 2
+    if (!best || score < best.score) best = { home, away, score }
+  }
+  return { homeExpectedGoals: Number(best.home.toFixed(2)), awayExpectedGoals: Number(best.away.toFixed(2)), derivationMethod: MARKET_XG_METHOD }
+}
+
+async function fetchJson(url, fetchImpl) {
+  const response = await fetchImpl(url, { headers })
+  if (!response.ok) throw new Error(`${url} returned HTTP ${response.status}`)
+  return response.json()
+}
+
+async function fetchText(url, fetchImpl) {
+  const response = await fetchImpl(url, { headers })
+  if (!response.ok) throw new Error(`${url} returned HTTP ${response.status}`)
+  return response.text()
+}
+
+async function withCache(name, loader, cacheDir) {
+  fs.mkdirSync(cacheDir, { recursive: true })
+  const filename = path.join(cacheDir, name)
+  try {
+    const fresh = await loader()
+    fs.writeFileSync(filename, JSON.stringify({ capturedAt: new Date().toISOString(), payload: fresh }))
+    return { payload: fresh, usedCache: false, cacheCapturedAt: null }
+  } catch (error) {
+    if (!fs.existsSync(filename)) throw error
+    const cached = JSON.parse(fs.readFileSync(filename, 'utf8'))
+    return { payload: cached.payload, usedCache: true, cacheCapturedAt: cached.capturedAt }
+  }
+}
+
+async function currentSeasonPlayers(db, season) {
+  return (await db.query(`SELECT player."id", player."web_name", team."name" AS "team_name"
+    FROM "Player" player JOIN "PlayerObservation" observation ON observation."player_id"=player."id"
+    JOIN "Team" team ON team."id"=observation."team_id"
+    WHERE player."season"=$1
+    AND observation."observed_at"=(SELECT MAX(candidate."observed_at") FROM "PlayerObservation" candidate WHERE candidate."player_id"=player."id")`, [season])).rows
+}
+
+async function currentSeasonFixtures(db, season) {
+  return (await db.query(`SELECT fixture."id", home."name" AS "home_team_name", away."name" AS "away_team_name"
+    FROM "Fixture" fixture JOIN "Team" home ON home."id"=fixture."home_team_id" JOIN "Team" away ON away."id"=fixture."away_team_id"
+    WHERE fixture."season"=$1`, [season])).rows
+}
+
+function matchFixture(event, fixtures) {
+  const matches = fixtures.filter(fixture => normalizeIdentity(fixture.home_team_name) === normalizeIdentity(event.home_team) && normalizeIdentity(fixture.away_team_name) === normalizeIdentity(event.away_team))
+  return matches.length === 1 ? matches[0].id : null
+}
+
+export async function ingestUnderlyingRows(db, { season, rows, observedAt = new Date().toISOString(), source = UNDERLYING_SOURCE, feedDetails = {} }) {
+  const runId = await startFeedRun(db, { source: 'UNDERLYING', startedAt: observedAt, sourceUpdatedAt: observedAt, payloadHash: hashPayload(rows), requestCount: feedDetails.requestCount || 1 })
+  try {
+    const players = await currentSeasonPlayers(db, season)
+    let inserted = 0; let unmatched = 0
+    for (const row of rows) {
+      const match = matchUnderlyingPlayer(row, players)
+      if (match.status !== 'MATCHED') unmatched += 1
+      const minutes = finite(row.time)
+      const xg = finite(row.xG); const xa = finite(row.xA)
+      await db.query(`INSERT INTO "UnderlyingObservation" ("id","feed_run_id","source","source_player_id","source_player_name","source_team_name","season","player_id","match_status","match_confidence","observed_at","games","minutes","goals","assists","shots","key_passes","expected_goals","expected_assists","non_penalty_expected_goals","xg_per_90","xa_per_90","raw_payload_json") VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23)`, [randomUUID(), runId, source, String(row.id || row.player_id || ''), String(row.player_name || ''), row.team_title || null, season, match.playerId, match.status, match.confidence, observedAt, finite(row.games), minutes, finite(row.goals), finite(row.assists), finite(row.shots), finite(row.key_passes), xg, xa, finite(row.npxG), minutes ? xg / minutes * 90 : 0, minutes ? xa / minutes * 90 : 0, JSON.stringify(row)])
+      inserted += 1
+    }
+    await succeedFeedRun(db, runId, { finishedAt: new Date().toISOString(), insertedCount: inserted, unmatchedCount: unmatched, usedCache: feedDetails.usedCache, cacheCapturedAt: feedDetails.cacheCapturedAt })
+    return { runId, inserted, unmatched }
+  } catch (error) {
+    await failFeedRun(db, runId, error)
+    throw error
+  }
+}
+
+export async function ingestMarketEvents(db, { season, events, capturedAt = new Date().toISOString(), source = MARKET_SOURCE, feedDetails = {} }) {
+  const runId = await startFeedRun(db, { source: 'MARKET', startedAt: capturedAt, sourceUpdatedAt: capturedAt, payloadHash: hashPayload(events), requestCount: feedDetails.requestCount || 1 })
+  try {
+    const fixtures = await currentSeasonFixtures(db, season)
+    let inserted = 0; let unmatched = 0
+    for (const event of events) {
+      const h2h = marketProbabilities(event.bookmakers, 'h2h')
+      const totals = marketProbabilities(event.bookmakers, 'totals')
+      const btts = marketProbabilities(event.bookmakers, 'btts')
+      const homeWin = h2h?.[event.home_team] ?? null
+      const draw = h2h?.Draw ?? null
+      const awayWin = h2h?.[event.away_team] ?? null
+      const over25 = totals?.['Over 2.5'] ?? totals?.Over ?? null
+      const bothTeamsToScore = btts?.Yes ?? null
+      const expected = deriveExpectedGoals({ homeWin, draw, awayWin, over25, btts: bothTeamsToScore })
+      const fixtureId = matchFixture(event, fixtures)
+      if (!fixtureId) unmatched += 1
+      await db.query(`INSERT INTO "MarketFixtureObservation" ("id","feed_run_id","source","external_event_id","fixture_id","captured_at","kickoff_at","home_team_name","away_team_name","home_win_probability","draw_probability","away_win_probability","over_2_5_probability","btts_probability","home_expected_goals","away_expected_goals","derivation_method","raw_payload_json") VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18)`, [randomUUID(), runId, source, String(event.id), fixtureId, capturedAt, event.commence_time || null, event.home_team, event.away_team, homeWin, draw, awayWin, over25, bothTeamsToScore, expected?.homeExpectedGoals ?? null, expected?.awayExpectedGoals ?? null, expected?.derivationMethod ?? null, JSON.stringify(event)])
+      inserted += 1
+    }
+    await succeedFeedRun(db, runId, { finishedAt: new Date().toISOString(), insertedCount: inserted, unmatchedCount: unmatched, usedCache: feedDetails.usedCache, cacheCapturedAt: feedDetails.cacheCapturedAt })
+    return { runId, inserted, unmatched }
+  } catch (error) {
+    await failFeedRun(db, runId, error)
+    throw error
+  }
+}
+
+export async function ingestSignalFeeds({ db, season, fetchImpl = fetch, cacheDir = process.env.SIGNAL_CACHE_DIR || defaultCacheDir, understatRows, marketEvents } = {}) {
+  const activeSeason = season || process.env.FPL_SEASON
+  if (!activeSeason) throw new Error('FPL_SEASON is required for optional-feed ingestion')
+  const underlying = understatRows === undefined
+    ? await withCache(`understat-epl-${activeSeason.slice(0, 4)}.json`, async () => extractUnderstatJson(await fetchText(`https://understat.com/league/EPL/${activeSeason.slice(0, 4)}`, fetchImpl), 'playersData'), cacheDir)
+    : { payload: understatRows, usedCache: false, cacheCapturedAt: null }
+  const results = { underlying: await ingestUnderlyingRows(db, { season: activeSeason, rows: underlying.payload, feedDetails: underlying }) }
+  if (marketEvents !== undefined) results.market = await ingestMarketEvents(db, { season: activeSeason, events: marketEvents })
+  else if (process.env.ODDS_API_KEY) {
+    const url = `https://api.the-odds-api.com/v4/sports/soccer_epl/odds?regions=${encodeURIComponent(process.env.ODDS_API_REGIONS || 'uk')}&markets=h2h,totals,btts&oddsFormat=decimal&dateFormat=iso&apiKey=${encodeURIComponent(process.env.ODDS_API_KEY)}`
+    const market = await withCache('odds-epl.json', () => fetchJson(url, fetchImpl), cacheDir)
+    results.market = await ingestMarketEvents(db, { season: activeSeason, events: market.payload, feedDetails: market })
+  }
+  return results
+}
+
+async function main() {
+  let db
+  try {
+    await migrateDatabase()
+    db = getDb()
+    const result = await ingestSignalFeeds({ db })
+    console.log(`Understat: saved ${result.underlying.inserted} observations (${result.underlying.unmatched} reviewable unmatched/ambiguous)`)
+    if (result.market) console.log(`Odds: saved ${result.market.inserted} market observations (${result.market.unmatched} unresolved fixtures)`)
+  } finally {
+    await closeDb()
+  }
+}
+
+if (process.argv[1] && import.meta.url === pathToFileURL(path.resolve(process.argv[1])).href) {
+  main().catch(error => { console.error(`signal ingestion failed: ${error instanceof Error ? error.message : String(error)}`); process.exitCode = 1 })
 }
