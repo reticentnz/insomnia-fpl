@@ -14,12 +14,16 @@ if (!process.env.DATABASE_URL) throw new Error('DATABASE_URL is required')
 
 const client = getDb()
 try {
-  const result = await client.query('SELECT p.position,pr."expectedPoints",m."totalPoints" FROM "PlayerProjection" pr JOIN "Player" p ON p.id=pr."playerId" JOIN "PlayerMatchStat" m ON m."playerId"=pr."playerId" AND m.gameweek=pr."gameweekId" WHERE pr."modelVersion"=$1', [MODEL_VERSION])
-  const rows = result.rows.map(row => ({ position: row.position, expectedPoints: Number(row.expectedPoints), actualPoints: Number(row.totalPoints) }))
+  const result = await client.query(`
+    SELECT observation."position", forecast."mean_points" AS expected_points, result."total_points"
+    FROM "PlayerFixtureForecast" forecast
+    JOIN "ForecastRun" run ON run."id"=forecast."forecast_run_id"
+    JOIN "PlayerFixtureResult" result ON result."player_id"=forecast."player_id" AND result."fixture_id"=forecast."fixture_id"
+    JOIN "PlayerObservation" observation ON observation."player_id"=forecast."player_id"
+      AND observation."observed_at"=(SELECT MAX(candidate."observed_at") FROM "PlayerObservation" candidate WHERE candidate."player_id"=forecast."player_id" AND candidate."observed_at"<=run."as_of")
+    WHERE run."model_version"=$1`, [MODEL_VERSION])
+  const rows = result.rows.map(row => ({ position: row.position, expectedPoints: Number(row.expected_points), actualPoints: Number(row.total_points) }))
   const summaries = evaluateCalibration(rows)
-  for (const summary of summaries.filter(row => row.position !== 'ALL' && row.sampleSize >= 20)) {
-    await client.query('INSERT INTO "ModelCalibration" ("modelVersion",position,"sampleSize",factor,mae,rmse,bias,"updatedAt") VALUES ($1,$2,$3,$4,$5,$6,$7,CURRENT_TIMESTAMP) ON CONFLICT ("modelVersion",position) DO UPDATE SET "sampleSize"=EXCLUDED."sampleSize",factor=EXCLUDED.factor,mae=EXCLUDED.mae,rmse=EXCLUDED.rmse,bias=EXCLUDED.bias,"updatedAt"=CURRENT_TIMESTAMP', [MODEL_VERSION, summary.position, summary.sampleSize, summary.factor, summary.mae, summary.rmse, summary.bias])
-  }
   console.table(summaries)
 } finally {
   await client.end()

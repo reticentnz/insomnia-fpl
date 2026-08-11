@@ -1,7 +1,7 @@
 import fs from 'node:fs'
 import path from 'node:path'
 import { getDb } from './db.mjs'
-import { ensureDatabaseSchema } from './db-push.mjs'
+import { migrateDatabase } from './db-migrate.mjs'
 
 const SOURCE_UNDERSTAT = 'UNDERSTAT'
 const SOURCE_ODDS = 'ODDS_MARKET'
@@ -177,8 +177,8 @@ async function ingestOdds(db) {
 
 let db = null
 try {
+  await migrateDatabase()
   db = getDb()
-  await ensureDatabaseSchema()
   const bootstrap = await withCache('fpl-bootstrap-static.json', () => fetchJson('https://fantasy.premierleague.com/api/bootstrap-static/'))
   const teams = bootstrap.teams.map(team => ({ id: team.id, name: team.name, shortName: team.short_name }))
   const players = bootstrap.elements.map(player => ({ id: player.id, name: player.web_name || `${player.first_name} ${player.second_name}`, clubId: player.team }))

@@ -24,6 +24,7 @@ docker run -d \
   --restart unless-stopped \
   -p 4173:4173 \
   -e DATABASE_URL='file:/app/data/insomnia-fpl.db' \
+  -e APP_DATA_DIR='/app/data' \
   -e SIGNAL_INGEST_TOKEN='replace-with-a-long-random-token' \
   -e SIGNAL_CONFIG_FILE='/app/data/signal-config.json' \
   -e FPL_DATA_CACHE_FILE='/app/data/cache/fpl-data.json' \
@@ -83,19 +84,19 @@ The **Transfers** tab becomes the **GW1 Draft Lab** before the opening deadline 
 
 ## Database
 
-The canonical schema is in `prisma/schema.prisma`. The app uses SQLite through Node's built-in SQLite driver. Put a local path such as `DATABASE_URL="file:./dev.db"` in the ignored `.env.local` file, then run the idempotent schema setup:
+The canonical schema is in `db/migrations/001_initial_rebuild.sql`. The app uses SQLite through Node's built-in SQLite driver. Put a local path such as `DATABASE_URL="file:./dev.db"` in the ignored `.env.local` file, then run the checksum-aware migration workflow:
 
 ```bash
-npm run db:push
+npm run db:migrate
 ```
 
-The current schema also contains provenance-aware `PlayerSignal` evidence and a resolved `PlayerOutlook` for each player/gameweek. Signals carry a source URL, confidence, observation time, expiry and review status. `db:push` is intentionally non-destructive; use a reviewed migration workflow before changing production data.
+Development data can be explicitly discarded with `npm run db:reset -- --yes-reset-development-data`; the reset script refuses unsafe database paths. Verify the active schema with `npm run db:verify`.
 
 To refresh the live public FPL data and append a player snapshot:
 
 ```bash
 npm run ingest:fpl
-npm run verify:db
+npm run db:verify
 ```
 
 To refresh the optional underlying-performance and market feeds:

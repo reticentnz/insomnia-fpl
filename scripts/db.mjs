@@ -38,16 +38,16 @@ export function getDb(customPath) {
 
   ensureEnvLoaded()
 
-  const rawPath = customPath || process.env.DATABASE_URL || 'file:./dev.db'
-  const cleanPath = rawPath.replace(/^file:\/\//, '').replace(/^file:/, '')
-  const resolvedPath = path.isAbsolute(cleanPath) ? cleanPath : path.resolve(process.cwd(), cleanPath)
+  const resolvedPath = resolveDatabasePath(customPath)
+  if (resolvedPath === ':memory:') throw new Error('In-memory databases are not supported by the application adapter')
   const dir = path.dirname(resolvedPath)
   if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true })
 
   const sqlite = new DatabaseSync(resolvedPath)
   sqlite.exec('PRAGMA journal_mode = WAL;')
+  sqlite.exec('PRAGMA busy_timeout = 5000;')
   sqlite.exec('PRAGMA synchronous = NORMAL;')
-  sqlite.exec('PRAGMA foreign_keys = OFF;') // Relax during bulk updates/ingest
+  sqlite.exec('PRAGMA foreign_keys = ON;')
 
   dbInstance = {
     sqlite,
@@ -92,4 +92,20 @@ export function getDb(customPath) {
     }
   }
   return dbInstance
+}
+
+export function resolveDatabasePath(customPath) {
+  ensureEnvLoaded()
+
+  const rawPath = customPath || process.env.DATABASE_URL || 'file:./dev.db'
+  if (rawPath === ':memory:' || rawPath === 'file::memory:') return ':memory:'
+  const cleanPath = rawPath.replace(/^file:\/\//, '').replace(/^file:/, '')
+  return path.isAbsolute(cleanPath) ? path.normalize(cleanPath) : path.resolve(process.cwd(), cleanPath)
+}
+
+export async function closeDb() {
+  if (!dbInstance) return
+  const current = dbInstance
+  dbInstance = null
+  await current.end()
 }

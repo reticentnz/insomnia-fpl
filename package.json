@@ -10,12 +10,12 @@
     "test:vitest": "vitest run --no-file-parallelism --maxWorkers=1 --testTimeout=30000 --hookTimeout=30000",
     "verify:domain": "node --no-warnings --experimental-strip-types scripts/verify-domain.mjs",
     "verify:intelligence": "node --no-warnings --experimental-strip-types scripts/verify-intelligence.mjs",
-    "db:push": "node --no-warnings scripts/db-push.mjs",
+    "db:migrate": "node --no-warnings scripts/db-migrate.mjs",
+    "db:reset": "node --no-warnings scripts/db-reset.mjs",
     "ingest:fpl": "node --no-warnings --experimental-strip-types scripts/ingest-fpl.mjs",
     "ingest:signals": "node --no-warnings scripts/ingest-signals.mjs",
     "backtest": "node --no-warnings --experimental-strip-types scripts/backtest-projections.mjs",
-    "verify:db": "node --no-warnings --experimental-strip-types scripts/verify-db.mjs",
-    "db:pull": "prisma db pull --schema prisma/schema.prisma",
+    "db:verify": "node --no-warnings --experimental-strip-types scripts/verify-db.mjs",
     "preview": "node --no-warnings --experimental-strip-types scripts/serve.mjs"
   },
   "dependencies": {
@@ -27,7 +27,6 @@
   "devDependencies": {
     "@types/react": "^19.2.18",
     "@types/react-dom": "^19.2.4",
-    "prisma": "^6.19.0",
     "vitest": "^4.1.10"
   }
 }

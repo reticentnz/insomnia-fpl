@@ -8,7 +8,7 @@ COPY package.json package-lock.json ./
 RUN --mount=type=cache,target=/root/.npm npm install --no-audit
 
 COPY index.html tsconfig.json ./
-COPY prisma ./prisma
+COPY db ./db
 COPY scripts ./scripts
 COPY src ./src
 
@@ -31,7 +31,7 @@ RUN --mount=type=cache,target=/root/.npm npm install --omit=dev --no-audit
 
 COPY --from=build --chown=node:node /app/dist ./dist
 COPY --from=build --chown=node:node /app/scripts ./scripts
-COPY --from=build --chown=node:node /app/prisma ./prisma
+COPY --from=build --chown=node:node /app/db ./db
 COPY --from=build --chown=node:node /app/src ./src
 RUN mkdir -p /app/data && chown node:node /app/data
 

@@ -34,7 +34,7 @@ for (const envFile of ['.env.local', '.env']) {
 const colours = ['#e74c3c', '#3b82f6', '#8b5cf6', '#dc2626', '#22c55e', '#f59e0b', '#60a5fa', '#334155']
 
 import { getDb } from './db.mjs'
-import { ensureDatabaseSchema } from './db-push.mjs'
+import { migrateDatabase } from './db-migrate.mjs'
 
 let systemStatus = {
   status: 'initializing',
@@ -138,7 +138,7 @@ function setupScheduledIngestion() {
 async function performColdStartInitialization() {
   try {
     console.log('🚀 Ensuring database schema...')
-    await ensureDatabaseSchema()
+    await migrateDatabase()
     const db = await getDb()
     const result = await db.query('SELECT COUNT(*) as count FROM "Player"').catch(() => ({ rows: [{ count: 0 }] }))
     const count = Number(result.rows[0]?.count || 0)
