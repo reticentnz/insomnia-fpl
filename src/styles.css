@@ -552,9 +552,9 @@ h2 {
 .team-verdict { margin-bottom: 20px; }
 .team-verdict .recommend-meta { display: flex; }
 .team-verdict.primary-recommend .recommend-actions .ghost-btn { display: inline-flex; }
-.evidence-summary { margin: 4px 0 14px; color: var(--text-secondary, #9aa8bd); }
+.evidence-summary { margin: 4px 24px 14px; color: var(--text-secondary, #9aa8bd); }
 .evidence-error { color: #f87171; margin: 10px 0 0; }
-.evidence-warning { margin: 8px 0 12px; color: #fbbf24; font-size: 12px; }
+.evidence-warning { margin: 8px 24px 12px; color: #fbbf24; font-size: 12px; }
 .evidence-list { display: grid; gap: 10px; margin-top: 14px; }
 .audit-coverage { margin-top: 14px; padding: 13px; border: 1px solid rgba(148, 163, 184, .18); border-radius: 12px; background: rgba(15, 23, 42, .28); }
 .audit-coverage-head { display: flex; justify-content: space-between; gap: 12px; margin-bottom: 9px; }
