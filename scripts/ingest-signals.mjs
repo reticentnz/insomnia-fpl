@@ -175,9 +175,10 @@ async function ingestOdds(db) {
   console.log(`Odds: saved ${inserted} de-vigged match snapshots`)
 }
 
-await ensureDatabaseSchema()
-const db = getDb()
+let db = null
 try {
+  db = getDb()
+  await ensureDatabaseSchema()
   const bootstrap = await withCache('fpl-bootstrap-static.json', () => fetchJson('https://fantasy.premierleague.com/api/bootstrap-static/'))
   const teams = bootstrap.teams.map(team => ({ id: team.id, name: team.name, shortName: team.short_name }))
   const players = bootstrap.elements.map(player => ({ id: player.id, name: player.web_name || `${player.first_name} ${player.second_name}`, clubId: player.team }))
@@ -192,5 +193,5 @@ try {
   console.error(`signal ingestion failed: ${error.stack || error.message}`)
   process.exitCode = 1
 } finally {
-  await db.end()
+  await db?.end()
 }

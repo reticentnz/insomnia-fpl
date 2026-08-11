@@ -68,8 +68,14 @@ export async function ensureDatabaseSchema() {
 }
 
 if (process.argv[1] && process.argv[1].endsWith('db-push.mjs')) {
-  ensureDatabaseSchema().catch((err) => {
+  let db = null
+  try {
+    db = getDb()
+    await ensureDatabaseSchema()
+  } catch (err) {
     console.error('db-push failed:', err)
-    process.exit(1)
-  })
+    process.exitCode = 1
+  } finally {
+    await db?.end()
+  }
 }
