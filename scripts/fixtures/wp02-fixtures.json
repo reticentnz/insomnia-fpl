@@ -1,0 +1,28 @@
+[
+  {
+    "id": 100,
+    "event": 1,
+    "team_h": 1,
+    "team_a": 2,
+    "kickoff_time": "2026-08-15T15:00:00Z",
+    "team_h_difficulty": 2,
+    "team_a_difficulty": 4,
+    "started": true,
+    "finished": true,
+    "team_h_score": 2,
+    "team_a_score": 1
+  },
+  {
+    "id": 101,
+    "event": 2,
+    "team_h": 2,
+    "team_a": 1,
+    "kickoff_time": "2026-08-22T15:00:00Z",
+    "team_h_difficulty": 3,
+    "team_a_difficulty": 3,
+    "started": false,
+    "finished": false,
+    "team_h_score": null,
+    "team_a_score": null
+  }
+]

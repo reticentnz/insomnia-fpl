@@ -92,7 +92,9 @@ npm run db:migrate
 
 Development data can be explicitly discarded with `npm run db:reset -- --yes-reset-development-data`; the reset script refuses unsafe database paths. Verify the active schema with `npm run db:verify`.
 
-To refresh the live public FPL data and append a player snapshot:
+To refresh the live public FPL data and append immutable official observations:
+
+Set `FPL_SEASON` (for example, `2026/27`) or `FPL_SEASON_START_YEAR` before ingesting; the ingestion does not embed a season in application logic.
 
 ```bash
 npm run ingest:fpl
@@ -105,7 +107,7 @@ To refresh the optional underlying-performance and market feeds:
 ODDS_API_KEY=replace-with-your-key npm run ingest:signals
 ```
 
-`ingest:signals` pulls Understat EPL player aggregates into auditable historical snapshots and imports de-vigged EPL match-winner probabilities from The Odds API. Understat is used as the attacking-rate input when a snapshot exists; odds are retained for later team-strength adjustments. Both feeds retain the raw response, use a local cache when a refresh fails, and never create verified injury or role overrides. Set `FPL_SEASON_START_YEAR` when ingesting a season other than the current calendar-year season.
+`ingest:signals` pulls Understat EPL player aggregates into auditable historical snapshots and imports de-vigged EPL match-winner probabilities from The Odds API. Understat is used as the attacking-rate input when a snapshot exists; odds are retained for later team-strength adjustments. Both feeds retain the raw response, use a local cache when a refresh fails, and never create verified injury or role overrides.
 
 In Docker, the signal cache defaults to `/app/data/cache/signal-feeds`, which is inside the persistent writable volume. Override it with `SIGNAL_CACHE_DIR` if needed.
 

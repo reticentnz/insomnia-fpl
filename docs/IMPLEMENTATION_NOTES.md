@@ -103,3 +103,50 @@ Complete.
 - Backtest calibration persistence remains deferred to WP-12; WP-01 only keeps the empty canonical backtest command operational.
 - The existing development database was not reset; all migration/reset checks used temporary databases to preserve local data.
 - WP-02 and all later work packages were not started.
+
+## WP-02 — Feed-run framework and official ingestion
+
+### Status
+
+Complete.
+
+### Implementation summary
+
+- Added a feed-run lifecycle helper covering `RUNNING`, `SUCCEEDED`, `PARTIAL` and `FAILED` states, canonical SHA-256 payload hashing, sanitized error summaries, cache metadata and source freshness lookup.
+- Rewrote official FPL ingestion against the canonical schema with deterministic season-scoped internal identities and immutable team, gameweek, fixture and player observations tied to each feed run.
+- Persisted official player news, news timestamps, integer-tenth prices, availability, market, season-total, expected-statistic and defensive-contribution fields, plus completed player-fixture results.
+- Added explicit season resolution from `FPL_SEASON`, `FPL_SEASON_START_YEAR` or bootstrap context; no season is hard-coded in ingestion logic.
+- Ensured fact writes run in one transaction, while failed feed runs remain retained outside that transaction. Network refreshes begin the feed run before source requests and support eligible cache fallback as `PARTIAL` without refreshing the cache observation timestamp.
+- Kept projection tables untouched; official ingestion does not create forecasts or projections.
+- Added saved bootstrap, fixture and element-summary JSON fixtures and deterministic Vitest coverage for complete ingestion, atomic failure, repeated ingestion, season identity isolation and cache fallback.
+
+### Files changed
+
+- `.env.example`
+- `README.md`
+- `scripts/feed-run.mjs`
+- `scripts/ingest-fpl.mjs`
+- `scripts/ingest-fpl.test.ts`
+- `scripts/fixtures/wp02-bootstrap.json`
+- `scripts/fixtures/wp02-fixtures.json`
+- `scripts/fixtures/wp02-element-summary-10.json`
+- `scripts/fixtures/wp02-element-summary-11.json`
+- `docs/IMPLEMENTATION_NOTES.md`
+
+### Commands run and results
+
+- `npm run test:vitest -- scripts/ingest-fpl.test.ts` — passed; 4 tests.
+- `npm test` — passed; 4 test files and 63 tests.
+- `npm run build` — passed; production bundle written to `dist/`.
+- `node --check scripts/ingest-fpl.mjs && node --check scripts/feed-run.mjs` — passed.
+- `git diff --check` — passed.
+- Temporary `DATABASE_URL=... npm run db:migrate` — passed; applied the canonical migration.
+- Temporary `DATABASE_URL=... npm run db:verify` — passed on an empty canonical database.
+- Temporary `DATABASE_URL=... npm run backtest` — passed with zero observations.
+- `npm run db:verify` against the existing development database — failed because that preserved database has no canonical `PlayerObservation` table.
+- `npm run backtest` against the existing development database — failed because that preserved database has no canonical `PlayerFixtureForecast` table.
+
+### Deviations or unresolved issues
+
+- The existing `dev.db` was deliberately not reset or overwritten because it predates the canonical migration. Canonical verification used temporary databases; running `npm run db:migrate` or the guarded development reset is still required before using the preserved local database with canonical commands.
+- No later work package was started while implementing WP-02.
