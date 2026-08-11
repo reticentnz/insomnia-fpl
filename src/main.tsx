@@ -774,19 +774,25 @@ function App() {
     setChallengeOutputTypes([]);
     void saveUserPreferences({ selectedIds: ids, lockedIds: validLocks });
     if (fplAccount) {
-      void saveUserProfile(fplAccount, ids, activePlanId, validLocks).then((result) => {
-        if (!result.ok) {
+      void saveUserProfile(fplAccount, ids, activePlanId, validLocks)
+        .then((result) => {
+          if (!result || !result.ok) {
+            setSelectedIds(priorIds);
+            setLockedIds(priorLocks);
+            setToast({ message: result?.error || "The plan could not be saved because its economics or squad structure is invalid." });
+            return;
+          }
+          if (result.planId) {
+            setActivePlanId(result.planId);
+            setActivePlanParentId(result.parentPlanId || null);
+          }
+          if (result.bankTenths != null) setManager((current) => ({ ...current, bank: result.bankTenths! / 10, freeTransfers: result.freeTransfers ?? current.freeTransfers }));
+        })
+        .catch((error) => {
           setSelectedIds(priorIds);
           setLockedIds(priorLocks);
-          setToast({ message: result.error || "The plan could not be saved because its economics or squad structure is invalid." });
-          return;
-        }
-        if (result.planId) {
-          setActivePlanId(result.planId);
-          setActivePlanParentId(result.parentPlanId || null);
-        }
-        if (result.bankTenths != null) setManager((current) => ({ ...current, bank: result.bankTenths! / 10, freeTransfers: result.freeTransfers ?? current.freeTransfers }));
-      });
+          setToast({ message: error instanceof Error ? error.message : "Failed to save squad plan." });
+        });
     }
     setEditing(false);
   };
@@ -7655,9 +7661,47 @@ function PlayerDrawer({
   );
 }
 
+import { Component, type ReactNode, type ErrorInfo } from "react";
+
+class ErrorBoundary extends Component<{ children: ReactNode }, { hasError: boolean; error: Error | null }> {
+  constructor(props: { children: ReactNode }) {
+    super(props);
+    this.state = { hasError: false, error: null };
+  }
+  static getDerivedStateFromError(error: Error) {
+    return { hasError: true, error };
+  }
+  componentDidCatch(error: Error, errorInfo: ErrorInfo) {
+    console.error("Uncaught UI Error:", error, errorInfo);
+  }
+  render() {
+    if (this.state.hasError) {
+      return (
+        <div style={{ padding: "40px 20px", color: "#fff", background: "#0b1329", minHeight: "100vh", fontFamily: "sans-serif", textAlign: "center" }}>
+          <h2>Application Error</h2>
+          <p style={{ color: "#f87171", margin: "16px 0", fontSize: "14px" }}>
+            {this.state.error?.message || "An unexpected error occurred during rendering."}
+          </p>
+          <button
+            onClick={() => { this.setState({ hasError: false, error: null }); window.location.reload(); }}
+            style={{ padding: "10px 20px", background: "#3b82f6", color: "#fff", border: "none", borderRadius: "6px", cursor: "pointer", fontWeight: "bold" }}
+          >
+            Reload Application
+          </button>
+        </div>
+      );
+    }
+    return this.props.children;
+  }
+}
+
 const rootEl = document.getElementById("root");
 if (rootEl) {
-  createRoot(rootEl).render(<App />);
+  createRoot(rootEl).render(
+    <ErrorBoundary>
+      <App />
+    </ErrorBoundary>
+  );
 }
 
 export default App;
