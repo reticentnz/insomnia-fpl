@@ -21,6 +21,7 @@ ENV NODE_ENV=production \
     PORT=4173 \
     DATABASE_URL=file:/app/data/insomnia-fpl.db \
     SIGNAL_CONFIG_FILE=/app/data/signal-config.json \
+    FPL_INGEST_CACHE_PATH=/app/data/cache/fpl-official.json \
     FPL_DATA_CACHE_FILE=/app/data/cache/fpl-data.json \
     SIGNAL_CACHE_DIR=/app/data/cache/signal-feeds
 

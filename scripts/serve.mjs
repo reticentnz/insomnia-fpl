@@ -83,7 +83,12 @@ function runChildScript(script, args = [], environment = {}) {
   return new Promise((resolve, reject) => {
     import('node:child_process').then(({ execFile }) => {
       execFile(process.execPath, ['--experimental-strip-types', path.resolve(script), ...args], { env: { ...process.env, ...environment } }, (error, stdout, stderr) => {
-        if (error) reject(new Error(sanitizeError(stderr || stdout || error)))
+        if (error) {
+          const lines = `${stderr || ''}\n${stdout || ''}`.split(/\r?\n/).map(line => line.trim()).filter(Boolean)
+          const failure = [...lines].reverse().find(line => /\b(failed|failure|error):/i.test(line))
+          const actionable = failure || lines.filter(line => !/ExperimentalWarning|trace-warnings|^\(node:\d+\)/.test(line)).join(' ') || error.message
+          reject(new Error(sanitizeError(actionable)))
+        }
         else resolve(String(stdout || '').trim())
       })
     }).catch(reject)

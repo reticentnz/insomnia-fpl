@@ -28,6 +28,7 @@ docker run -d \
   -e APP_DATA_DIR='/app/data' \
   -e SIGNAL_INGEST_TOKEN='replace-with-a-long-random-token' \
   -e SIGNAL_CONFIG_FILE='/app/data/signal-config.json' \
+  -e FPL_INGEST_CACHE_PATH='/app/data/cache/fpl-official.json' \
   -e FPL_CATALOG_CACHE_FILE='/app/data/cache/projection-catalog.json' \
   -v "$PWD/data:/app/data" \
   insomnia-fpl:local

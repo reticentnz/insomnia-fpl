@@ -743,14 +743,23 @@ function writeOfficialCache(cachePath, payloads, capturedAt, sourceUpdatedAt) {
   fs.writeFileSync(cachePath, `${canonicalJson({ ...payloads, capturedAt, sourceUpdatedAt })}\n`)
 }
 
+export function resolveOfficialCachePath({ cachePath, env = process.env, cwd = process.cwd() } = {}) {
+  if (cachePath !== undefined) return cachePath
+  const configured = env.FPL_INGEST_CACHE_PATH || env.FPL_DATA_CACHE_FILE
+  if (configured) return path.resolve(cwd, configured)
+  if (env.APP_DATA_DIR) return path.resolve(cwd, env.APP_DATA_DIR, 'cache', 'fpl-official.json')
+  return path.resolve(cwd, '.cache', 'fpl-official.json')
+}
+
 export async function refreshOfficialFpl({
   dbPath,
   fetchJson = endpoint => requestOfficialJson(endpoint),
-  cachePath = process.env.FPL_INGEST_CACHE_PATH || path.resolve(process.cwd(), '.cache', 'fpl-official.json'),
+  cachePath,
   cacheMaxAgeMs,
   includeHistory = process.env.FPL_INGEST_MATCH_HISTORY !== '0',
   ...options
 } = {}) {
+  const resolvedCachePath = resolveOfficialCachePath({ cachePath })
   const times = defaultTimes(options)
   const db = await openDatabase(dbPath)
   let feedRunId = null
@@ -774,7 +783,7 @@ export async function refreshOfficialFpl({
       partialErrors = fetched.partialErrors
     } catch (error) {
       requestCount = Number(error.requestCount || requestCount)
-      const cached = readOfficialCache(cachePath, cacheAgeLimit({ cacheMaxAgeMs }))
+      const cached = readOfficialCache(resolvedCachePath, cacheAgeLimit({ cacheMaxAgeMs }))
       if (!cached) throw error
       payloads = cached
       usedCache = true
@@ -816,7 +825,7 @@ export async function refreshOfficialFpl({
     })
     const forecast = await createForecastRun(db, { asOf: times.observedAt, createdAt: times.finishedAt })
     if (!usedCache && !partialErrors.length) {
-      writeOfficialCache(cachePath, {
+      writeOfficialCache(resolvedCachePath, {
         bootstrap: payloads.bootstrap,
         fixtures: payloads.fixtures,
         elementSummaries: normalizedSummaries,

@@ -3,7 +3,7 @@ import os from 'node:os'
 import path from 'node:path'
 import { DatabaseSync } from 'node:sqlite'
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { ingestOfficialFpl, refreshOfficialFpl, resolveSeason } from './ingest-fpl.mjs'
+import { ingestOfficialFpl, refreshOfficialFpl, resolveOfficialCachePath, resolveSeason } from './ingest-fpl.mjs'
 
 const temporaryDirectories: string[] = []
 const fixtureDirectory = path.resolve('scripts', 'fixtures')
@@ -63,6 +63,17 @@ describe('season resolution', () => {
       season: '2027/28',
       bootstrap: { events: [{ deadline_time: '2026-08-14T17:30:00Z' }] },
     })).toBe('2027/28')
+  })
+})
+
+describe('official cache path resolution', () => {
+  it('uses the legacy container cache setting instead of the read-only working directory', () => {
+    expect(resolveOfficialCachePath({ env: { FPL_DATA_CACHE_FILE: '/app/data/cache/fpl-data.json' }, cwd: '/app' })).toBe('/app/data/cache/fpl-data.json')
+  })
+
+  it('prefers the dedicated setting and otherwise stores cache below the app data directory', () => {
+    expect(resolveOfficialCachePath({ env: { FPL_INGEST_CACHE_PATH: '/data/official.json', FPL_DATA_CACHE_FILE: '/data/legacy.json' }, cwd: '/app' })).toBe('/data/official.json')
+    expect(resolveOfficialCachePath({ env: { APP_DATA_DIR: '/app/data' }, cwd: '/app' })).toBe('/app/data/cache/fpl-official.json')
   })
 })
 
