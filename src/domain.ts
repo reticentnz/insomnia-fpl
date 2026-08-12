@@ -137,6 +137,7 @@ export type Transfer = {
   inProjection: number;
   hitCost: number;
   equivalentAlternatives?: number;
+  selectionAwareGain?: number;
 };
 export type SquadIssue = { rule: string; detail: string };
 export type TransferDecision = {
@@ -1942,7 +1943,7 @@ export function transfers(
       ),
   );
   const perOutgoing = new Map<number, number>();
-  return nonDominated
+  const final = nonDominated
     .sort((a, b) => b.net - a.net)
     .filter((option) => {
       const count = perOutgoing.get(option.out.id) || 0;
@@ -1951,6 +1952,22 @@ export function transfers(
       return true;
     })
     .slice(0, 30);
+
+  // Compute selection-aware gain: marginal draftSquadScore impact of each swap,
+  // discounting bench-bound players correctly (e.g. a bench GK behind a nailed
+  // starter contributes almost nothing to draftSquadScore).
+  if (final.length > 0 && squad.length === 15) {
+    const baselineScore = draftSquadScore(h, squad).total;
+    for (const option of final) {
+      const afterSquad = squad.map((p) =>
+        p.id === option.out.id ? option.in : p,
+      );
+      const afterScore = draftSquadScore(h, afterSquad).total;
+      option.selectionAwareGain = +(afterScore - baselineScore - option.hitCost).toFixed(1);
+    }
+  }
+
+  return final;
 }
 export function transferDecision(
   h: number,
@@ -2298,25 +2315,50 @@ export function optimizeInitialSquad(
   );
   const playerScore = (player: Player) =>
     scoreCache.get(player.id) ?? horizonProjection(player, horizon);
-  const fastScoreCache = new Map<string, number>();
-  const fastScore = (candidateSquad: Player[]) => {
+
+  // Two-tier scoring:
+  // 1. proxyScore: cheap lineup-aware score for screening candidates in the
+  //    swap loops. Uses a single bestXI + captain bonus over the full horizon
+  //    projection — captures the starter/bench split and captain bonus without
+  //    the per-gameweek overhead of draftSquadScore.
+  // 2. draftSquadScore: full multi-GW lineup-aware score used only for final
+  //    acceptance of each pass winner.
+  const proxyScoreCache = new Map<string, number>();
+  const proxyScore = (candidateSquad: Player[]) => {
     const key = candidateSquad
       .map((p) => p.id)
       .sort((a, b) => a - b)
       .join(",");
-    const cached = fastScoreCache.get(key);
+    const cached = proxyScoreCache.get(key);
     if (cached !== undefined) return cached;
-    const score = candidateSquad.reduce((sum, p) => sum + (scoreCache.get(p.id) ?? horizonProjection(p, horizon)), 0);
-    fastScoreCache.set(key, score);
+    const lineup = bestXIWithScore(candidateSquad, playerScore);
+    if (lineup.length !== 11) { proxyScoreCache.set(key, -Infinity); return -Infinity; }
+    const starterPts = lineup.reduce((sum, p) => sum + playerScore(p), 0);
+    const captainPts = Math.max(...lineup.map(playerScore));
+    const score = starterPts + captainPts;
+    proxyScoreCache.set(key, score);
+    return score;
+  };
+  const fullScoreCache = new Map<string, number>();
+  const fullScore = (candidateSquad: Player[]) => {
+    const key = candidateSquad
+      .map((p) => p.id)
+      .sort((a, b) => a - b)
+      .join(",");
+    const cached = fullScoreCache.get(key);
+    if (cached !== undefined) return cached;
+    const score = draftSquadScore(horizon, candidateSquad).total;
+    fullScoreCache.set(key, score);
     return score;
   };
   const legal = (candidateSquad: Player[]) =>
     validateInitialSquad(candidateSquad, budget).length === 0;
-  let currentScore = fastScore(squad);
+  let currentProxyScore = proxyScore(squad);
+  let currentFullScore = fullScore(squad);
 
   for (let pass = 0; pass < 10; pass++) {
     let bestSquad: Player[] | null = null,
-      bestScore = currentScore;
+      bestProxy = currentProxyScore;
     const ownedIds = new Set(squad.map((player) => player.id));
     const outgoing = squad.filter((player) => !lockedIds.has(player.id));
     for (const out of outgoing) {
@@ -2327,16 +2369,27 @@ export function optimizeInitialSquad(
           player.id === out.id ? incoming : player,
         );
         if (!legal(next)) continue;
-        const nextScore = fastScore(next);
-        if (nextScore > bestScore + 0.001) {
-          bestScore = nextScore;
+        const nextProxy = proxyScore(next);
+        if (nextProxy > bestProxy + 0.001) {
+          bestProxy = nextProxy;
           bestSquad = next;
         }
       }
     }
     if (bestSquad) {
+      // Verify with full draftSquadScore before accepting
+      const candidateFull = fullScore(bestSquad);
+      if (candidateFull > currentFullScore + 0.001) {
+        squad = bestSquad;
+        currentProxyScore = bestProxy;
+        currentFullScore = candidateFull;
+        continue;
+      }
+      // Proxy improved but full score didn't — accept anyway to keep
+      // exploring (the proxy is a reasonable approximation)
       squad = bestSquad;
-      currentScore = bestScore;
+      currentProxyScore = bestProxy;
+      currentFullScore = candidateFull;
       continue;
     }
 
@@ -2356,6 +2409,8 @@ export function optimizeInitialSquad(
           // player may not be among the first few projection-only picks.
           .slice(0, 40),
       );
+    // Collect the top dual-swap candidates by proxy score, then verify the best
+    const dualCandidates: { squad: Player[]; proxy: number }[] = [];
     for (let left = 0; left < outgoing.length; left++)
       for (let right = left + 1; right < outgoing.length; right++) {
         const firstOut = outgoing[left],
@@ -2372,16 +2427,27 @@ export function optimizeInitialSquad(
                   : player,
             );
             if (!legal(next)) continue;
-            const nextScore = fastScore(next);
-            if (nextScore > bestScore + 0.001) {
-              bestScore = nextScore;
-              bestSquad = next;
+            const nextProxy = proxyScore(next);
+            if (nextProxy > currentProxyScore + 0.001) {
+              dualCandidates.push({ squad: next, proxy: nextProxy });
             }
           }
       }
-    if (!bestSquad) break;
-    squad = bestSquad;
-    currentScore = bestScore;
+    if (!dualCandidates.length) break;
+    // Sort by proxy and verify top candidates with full draftSquadScore
+    dualCandidates.sort((a, b) => b.proxy - a.proxy);
+    let accepted = false;
+    for (const candidate of dualCandidates.slice(0, 20)) {
+      const candidateFull = fullScore(candidate.squad);
+      if (candidateFull > currentFullScore + 0.001) {
+        squad = candidate.squad;
+        currentProxyScore = candidate.proxy;
+        currentFullScore = candidateFull;
+        accepted = true;
+        break;
+      }
+    }
+    if (!accepted) break;
   }
   return [...squad].sort(
     (a, b) =>

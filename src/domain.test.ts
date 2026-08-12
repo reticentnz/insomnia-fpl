@@ -381,6 +381,22 @@ describe('GW1 locked-core squad optimisation',()=>{
     expect(score.bench).toBeGreaterThan(0)
   }, 15000)
 
+  it('computes selection-aware transfer gains that discount bench-bound replacements',()=>{
+    // Use a greedy default squad — suboptimal by design, so transfers will be available
+    const squad=buildLegalDefaultSquad(players,100)
+    expect(squad).toHaveLength(15)
+    const bank=initialSquadBank(squad)
+    const ranked=transfers(5,bank,1,squad,players)
+    expect(ranked.length).toBeGreaterThan(0)
+    // selectionAwareGain should be computed for the final transfers
+    const withAware=ranked.filter(t=>t.selectionAwareGain!==undefined)
+    expect(withAware.length).toBeGreaterThan(0)
+    // selectionAwareGain should never exceed the raw gain (it accounts for lineup context)
+    for(const t of withAware){
+      expect(t.selectionAwareGain!).toBeLessThanOrEqual(t.gain+0.1)
+    }
+  }, 15000)
+
   it('returns a coordinated multi-player restructure',()=>{
     const plan=buildDraftImprovementPlan(getSquad(),players,{lockedPlayerIds:[lockedIds[0]],horizon:5})
     expect(plan).not.toBeNull()

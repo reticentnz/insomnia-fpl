@@ -3576,7 +3576,7 @@ function Transfers({ data, horizon }: { data: any[]; horizon: number }) {
             </div>
             <span className="fixture">{t.in.fixture}</span>
             <div className="gain">
-              <b>+{t.net}</b>
+              <b>+{t.selectionAwareGain ?? t.net}</b>
               <small>net pts</small>
             </div>
             <button className="why-btn">Why?</button>
@@ -7252,7 +7252,7 @@ function ResolvedPlayerActions({
                 {recTransfer.in.name} ({recTransfer.in.club})
               </strong>
               <small>
-                +{recTransfer.net} net pts over {horizon} GWs
+                +{recTransfer.selectionAwareGain ?? recTransfer.net} net pts over {horizon} GWs
               </small>
             </div>
             <button
@@ -8053,7 +8053,7 @@ function PlayerDrawer({
     return () => { active = false; };
   }, [player.id]);
   const best = transfers(horizon, bank, 1, squad, catalog).find(
-    (t) => t.out.id === player.id,
+    (t) => t.out.id === player.id && (t.selectionAwareGain ?? t.net) > 0,
   );
   const alert = priceMovementAlert(player);
   const upcomingFixtures = getPlayerUpcomingFixtures(player, 5);
@@ -8274,7 +8274,7 @@ function PlayerDrawer({
                 <ArrowRight size={14} />
                 <span className="in">{best.in.name}</span>
               </div>
-              <div className="rep-gain">+{best.net} net pts</div>
+              <div className="rep-gain">+{best.selectionAwareGain ?? best.net} net pts</div>
               <span className="replacement-review">Review move →</span>
             </button>
           ) : (
