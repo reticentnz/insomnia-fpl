@@ -5375,11 +5375,16 @@ function LeaguesView({
   const [teamInput, setTeamInput] = useState<string>("");
 
   const [savedDefaultId, setSavedDefaultId] = useState<number | null>(null);
+  const [preferencesLoaded, setPreferencesLoaded] = useState<boolean>(false);
+  const [hasInitializedSelection, setHasInitializedSelection] = useState<boolean>(false);
 
   useEffect(() => {
     getUserProfile().then(({ preferences }) => {
       setSavedDefaultId(preferences?.defaultLeagueId ?? null);
-    }).catch(() => {});
+      setPreferencesLoaded(true);
+    }).catch(() => {
+      setPreferencesLoaded(true);
+    });
   }, []);
 
   const userLeagues = useMemo(() => {
@@ -5389,14 +5394,7 @@ function LeaguesView({
     return fetchedLeagues;
   }, [fplAccount, fetchedLeagues]);
 
-  const initialLeagueId = useMemo(() => {
-    if (savedDefaultId && userLeagues.some((lg) => lg.id === savedDefaultId)) {
-      return savedDefaultId;
-    }
-    return userLeagues.length > 0 ? userLeagues[0].id : null;
-  }, [savedDefaultId, userLeagues]);
-
-  const [selectedLeagueId, setSelectedLeagueId] = useState<number | null>(initialLeagueId);
+  const [selectedLeagueId, setSelectedLeagueId] = useState<number | null>(null);
   const [customLeagueInput, setCustomLeagueInput] = useState<string>("");
   const [loading, setLoading] = useState<boolean>(false);
   const [error, setError] = useState<string | null>(null);
@@ -5469,13 +5467,24 @@ function LeaguesView({
     }
   }, [activeLeagueId, loadLeague]);
 
-  // Handle case where user account updates or synced leagues load
+  // Handle initial league selection setup once preferences and leagues are loaded
   useEffect(() => {
-    if (!selectedLeagueId && userLeagues.length > 0) {
+    if (preferencesLoaded && userLeagues.length > 0 && !hasInitializedSelection && !selectedLeagueId) {
       const def = savedDefaultId && userLeagues.some((x) => x.id === savedDefaultId) ? savedDefaultId : userLeagues[0].id;
       setSelectedLeagueId(def);
+      setHasInitializedSelection(true);
     }
-  }, [userLeagues, selectedLeagueId, savedDefaultId]);
+  }, [preferencesLoaded, userLeagues, savedDefaultId, hasInitializedSelection, selectedLeagueId]);
+
+  // Reset league selection and init status if the account's teamId changes
+  const lastTeamIdRef = useRef<number | null | undefined>(fplAccount?.teamId);
+  useEffect(() => {
+    if (fplAccount?.teamId !== lastTeamIdRef.current) {
+      lastTeamIdRef.current = fplAccount?.teamId;
+      setSelectedLeagueId(null);
+      setHasInitializedSelection(false);
+    }
+  }, [fplAccount?.teamId]);
 
   const handleSetDefault = () => {
     if (selectedLeagueId) {
@@ -5634,10 +5643,16 @@ function LeaguesView({
         </div>
       </div>
 
-      {(loading || discoveringLeagues) && (
+      {(loading || discoveringLeagues || !preferencesLoaded) && (
         <div className="leagues-loading">
           <div className="spin" style={{ fontSize: "28px", color: "#3b82f6" }}>↻</div>
-          <p>{discoveringLeagues ? "Discovering your mini-leagues..." : "Analyzing league rivals and calculating Effective Ownership..."}</p>
+          <p>
+            {discoveringLeagues
+              ? "Discovering your mini-leagues..."
+              : !preferencesLoaded
+              ? "Loading preferences..."
+              : "Analyzing league rivals and calculating Effective Ownership..."}
+          </p>
         </div>
       )}
 
@@ -5648,7 +5663,7 @@ function LeaguesView({
         </div>
       )}
 
-      {!loading && !discoveringLeagues && !error && !details && !selectedLeagueId && (
+      {!loading && !discoveringLeagues && !error && !details && !selectedLeagueId && preferencesLoaded && (
         <div className="patch-card" style={{ padding: "32px", textAlign: "center", marginTop: "20px" }}>
           <h3 style={{ margin: "0 0 8px 0" }}>Discover Your Mini-Leagues</h3>
           <p className="muted-text" style={{ maxWidth: "540px", margin: "0 auto 20px auto", fontSize: "14px" }}>
