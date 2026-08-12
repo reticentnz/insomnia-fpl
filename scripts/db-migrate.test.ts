@@ -24,13 +24,13 @@ describe('canonical database migrations', () => {
     const first = await migrateDatabase(databasePath)
     const second = await migrateDatabase(databasePath)
 
-    const migrations = ['001_initial_rebuild', '002_app_state_and_manager_totals', '003_remove_app_user_api_key', '004_recommendation_cache_index', '005_draft_and_season_mode', '006_signal_interpretations']
+    const migrations = ['001_initial_rebuild', '002_app_state_and_manager_totals', '003_remove_app_user_api_key', '004_recommendation_cache_index', '005_draft_and_season_mode', '006_signal_interpretations', '007_reclassify_creator_bench_context']
     expect(first.applied).toEqual(migrations)
     expect(second).toEqual({ applied: [], skipped: migrations })
 
     const db = new DatabaseSync(databasePath)
     const tables = db.prepare('SELECT COUNT(*) AS count FROM sqlite_master WHERE type = ?').get('table')
-    expect(Number(tables.count)).toBe(30)
+    expect(Number(tables.count)).toBe(31)
     db.close()
   })
 

@@ -25,6 +25,18 @@ export type SignalSourceType =
 
 export type SignalStatus = "PENDING" | "VERIFIED" | "REJECTED" | "EXPIRED";
 export type RoleConfidence = "LOW" | "MEDIUM" | "HIGH";
+export type SignalClaimClass =
+  | "REAL_WORLD_ROLE"
+  | "ROTATION"
+  | "AVAILABILITY"
+  | "INJURY"
+  | "SET_PIECES"
+  | "PENALTIES"
+  | "FPL_SELECTION"
+  | "CREATOR_RATING"
+  | "VALUE_OPINION"
+  | "STATISTICAL_CONTEXT"
+  | "UNKNOWN";
 
 export type RoleSignalValue = {
   startProbability?: number;
@@ -44,10 +56,22 @@ export type PlayerSignal = {
   sourceType: SignalSourceType;
   sourceUrl?: string | null;
   evidenceSummary: string;
+  evidenceText?: string;
+  claimClass?: SignalClaimClass;
   confidence: number;
   observedAt: string;
   validUntil: string;
   status: SignalStatus;
+  interpretation?: {
+    id: string | null;
+    origin: "AUTO" | "USER";
+    claimClass: SignalClaimClass;
+    modelImpact: "ROLE" | "NONE";
+    value: RoleSignalValue;
+    rationale: string;
+    confidence: number;
+    status: "PROPOSED" | "APPROVED" | "REJECTED" | "SUPERSEDED";
+  };
 };
 
 export type PlayerRoleProfile = {

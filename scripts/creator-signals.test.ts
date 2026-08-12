@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import { expandSqlParams } from './db.mjs'
-import { matchCreatorClaim, normalizeCreatorPayload, signalDraftFromClaim } from './creator-signals.mjs'
+import { interpretManualSignalText, matchCreatorClaim, normalizeCreatorPayload, signalDraftFromClaim } from './creator-signals.mjs'
 
 const catalog=[
   {id:10,name:'Kai Havertz',club:'ARS',clubName:'Arsenal',position:'FWD',price:8},
@@ -52,5 +52,22 @@ describe('creator signal ingestion helpers',()=>{
     expect(draft.kind).toBe('VALUE_OPINION')
     expect(draft.value).toEqual({note:'Cheap upside'})
     expect(draft.sourceUrl).toBe('https://www.youtube.com/watch?v=abc123&t=69s')
+  })
+
+  it('treats creator bench choices as context and strips accidental role values',()=>{
+    const payload=normalizeCreatorPayload({source:{url:'https://youtu.be/abc'},claims:[{rawPlayerName:'Thomas',category:'ROLE',summary:'Included on my GW2 bench for the bench boost.',depthRole:'BACKUP',startProbability:.1}]})
+    expect(payload.claims[0]).toMatchObject({category:'FPL_SELECTION',depthRole:null,startProbability:null})
+    const draft=signalDraftFromClaim(payload.claims[0],10,payload.source)
+    expect(draft).toMatchObject({kind:'VALUE_OPINION',claimClass:'FPL_SELECTION',modelImpact:'NONE'})
+  })
+
+  it('extracts only the Woodman role claim and keeps the Kinsky rating contextual',()=>{
+    const manual=`Woodman is a problem. Liverpool currently have Alisson, Mamardashvili and Woodman; Woodman is £4.0m precisely because he's not expected to be the regular starter. I wouldn't begin GW1 deliberately without a playing keeper. The Scout currently likes Kinsky £4.5m as the budget GK option.`
+    const drafts=interpretManualSignalText(manual,[
+      {id:1,name:'Woodman',position:'GK'}, {id:2,name:'Alisson',position:'GK'}, {id:3,name:'Mamardashvili',position:'GK'}, {id:4,name:'Kinsky',position:'GK'}, {id:5,name:'Scott',position:'MID'},
+    ])
+    expect(drafts.map(draft=>draft.playerId)).toEqual([1,4])
+    expect(drafts[0]).toMatchObject({claimClass:'REAL_WORLD_ROLE',modelImpact:'ROLE',value:{depthRole:'BACKUP',startProbability:.08}})
+    expect(drafts[1]).toMatchObject({claimClass:'CREATOR_RATING',modelImpact:'NONE'})
   })
 })

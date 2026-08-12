@@ -829,6 +829,27 @@ export async function updatePlayerSignalStatusesBatch(
   return results
 }
 
+export async function revisePlayerSignalInterpretation(
+  signalId: string | number,
+  input: {
+    claimClass?: PlayerSignal['claimClass'];
+    modelImpact?: 'ROLE' | 'NONE';
+    value?: PlayerSignal['value'];
+    rationale?: string;
+    confidence?: number;
+    finalizeContext?: boolean;
+  },
+): Promise<PlayerSignal> {
+  const response = await fetch(`/api/player-signals/${encodeURIComponent(String(signalId))}/interpretation`, {
+    method: 'PATCH',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify(input),
+  })
+  const data = await response.json().catch(() => null)
+  if (!response.ok) throw new Error(apiErrorMessage(data, `Could not revise interpretation: HTTP ${response.status}`))
+  return (data.signal || data) as PlayerSignal
+}
+
 export async function createManualPlayerSignal(
   playerId: number,
   startProbability: number,

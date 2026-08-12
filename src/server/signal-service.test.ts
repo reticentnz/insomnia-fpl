@@ -4,7 +4,7 @@ import path from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
 import { closeDb, getDb } from '../../scripts/db.mjs'
 import { ingestOfficialFpl } from '../../scripts/ingest-fpl.mjs'
-import { createPlayerSignal, listPlayerSignals, updatePlayerSignalStatuses } from './signal-service.ts'
+import { createPlayerSignal, listPlayerSignals, revisePlayerSignalInterpretation, updatePlayerSignalStatuses } from './signal-service.ts'
 
 const directories: string[] = []
 const fixtures = path.resolve('scripts', 'fixtures')
@@ -33,5 +33,22 @@ describe('canonical signal service', () => {
     expect(updated.status).toBe('REJECTED')
     const audit = await db.query(`SELECT "from_status", "to_status" FROM "PlayerSignalAudit" WHERE "signal_id"='signal-1' ORDER BY "created_at"`)
     expect(audit.rows).toEqual([{ from_status: null, to_status: 'VERIFIED' }, { from_status: 'VERIFIED', to_status: 'REJECTED' }])
+  })
+
+  it('does not expire approved evidence when a new interpretation is still pending', async () => {
+    const db = await seed()
+    await createPlayerSignal(db, { id: 'approved', playerId: 10, kind: 'START_PROBABILITY', value: { startProbability: .8 }, sourceType: 'JOURNALIST', evidenceSummary: 'Expected starter', confidence: .8, observedAt: '2026-08-15T12:05:00Z', validUntil: '2026-08-22T12:05:00Z', status: 'VERIFIED' })
+    await createPlayerSignal(db, { id: 'pending', playerId: 10, kind: 'START_PROBABILITY', value: { startProbability: .5 }, sourceType: 'USER_FEEDBACK', evidenceSummary: 'Possible rotation', confidence: .4, observedAt: '2026-08-15T12:06:00Z', validUntil: '2026-08-22T12:06:00Z', status: 'PENDING' })
+    const signals = await listPlayerSignals(db, { playerId: 10 })
+    expect(signals.find(signal=>signal.id==='approved')?.status).toBe('VERIFIED')
+  })
+
+  it('versions a user-adjusted interpretation and can finalize context with no impact', async () => {
+    const db = await seed()
+    const created = await createPlayerSignal(db, { id: 'ambiguous', playerId: 10, kind: 'VALUE_OPINION', value: { note: 'On my bench' }, sourceType: 'YOUTUBE_TRANSCRIPT', evidenceSummary: 'On my bench', claimClass: 'UNKNOWN', modelImpact: 'NONE', confidence: .6, observedAt: '2026-08-15T12:05:00Z', validUntil: '2026-08-22T12:05:00Z', status: 'PENDING' })
+    const updated = await revisePlayerSignalInterpretation(db, String(created.id), { claimClass: 'FPL_SELECTION', modelImpact: 'NONE', value: { note: 'On my bench' }, finalizeContext: true })
+    expect(updated).toMatchObject({ status: 'VERIFIED', interpretation: { origin: 'USER', modelImpact: 'NONE', status: 'APPROVED' } })
+    const versions = await db.query(`SELECT "status" FROM "PlayerSignalInterpretation" WHERE "signal_id"='ambiguous' ORDER BY "created_at"`)
+    expect(versions.rows.map(row=>row.status).sort()).toEqual(['APPROVED','SUPERSEDED'])
   })
 })

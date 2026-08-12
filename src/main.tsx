@@ -69,6 +69,7 @@ import {
   challengeSquad,
   SquadChallengeError,
   updatePlayerSignalStatusesBatch,
+  revisePlayerSignalInterpretation,
   createManualPlayerSignal,
   fetchPlayerSignals,
   fetchLeagueDetails,
@@ -1988,6 +1989,10 @@ function App() {
           onReviewTransfer={(t) => {
             setPlayerDetail(null);
             setExplanationTransfer(t);
+          }}
+          onOpenSignals={() => {
+            setPlayerDetail(null);
+            setTab("Signals");
           }}
         />
       )}{" "}
@@ -4041,6 +4046,8 @@ function EvidencePanel({
               const rawProb = signal.value?.startProbability;
               const normProb = typeof rawProb === "number" ? (rawProb > 1 ? rawProb / 100 : rawProb) : null;
               const proposedProb = normProb !== null ? Math.round(normProb * 100) : null;
+              const modelImpact = signal.interpretation?.modelImpact || (proposedProb !== null || Boolean(signal.value?.depthRole) ? "ROLE" : "NONE");
+              const claimClass = signal.interpretation?.claimClass || signal.claimClass || "UNKNOWN";
               const stagedStatus = stagedSignalReviews[signal.id];
               const effectiveStatus = stagedStatus || signal.status;
 
@@ -4065,18 +4072,27 @@ function EvidencePanel({
                               : "amber"
                         }`}
                       >
-                        {stagedStatus ? `STAGED: ${stagedStatus === "VERIFIED" ? "APPROVE" : "REJECT"}` : effectiveStatus === "VERIFIED" ? "✓ VERIFIED · PROJECTIONS UPDATED" : effectiveStatus}
+                        {stagedStatus ? `STAGED: ${stagedStatus === "VERIFIED" ? "APPROVE" : "REJECT"}` : effectiveStatus === "VERIFIED" ? modelImpact === "ROLE" ? "✓ VERIFIED · PROJECTIONS UPDATED" : "✓ CONTEXT · NO MODEL IMPACT" : effectiveStatus}
                       </span>
                     </div>
 
                     <p>{signal.evidenceSummary}</p>
 
+                    <div className={`signal-interpretation ${modelImpact === "NONE" ? "needs" : "impact"}`}>
+                      <div className="signal-interpretation-head">
+                        <b>{modelImpact === "ROLE" ? "Proposed model adjustment" : "Needs interpretation"}</b>
+                        <span>{claimClass.replace(/_/g, " ")}</span>
+                      </div>
+                      <p>{signal.interpretation?.rationale || (modelImpact === "ROLE" ? "Structured adjustment proposed from this evidence." : "No numerical model impact has been justified yet.")}</p>
+                    </div>
+
                     <small>
-                      {signal.sourceType.replace(/_/g, " ")} · {Math.round(signal.confidence * 100)}% confidence
+                      {signal.sourceType.replace(/_/g, " ")} · source confidence {Math.round(signal.confidence * 100)}%
+                      {signal.interpretation ? ` · interpretation confidence ${Math.round(signal.interpretation.confidence * 100)}%` : ""}
                       {proposedProb !== null ? ` · proposed start chance ${proposedProb}%` : ""}
                     </small>
 
-                    {effectiveStatus === "VERIFIED" && !stagedStatus && xPts !== null && (
+                    {effectiveStatus === "VERIFIED" && !stagedStatus && xPts !== null && modelImpact === "ROLE" && (
                       <div className="evidence-impact-tag">
                         ✓ Applied to model: {proposedProb !== null ? `${proposedProb}% start chance` : "Role updated"} → {xPts.toFixed(1)} xPts over {horizon} GWs
                       </div>
@@ -4097,20 +4113,21 @@ function EvidencePanel({
                       </div>
                     ) : signal.status === "PENDING" && (
                       <>
-                        <button
-                          className="dark-btn"
-                          disabled={false}
-                          onClick={async () => {
-                            setReviewingSignalId(signal.id);
-                            try {
-                              onReviewSignal(signal, "VERIFIED");
-                            } finally {
-                              setReviewingSignalId(null);
-                            }
-                          }}
-                        >
-                          Approve & Update
-                        </button>
+                        {modelImpact === "ROLE" ? (
+                          <button
+                            className="dark-btn"
+                            disabled={false}
+                            onClick={async () => {
+                              setReviewingSignalId(signal.id);
+                              try { onReviewSignal(signal, "VERIFIED"); }
+                              finally { setReviewingSignalId(null); }
+                            }}
+                          >
+                            Approve model adjustment
+                          </button>
+                        ) : setTab ? (
+                          <button className="dark-btn" onClick={() => setTab("Signals")}>Interpret in Signals</button>
+                        ) : null}
                         <button
                           className="ghost-btn"
                           disabled={false}
@@ -4642,6 +4659,9 @@ function SignalsTab({
   const [signalConfig, setSignalConfig] = useState<SignalSourceConfig>({ ...DEFAULT_SIGNAL_SOURCE_CONFIG });
   const [configSaving, setConfigSaving] = useState(false);
   const [trustOpen, setTrustOpen] = useState(false);
+  const [laneFilter, setLaneFilter] = useState<"" | "ADJUSTMENTS" | "NEEDS" | "CONTEXT">("");
+  const [editingSignalId, setEditingSignalId] = useState<string | number | null>(null);
+  const [interpretationSaving, setInterpretationSaving] = useState(false);
   const ingestEndpoint = `${window.location.origin}/api/signals/ingest`;
 
   const playerMap = useMemo(() => {
@@ -4691,6 +4711,13 @@ function SignalsTab({
     let result = signals;
     if (sourceFilter) result = result.filter((s) => s.sourceType === sourceFilter);
     if (statusFilter) result = result.filter((s) => s.status === statusFilter);
+    if (laneFilter) result = result.filter((signal) => {
+      const modelImpact = signal.interpretation?.modelImpact || (typeof signal.value?.startProbability === "number" || Boolean(signal.value?.depthRole) ? "ROLE" : "NONE");
+      const claimClass = signal.interpretation?.claimClass || signal.claimClass || "UNKNOWN";
+      if (laneFilter === "ADJUSTMENTS") return modelImpact === "ROLE";
+      if (laneFilter === "NEEDS") return modelImpact === "NONE" && (claimClass === "UNKNOWN" || claimClass === "AVAILABILITY") && signal.status === "PENDING";
+      return modelImpact === "NONE" && claimClass !== "UNKNOWN" && claimClass !== "AVAILABILITY";
+    });
     if (playerQuery.trim()) {
       const q = playerQuery.trim().toLowerCase();
       result = result.filter((s) => {
@@ -4702,7 +4729,36 @@ function SignalsTab({
       });
     }
     return result;
-  }, [signals, sourceFilter, statusFilter, playerQuery, playerMap]);
+  }, [signals, sourceFilter, statusFilter, laneFilter, playerQuery, playerMap]);
+
+  async function saveInterpretation(signal: PlayerSignal, startProbability: number, depthRole: "FIRST_CHOICE" | "ROTATION" | "BACKUP" | "OUT") {
+    setInterpretationSaving(true);
+    try {
+      await revisePlayerSignalInterpretation(signal.id, {
+        claimClass: depthRole === "ROTATION" ? "ROTATION" : "REAL_WORLD_ROLE",
+        modelImpact: "ROLE",
+        value: { ...signal.value, startProbability, depthRole, note: signal.evidenceSummary },
+        rationale: `User-adjusted interpretation: ${depthRole.replace(/_/g, " ").toLowerCase()} with ${Math.round(startProbability * 100)}% start chance.`,
+      });
+      setEditingSignalId(null);
+      loadSignals();
+    } finally { setInterpretationSaving(false); }
+  }
+
+  async function markSignalAsContext(signal: PlayerSignal) {
+    setInterpretationSaving(true);
+    try {
+      await revisePlayerSignalInterpretation(signal.id, {
+        claimClass: signal.claimClass === "FPL_SELECTION" ? "FPL_SELECTION" : "VALUE_OPINION",
+        modelImpact: "NONE",
+        value: { note: signal.evidenceSummary },
+        rationale: "Marked by the manager as contextual evidence with no projection impact.",
+        finalizeContext: true,
+      });
+      setEditingSignalId(null);
+      loadSignals();
+    } finally { setInterpretationSaving(false); }
+  }
 
   function relativeTime(iso: string) {
     const diffMs = Date.now() - new Date(iso).getTime();
@@ -4909,6 +4965,22 @@ function SignalsTab({
             </button>
           ))}
         </div>
+        <div className="filter-chips" aria-label="Signal interpretation lanes">
+          {([
+            ["", "All interpretations"],
+            ["ADJUSTMENTS", "Model adjustments"],
+            ["NEEDS", "Needs interpretation"],
+            ["CONTEXT", "Context only"],
+          ] as const).map(([value, label]) => (
+            <button
+              key={value}
+              className={`filter-chip${laneFilter === value ? " active" : ""}`}
+              onClick={() => setLaneFilter(value)}
+            >
+              {label}
+            </button>
+          ))}
+        </div>
         <div className="signals-search">
           <input
             type="search"
@@ -5093,9 +5165,16 @@ function SignalsTab({
         <div className="signal-feed">
           {filtered.map((signal) => {
             const player = playerMap.get(signal.playerId);
-            const rawProb = signal.value?.startProbability;
+            const interpretation = signal.interpretation;
+            const modelImpact = interpretation?.modelImpact || (typeof signal.value?.startProbability === "number" || Boolean(signal.value?.depthRole) ? "ROLE" : "NONE");
+            const claimClass = interpretation?.claimClass || signal.claimClass || "UNKNOWN";
+            const needsInterpretation = modelImpact === "NONE" && (claimClass === "UNKNOWN" || claimClass === "AVAILABILITY") && signal.status === "PENDING";
+            const contextOnly = modelImpact === "NONE" && !needsInterpretation;
+            const rawProb = interpretation?.value?.startProbability ?? signal.value?.startProbability;
             const normProb = typeof rawProb === "number" ? (rawProb > 1 ? rawProb / 100 : rawProb) : null;
             const proposedProb = normProb !== null ? Math.round(normProb * 100) : null;
+            const currentProb = Math.round((player?.roleProfile?.startProbability ?? 1) * 100);
+            const proposedMinutes = normProb === null ? null : Math.round(normProb * Number(interpretation?.value?.minutesIfStarting ?? signal.value?.minutesIfStarting ?? (player?.position === "GK" ? 90 : 84)));
             const stagedStatus = stagedSignalReviews[signal.id];
             const effectiveStatus = stagedStatus || signal.status;
 
@@ -5139,10 +5218,44 @@ function SignalsTab({
                     </span>
                   )}
                   <p className="signal-evidence">{signal.evidenceSummary}</p>
+                  <div className={`signal-interpretation ${contextOnly ? "context" : needsInterpretation ? "needs" : "impact"}`}>
+                    <div className="signal-interpretation-head">
+                      <b>{contextOnly ? "Context only" : needsInterpretation ? "Needs interpretation" : "Proposed model adjustment"}</b>
+                      <span>{claimClass.replace(/_/g, " ")}</span>
+                    </div>
+                    <p>{interpretation?.rationale || (contextOnly ? "No projection impact." : "Structured role adjustment proposed from this evidence.")}</p>
+                    {modelImpact === "ROLE" && proposedProb !== null && (
+                      <div className="signal-impact-preview">
+                        <span>Start chance <b>{currentProb}% → {proposedProb}%</b></span>
+                        {proposedMinutes !== null && <span>Proposed expected minutes <b>{proposedMinutes}</b></span>}
+                        <span>{interpretation?.origin === "USER" ? "User-adjusted" : "Auto-interpreted"}</span>
+                      </div>
+                    )}
+                    {contextOnly && <small>This records creator context but cannot change player minutes or projections.</small>}
+                    {needsInterpretation && <small>Choose an interpretation before this evidence can affect the model.</small>}
+                  </div>
+                  {editingSignalId === signal.id && (
+                    <div className="signal-impact-editor">
+                      <b>Choose or adjust the impact</b>
+                      <p>These presets are editable interpretations, not claims that the source supplied exact percentages.</p>
+                      <div className="signal-preset-grid">
+                        <button disabled={interpretationSaving} onClick={() => saveInterpretation(signal, .88, "FIRST_CHOICE")}>First choice · 88%</button>
+                        <button disabled={interpretationSaving} onClick={() => saveInterpretation(signal, .70, "ROTATION")}>Slight concern · 70%</button>
+                        <button disabled={interpretationSaving} onClick={() => saveInterpretation(signal, .55, "ROTATION")}>Rotation · 55%</button>
+                        <button disabled={interpretationSaving} onClick={() => saveInterpretation(signal, .25, "BACKUP")}>Likely substitute · 25%</button>
+                        <button disabled={interpretationSaving} onClick={() => saveInterpretation(signal, .08, "BACKUP")}>Backup · 8%</button>
+                        <button disabled={interpretationSaving} onClick={() => saveInterpretation(signal, 0, "OUT")}>Unavailable · 0%</button>
+                      </div>
+                      <div className="signal-editor-actions">
+                        <button className="ghost-btn" disabled={interpretationSaving} onClick={() => markSignalAsContext(signal)}>Context only</button>
+                        <button className="ghost-btn" onClick={() => setEditingSignalId(null)}>Cancel</button>
+                      </div>
+                    </div>
+                  )}
                   <div className="signal-footer">
                     <span className="signal-confidence">
-                      {Math.round(signal.confidence * 100)}% confidence
-                      {proposedProb !== null ? ` · proposed start chance ${proposedProb}%` : ""}
+                      Source confidence {Math.round(signal.confidence * 100)}%
+                      {interpretation ? ` · interpretation confidence ${Math.round(interpretation.confidence * 100)}%` : ""}
                       {signal.gameweek ? ` · GW${signal.gameweek}` : ""}
                     </span>
                     {sanitizeExternalUrl(signal.sourceUrl) && (
@@ -5165,12 +5278,17 @@ function SignalsTab({
                   </div>
                 ) : signal.status === "PENDING" && (
                   <div className="signal-actions">
-                    <button
-                      className="dark-btn"
-                      disabled={applyingBatch}
-                      onClick={() => handleReview(signal, "VERIFIED")}
-                    >
-                      ✓ Approve evidence
+                    {modelImpact === "ROLE" ? (
+                      <button className="dark-btn" disabled={applyingBatch} onClick={() => handleReview(signal, "VERIFIED")}>
+                        ✓ Approve model adjustment
+                      </button>
+                    ) : (
+                      <button className="dark-btn" disabled={interpretationSaving} onClick={() => setEditingSignalId(editingSignalId === signal.id ? null : signal.id)}>
+                        Interpret evidence
+                      </button>
+                    )}
+                    <button className="ghost-btn" disabled={interpretationSaving} onClick={() => setEditingSignalId(editingSignalId === signal.id ? null : signal.id)}>
+                      {modelImpact === "ROLE" ? "Adjust impact" : "Options"}
                     </button>
                     <button
                       className="ghost-btn"
@@ -5188,7 +5306,7 @@ function SignalsTab({
                       disabled={applyingBatch}
                       onClick={() => handleReview(signal, "REJECTED")}
                     >
-                      Remove evidence
+                      {modelImpact === "ROLE" ? "Remove adjustment" : "Remove context"}
                     </button>
                   </div>
                 )}
@@ -7880,6 +7998,7 @@ function PlayerDrawer({
   onClose,
   onAsk,
   onReviewTransfer,
+  onOpenSignals,
 }: {
   player: Player;
   horizon: number;
@@ -7889,13 +8008,27 @@ function PlayerDrawer({
   onClose: () => void;
   onAsk: (p: Player) => void;
   onReviewTransfer: (t: Transfer) => void;
+  onOpenSignals: () => void;
 }) {
+  const [knownSignals, setKnownSignals] = useState<PlayerSignal[]>([]);
+  const [signalsLoading, setSignalsLoading] = useState(true);
+  useEffect(() => {
+    let active = true;
+    setSignalsLoading(true);
+    fetchPlayerSignals(player.id)
+      .then((signals) => { if (active) setKnownSignals(signals); })
+      .finally(() => { if (active) setSignalsLoading(false); });
+    return () => { active = false; };
+  }, [player.id]);
   const best = transfers(horizon, bank, 1, squad, catalog).find(
     (t) => t.out.id === player.id,
   );
   const alert = priceMovementAlert(player);
   const upcomingFixtures = getPlayerUpcomingFixtures(player, 5);
   const roleProjection = projectionBreakdown(player, horizon);
+  const activeAdjustments = knownSignals.filter(signal => signal.status === "VERIFIED" && signal.interpretation?.modelImpact === "ROLE");
+  const pendingInterpretations = knownSignals.filter(signal => signal.status === "PENDING");
+  const contextualSignals = knownSignals.filter(signal => signal.status === "VERIFIED" && signal.interpretation?.modelImpact === "NONE");
 
   return (
     <div className="drawer-backdrop" onClick={onClose}>
@@ -7963,6 +8096,65 @@ function PlayerDrawer({
             </div>
           </div>
         ) : null}
+        <div className="drawer-section player-signal-section">
+          <div className="player-signal-heading">
+            <div>
+              <span className="section-label">KNOWN SIGNAL ADJUSTMENTS</span>
+              <p>Evidence and manager-approved tweaks affecting this player.</p>
+            </div>
+            {(activeAdjustments.length > 0 || pendingInterpretations.length > 0) && (
+              <span className={`pill ${pendingInterpretations.length ? "amber" : "green"}`}>
+                {activeAdjustments.length} active · {pendingInterpretations.length} pending
+              </span>
+            )}
+          </div>
+          {signalsLoading ? (
+            <p className="muted">Loading signal history…</p>
+          ) : !knownSignals.length ? (
+            <p className="no-player-signals">No known signal adjustments or contextual claims.</p>
+          ) : (
+            <>
+              {activeAdjustments.length > 0 && (
+                <div className="player-signal-effective">
+                  <span>Effective model role</span>
+                  <b>{Math.round((player.roleProfile?.startProbability ?? 1) * 100)}% start chance · {roleProjection.expectedMinutes.toFixed(0)} expected mins</b>
+                </div>
+              )}
+              <div className="player-signal-list">
+                {activeAdjustments.map(signal => {
+                  const value = signal.interpretation?.value || signal.value;
+                  const start = typeof value.startProbability === "number" ? Math.round((value.startProbability > 1 ? value.startProbability / 100 : value.startProbability) * 100) : null;
+                  return (
+                    <article className="player-signal-row active" key={signal.id}>
+                      <div>
+                        <b>{String(value.depthRole || signal.interpretation?.claimClass || signal.kind).replace(/_/g, " ")}</b>
+                        <p>{signal.evidenceSummary}</p>
+                        <small>
+                          {start !== null ? `${start}% proposed start chance · ` : ""}{signal.sourceType.replace(/_/g, " ")} · {signal.interpretation?.origin === "USER" ? "user-adjusted" : "auto-interpreted"}
+                          {signal.gameweek ? ` · GW${signal.gameweek}` : ""}
+                        </small>
+                      </div>
+                      {sanitizeExternalUrl(signal.sourceUrl) && <a href={sanitizeExternalUrl(signal.sourceUrl)!} target="_blank" rel="noreferrer">Source ↗</a>}
+                    </article>
+                  );
+                })}
+              </div>
+              {pendingInterpretations.length > 0 && (
+                <button className="player-signal-review" onClick={onOpenSignals}>
+                  <span><b>{pendingInterpretations.length} signal{pendingInterpretations.length === 1 ? "" : "s"} need review</b><small>Interpret or approve before they can affect projections.</small></span>
+                  <span>Review →</span>
+                </button>
+              )}
+              {contextualSignals.length > 0 && (
+                <details className="player-signal-context">
+                  <summary>{contextualSignals.length} contextual mention{contextualSignals.length === 1 ? "" : "s"} · no model impact</summary>
+                  {contextualSignals.map(signal => <p key={signal.id}>{signal.evidenceSummary}</p>)}
+                </details>
+              )}
+              <button className="ghost-btn player-signal-all" onClick={onOpenSignals}>Open all signals for this player</button>
+            </>
+          )}
+        </div>
         <div className="detail-grid">
           <div className="stat-card">
             <span className="stat-label">1 GW</span>

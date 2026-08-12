@@ -63,9 +63,10 @@ function youtubeExternalId(url){
   }catch{return ''}
 }
 
-const allowedCategories=new Set(['ROLE','ROTATION','INJURY','SET_PIECES','PENALTIES','PRESEASON','TACTICS','VALUE','STATS','TRANSFER','OTHER'])
+const allowedCategories=new Set(['ROLE','ROTATION','INJURY','SET_PIECES','PENALTIES','PRESEASON','TACTICS','VALUE','STATS','TRANSFER','FPL_SELECTION','OTHER'])
 const allowedSentiments=new Set(['POSITIVE','NEGATIVE','MIXED','NEUTRAL'])
 const allowedDepthRoles=new Set(['FIRST_CHOICE','ROTATION','BACKUP','OUT'])
+const fplSelectionPattern=/\b(bench boost|my bench|gw\s*\d+\s+bench|bench goalkeeper|included[^.]*bench|my team|my squad|i(?:'m| am) going to (?:bench|start|buy|sell|own|pick)|selected as[^.]*bench)\b/i
 
 export function normalizeCreatorPayload(payload){
   if(!payload||typeof payload!=='object')throw new Error('JSON object payload is required')
@@ -88,11 +89,13 @@ export function normalizeCreatorPayload(payload){
     const rawPlayerName=String(raw.rawPlayerName||raw.playerName||'').trim().slice(0,200)
     const summary=String(raw.summary||raw.text||'').replace(/\s+/g,' ').trim().slice(0,2000)
     if(!rawPlayerName||!summary)return null
-    const category=allowedCategories.has(String(raw.category||'').toUpperCase())?String(raw.category).toUpperCase():'OTHER'
+    const suppliedCategory=allowedCategories.has(String(raw.category||'').toUpperCase())?String(raw.category).toUpperCase():'OTHER'
+    const contextText=`${summary} ${raw.evidenceText||''}`
+    const category=fplSelectionPattern.test(contextText)?'FPL_SELECTION':suppliedCategory
     const sentiment=allowedSentiments.has(String(raw.sentiment||'').toUpperCase())?String(raw.sentiment).toUpperCase():'NEUTRAL'
     const timestampSeconds=raw.timestampSeconds!==null&&raw.timestampSeconds!==undefined&&Number.isFinite(Number(raw.timestampSeconds))?Math.max(0,Math.round(Number(raw.timestampSeconds))):null
-    const depthRole=allowedDepthRoles.has(String(raw.depthRole||'').toUpperCase())?String(raw.depthRole).toUpperCase():null
-    const startProbability=typeof raw.startProbability==='number'?clamp(raw.startProbability):null
+    const depthRole=category!=='FPL_SELECTION'&&allowedDepthRoles.has(String(raw.depthRole||'').toUpperCase())?String(raw.depthRole).toUpperCase():null
+    const startProbability=category!=='FPL_SELECTION'&&typeof raw.startProbability==='number'?clamp(raw.startProbability):null
     const externalClaimId=String(raw.externalClaimId||`${source.platform}:${source.externalId}:${timestampSeconds??index}:${normalizeEntityText(rawPlayerName)}:${category}`).slice(0,300)
     return {
       externalClaimId,rawPlayerName,clubHint:raw.clubHint||raw.club||null,positionHint:raw.positionHint||null,
@@ -100,9 +103,9 @@ export function normalizeCreatorPayload(payload){
       evidenceText:raw.evidenceText?String(raw.evidenceText).replace(/\s+/g,' ').trim().slice(0,2000):null,
       timestampSeconds,timeHorizon:raw.timeHorizon||'UNKNOWN',numericClaims:Array.isArray(raw.numericClaims)?raw.numericClaims.slice(0,20):[],
       relatedMentions:Array.isArray(raw.relatedMentions)?raw.relatedMentions.slice(0,20):[],depthRole,startProbability,
-      minutesIfStarting:typeof raw.minutesIfStarting==='number'?clamp(raw.minutesIfStarting,0,90):null,
-      substituteProbabilityWhenBenched:typeof raw.substituteProbabilityWhenBenched==='number'?clamp(raw.substituteProbabilityWhenBenched):null,
-      minutesIfSubstitute:typeof raw.minutesIfSubstitute==='number'?clamp(raw.minutesIfSubstitute,0,45):null,
+      minutesIfStarting:category!=='FPL_SELECTION'&&typeof raw.minutesIfStarting==='number'?clamp(raw.minutesIfStarting,0,90):null,
+      substituteProbabilityWhenBenched:category!=='FPL_SELECTION'&&typeof raw.substituteProbabilityWhenBenched==='number'?clamp(raw.substituteProbabilityWhenBenched):null,
+      minutesIfSubstitute:category!=='FPL_SELECTION'&&typeof raw.minutesIfSubstitute==='number'?clamp(raw.minutesIfSubstitute,0,45):null,
       confidence:typeof raw.confidence==='number'?clamp(raw.confidence):null,
     }
   }).filter(Boolean)
@@ -148,12 +151,58 @@ export function signalDraftFromClaim(claim,playerId,source,defaultConfidence=.65
   for(const key of ['startProbability','minutesIfStarting','substituteProbabilityWhenBenched','minutesIfSubstitute','depthRole']){
     if(claim[key]!==null&&claim[key]!==undefined)value[key]=claim[key]
   }
-  const categoryKinds={ROLE:'EXPECTED_ROLE',ROTATION:'DEPTH_CHART',INJURY:'INJURY',SET_PIECES:'SET_PIECES',PENALTIES:'PENALTIES',PRESEASON:'PRESEASON_MINUTES',TACTICS:'TACTICAL_ROLE',VALUE:'VALUE_OPINION',STATS:'STATISTICAL_CLAIM',TRANSFER:'TRANSFER_OPINION',OTHER:'EXPECTED_ROLE'}
+  const categoryKinds={ROLE:'EXPECTED_ROLE',ROTATION:'DEPTH_CHART',INJURY:'INJURY',SET_PIECES:'SET_PIECES',PENALTIES:'PENALTIES',PRESEASON:'PRESEASON_MINUTES',TACTICS:'TACTICAL_ROLE',VALUE:'VALUE_OPINION',STATS:'STATISTICAL_CLAIM',TRANSFER:'TRANSFER_OPINION',FPL_SELECTION:'VALUE_OPINION',OTHER:'VALUE_OPINION'}
+  const claimClasses={ROLE:'REAL_WORLD_ROLE',ROTATION:'ROTATION',INJURY:'INJURY',SET_PIECES:'SET_PIECES',PENALTIES:'PENALTIES',PRESEASON:'REAL_WORLD_ROLE',TACTICS:'REAL_WORLD_ROLE',VALUE:'VALUE_OPINION',STATS:'STATISTICAL_CONTEXT',TRANSFER:'VALUE_OPINION',FPL_SELECTION:'FPL_SELECTION',OTHER:'UNKNOWN'}
+  const modelImpact=['startProbability','minutesIfStarting','substituteProbabilityWhenBenched','minutesIfSubstitute','depthRole'].some(key=>value[key]!=null)?'ROLE':'NONE'
   const timestampUrl=source.url&&claim.timestampSeconds!==null
     ? `${source.url}${source.url.includes('?')?'&':'?'}t=${claim.timestampSeconds}s`
     : source.url||null
   return {
-    playerId,kind:categoryKinds[claim.category]||'EXPECTED_ROLE',value,sourceType:'YOUTUBE_TRANSCRIPT',sourceUrl:timestampUrl,
-    evidenceSummary:claim.summary,confidence:claim.confidence??defaultConfidence,
+    playerId,kind:categoryKinds[claim.category]||'VALUE_OPINION',value,sourceType:'YOUTUBE_TRANSCRIPT',sourceUrl:timestampUrl,
+    evidenceSummary:claim.summary,evidenceText:claim.evidenceText||claim.summary,claimClass:claimClasses[claim.category]||'UNKNOWN',modelImpact,
+    interpretationRationale:modelImpact==='ROLE'?'Structured real-world role claim extracted from the source.':'Creator context only; no projection adjustment proposed.',
+    confidence:claim.confidence??defaultConfidence,
   }
+}
+
+const containsEntity=(text,name)=>` ${normalizeEntityText(text)} `.includes(` ${normalizeEntityText(name)} `)
+const manualSegments=text=>String(text||'').split(/;|[!?]+|\.(?=\s|$)/).map(segment=>segment.replace(/\s+/g,' ').trim()).filter(Boolean)
+
+export function interpretManualSignalText(text,catalog){
+  const byPlayer=new Map()
+  for(const segment of manualSegments(text)){
+    const players=catalog.filter(player=>containsEntity(segment,player.name))
+    if(!players.length)continue
+    const lower=segment.toLowerCase()
+    const isFplChoice=fplSelectionPattern.test(segment)||/\b(i (?:like|rate|prefer)|scout (?:currently )?(?:likes|rates|prefers)|budget (?:pick|option)|buy|sell|avoid)\b/i.test(segment)
+    const isBackup=/\b(not expected to be (?:the )?(?:regular|first[ -]?choice) starter|third[ -]?choice|backup goalkeeper|backup keeper|won't be (?:the )?(?:regular )?starter|will not be (?:the )?(?:regular )?starter)\b/i.test(segment)
+    const isFirstChoice=/\b(first[ -]?choice|regular starter|starting goalkeeper|starting keeper|expected to start)\b/i.test(segment)&&!isBackup
+    const isReduced=/\b(reduced minutes|minutes (?:risk|concern)|share minutes|rotation risk|rotated)\b/i.test(segment)
+    const isUnavailable=/\b(ruled out|unavailable|will miss|set to miss)\b/i.test(segment)
+    const isInjury=/\b(injur|hamstring|knock|fitness|doubt|missed training)\b/i.test(segment)
+    const hasMeaning=isFplChoice||isBackup||isFirstChoice||isReduced||isUnavailable||isInjury
+    if(players.length>1&&!hasMeaning)continue
+    for(const player of players){
+      let draft
+      if(isBackup){
+        draft={playerId:player.id,kind:'DEPTH_CHART',claimClass:'REAL_WORLD_ROLE',modelImpact:'ROLE',value:{depthRole:'BACKUP',startProbability:.08,minutesIfStarting:player.position==='GK'?90:82,substituteProbabilityWhenBenched:player.position==='GK'?.005:.2,minutesIfSubstitute:player.position==='GK'?5:18,note:segment},evidenceSummary:segment,evidenceText:segment,interpretationRationale:'The statement explicitly says the player is not expected to be the regular starter.',confidence:.8,status:'PENDING'}
+      }else if(isFirstChoice){
+        draft={playerId:player.id,kind:'DEPTH_CHART',claimClass:'REAL_WORLD_ROLE',modelImpact:'ROLE',value:{depthRole:'FIRST_CHOICE',startProbability:.88,minutesIfStarting:player.position==='GK'?90:84,note:segment},evidenceSummary:segment,evidenceText:segment,interpretationRationale:'The statement explicitly describes the player as a regular or first-choice starter.',confidence:.75,status:'PENDING'}
+      }else if(isReduced){
+        draft={playerId:player.id,kind:'EXPECTED_ROLE',claimClass:'ROTATION',modelImpact:'ROLE',value:{depthRole:'ROTATION',startProbability:.55,note:segment},evidenceSummary:segment,evidenceText:segment,interpretationRationale:'The statement describes reduced minutes or rotation risk.',confidence:.6,status:'PENDING'}
+      }else if(isUnavailable){
+        draft={playerId:player.id,kind:'INJURY',claimClass:'INJURY',modelImpact:'ROLE',value:{depthRole:'OUT',startProbability:0,note:segment},evidenceSummary:segment,evidenceText:segment,interpretationRationale:'The statement explicitly says the player is unavailable.',confidence:.75,status:'PENDING'}
+      }else if(isInjury){
+        draft={playerId:player.id,kind:'INJURY',claimClass:'AVAILABILITY',modelImpact:'NONE',value:{note:segment},evidenceSummary:segment,evidenceText:segment,interpretationRationale:'An availability concern is mentioned, but its numerical impact is ambiguous.',confidence:.55,status:'PENDING'}
+      }else if(isFplChoice){
+        draft={playerId:player.id,kind:'VALUE_OPINION',claimClass:/\bbench|my team|my squad\b/i.test(lower)?'FPL_SELECTION':'CREATOR_RATING',modelImpact:'NONE',value:{note:segment},evidenceSummary:segment,evidenceText:segment,interpretationRationale:'This is an FPL selection or creator preference, not evidence about the player’s real-world minutes.',confidence:.8,status:'VERIFIED'}
+      }else{
+        draft={playerId:player.id,kind:'VALUE_OPINION',claimClass:'UNKNOWN',modelImpact:'NONE',value:{note:segment},evidenceSummary:segment,evidenceText:segment,interpretationRationale:'The player is mentioned, but the model impact is ambiguous.',confidence:.4,status:'PENDING'}
+      }
+      const existing=byPlayer.get(player.id)
+      const priority=item=>item.modelImpact==='ROLE'?3:item.claimClass==='UNKNOWN'||item.claimClass==='AVAILABILITY'?2:1
+      if(!existing||priority(draft)>priority(existing))byPlayer.set(player.id,draft)
+    }
+  }
+  return [...byPlayer.values()]
 }

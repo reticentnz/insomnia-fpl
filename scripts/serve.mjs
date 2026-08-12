@@ -3,7 +3,7 @@ import fs from 'node:fs'
 import path from 'node:path'
 import { randomUUID, timingSafeEqual } from 'node:crypto'
 import { resolvePlayerRole } from '../src/player-signals.ts'
-import { matchCreatorClaim, normalizeCreatorPayload, signalDraftFromClaim } from './creator-signals.mjs'
+import { interpretManualSignalText, matchCreatorClaim, normalizeCreatorPayload, signalDraftFromClaim } from './creator-signals.mjs'
 
 const port = Number(process.env.PORT || 4173)
 const host = process.env.HOST || '127.0.0.1'
@@ -44,7 +44,7 @@ import { latestForecastSummary } from '../src/server/forecast-service.ts'
 import { CatalogueCache, catalogueCacheKey, catalogueRequestKey } from '../src/server/catalog-cache.ts'
 import { ConcurrencyLimiter, TtlCache } from '../src/server/upstream-control.ts'
 import { HttpRequestError, MAX_JSON_BODY_BYTES, readJsonBody, sanitizeError } from '../src/server/http-security.mjs'
-import { createPlayerSignal, listPlayerSignals, updatePlayerSignalStatuses } from '../src/server/signal-service.ts'
+import { createPlayerSignal, listPlayerSignals, revisePlayerSignalInterpretation, updatePlayerSignalStatuses } from '../src/server/signal-service.ts'
 import { latestSuccessfulFeedRun } from './feed-run.mjs'
 import { nextIngestSchedule, parseIngestIntervalHours } from '../src/server/ingest-scheduler.ts'
 
@@ -410,12 +410,15 @@ async function createSignalForCreatorClaim(db,claimRow,source,gameweek){
   const signalValue=parseJson(claimRow.signalValue,{})
   const draft=signalDraftFromClaim({...claimRow,...signalValue,numericClaims:parseJson(claimRow.numericClaims,[]),relatedMentions:parseJson(claimRow.relatedMentions,[])},Number(claimRow.resolvedPlayerId),source)
   const confidence=Math.max(0,Math.min(1,Number(draft.confidence)||.65))
-  const status=shouldAutoApprove('YOUTUBE_TRANSCRIPT',confidence,loadSignalConfig())?'VERIFIED':'PENDING'
+  const contextOnly=draft.modelImpact==='NONE'&&draft.claimClass!=='UNKNOWN'
+  const status=contextOnly||shouldAutoApprove('YOUTUBE_TRANSCRIPT',confidence,loadSignalConfig())?'VERIFIED':'PENDING'
   const observedAt=new Date().toISOString()
   const id=`creator:${String(claimRow.externalClaimId||claimRow.id).slice(0,220)}`
   const existing=await listPlayerSignals(db,{playerId:draft.playerId,limit:500})
   if(existing.some(signal=>signal.id===id))return {signal:existing.find(signal=>signal.id===id),created:false}
-  const signal=await createPlayerSignal(db,{id,playerId:draft.playerId,gameweek,kind:draft.kind,value:draft.value,sourceType:draft.sourceType,sourceUrl:draft.sourceUrl,evidenceSummary:draft.evidenceSummary,confidence,observedAt,validUntil:validityDeadline(claimRow.timeHorizon),status,actorType:'INGESTION'})
+  const horizonMatch=String(claimRow.timeHorizon||'').toUpperCase().match(/^GW\s*(\d+)$/)
+  const applicableGameweek=horizonMatch?Number(horizonMatch[1]):null
+  const signal=await createPlayerSignal(db,{id,playerId:draft.playerId,gameweek:applicableGameweek,kind:draft.kind,value:draft.value,sourceType:draft.sourceType,sourceUrl:draft.sourceUrl,evidenceSummary:draft.evidenceSummary,evidenceText:draft.evidenceText,claimClass:draft.claimClass,modelImpact:draft.modelImpact,interpretationRationale:draft.interpretationRationale,confidence,observedAt,validUntil:validityDeadline(claimRow.timeHorizon),status,actorType:'INGESTION'})
   return {signal,created:true}
 }
 
@@ -1145,9 +1148,19 @@ function startServerOnAvailablePort(targetPort) {
         const manual=payload.manualOverride===true
         const observedAt=new Date().toISOString(),validUntil=new Date(payload.validUntil||Date.now()+7*24*60*60*1000)
         if(!Number.isFinite(validUntil.getTime()))throw new Error('validUntil must be a valid timestamp')
-        const signal=await createPlayerSignal(db,{playerId:payload.playerId,gameweek:payload.gameweek||null,kind:payload.kind,value:payload.value||{},sourceType:manual?'MANUAL_OVERRIDE':'USER_FEEDBACK',sourceUrl:payload.sourceUrl||null,evidenceSummary:payload.evidenceSummary,confidence:manual?1:Math.max(0,Math.min(1,Number(payload.confidence)||.4)),observedAt,validUntil:validUntil.toISOString(),status:manual?'VERIFIED':'PENDING'})
+        const signal=await createPlayerSignal(db,{playerId:payload.playerId,gameweek:payload.gameweek||null,kind:payload.kind,value:payload.value||{},sourceType:manual?'MANUAL_OVERRIDE':'USER_FEEDBACK',sourceUrl:payload.sourceUrl||null,evidenceSummary:payload.evidenceSummary,evidenceText:payload.evidenceText||payload.evidenceSummary,claimClass:payload.claimClass,interpretationRationale:payload.interpretationRationale,modelImpact:payload.modelImpact,confidence:manual?1:Math.max(0,Math.min(1,Number(payload.confidence)||.4)),observedAt,validUntil:validUntil.toISOString(),status:manual?'VERIFIED':'PENDING'})
         sendJson(res,201,{signal})
       }catch(error){sendJson(res,400,{error:error instanceof Error?error.message:'Unable to create signal'})}
+      return
+    }
+
+    const signalInterpretationMatch=request.match(/^\/api\/player-signals\/([^/]+)\/interpretation$/)
+    if(signalInterpretationMatch&&req.method==='PATCH'){
+      try{
+        const payload=await readRequestBody(req)
+        const signal=await revisePlayerSignalInterpretation(await getDb(),decodeURIComponent(signalInterpretationMatch[1]),payload)
+        sendJson(res,200,{signal})
+      }catch(error){sendJson(res,400,{error:error instanceof Error?error.message:'Unable to revise signal interpretation'})}
       return
     }
 
@@ -1199,27 +1212,14 @@ function startServerOnAvailablePort(targetPort) {
         const sourceUrl=payload.sourceUrl||null
         const gameweek=payload.gameweek||data.currentGameweek||null
         const payloadConfidence=.4
-        // Resolve player mentions from text using the same fuzzy matcher as the Ask tab
-        const { resolveMultiplePlayerMentions } = await import('../src/integrations.ts')
-        let mentionedPlayers=resolveMultiplePlayerMentions(text,data.players)
-        // Supplement with explicit hints from n8n
-        if(Array.isArray(payload.playerHints)&&payload.playerHints.length){
-          for(const hint of payload.playerHints){
-            const matches=resolveMultiplePlayerMentions(hint,data.players)
-            for(const p of matches){
-              if(!mentionedPlayers.find(m=>m.id===p.id))mentionedPlayers.push(p)
-            }
-          }
-        }
-        if(!mentionedPlayers.length){sendJson(res,200,{created:0,signals:[],message:'No players resolved from text'});return}
+        const drafts=interpretManualSignalText(text,data.players)
+        if(!drafts.length){sendJson(res,200,{created:0,signals:[],message:'No player-specific claims could be interpreted safely'});return}
         const db=await getDb()
         const created=[]
-        for(const player of mentionedPlayers.slice(0,10)){
-          const summary=(text.slice(0,300)+(text.length>300?'…':'')).replace(/\s+/g,' ').trim()
+        for(const draft of drafts.slice(0,10)){
           const observedAt=new Date().toISOString()
           const validUntil=new Date(Date.now()+7*24*60*60*1000).toISOString()
-          const status='PENDING'
-          const signal=await createPlayerSignal(db,{playerId:player.id,gameweek,kind:'EXPECTED_ROLE',value:{note:summary},sourceType,sourceUrl,evidenceSummary:`[${player.name}] ${summary}`,confidence:payloadConfidence,observedAt,validUntil,status})
+          const signal=await createPlayerSignal(db,{playerId:draft.playerId,gameweek:null,kind:draft.kind,value:draft.value,sourceType,sourceUrl,evidenceSummary:draft.evidenceSummary,evidenceText:draft.evidenceText,claimClass:draft.claimClass,modelImpact:draft.modelImpact,interpretationRationale:draft.interpretationRationale,confidence:draft.confidence||payloadConfidence,observedAt,validUntil,status:draft.status})
           created.push({...signal,autoApproved:false})
         }
         sendJson(res,201,{created:created.length,signals:created,autoApproved:false})
