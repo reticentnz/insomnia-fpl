@@ -1808,6 +1808,7 @@ function App() {
               setTargetSwapPlayer(p);
               setTab("Transfers");
             }}
+            forecastLoading={!forecastSummary || forecastSummary.horizon !== horizon}
           />
         ) : tab === "Leagues" ? (
           <LeaguesView
@@ -1901,6 +1902,7 @@ function App() {
           draftMode={draftMode}
           onSave={saveSquad}
           onClose={() => setEditing(false)}
+          forecastLoading={!forecastSummary || forecastSummary.horizon !== horizon}
         />
       )}{" "}
       {importModalOpen && (
@@ -2797,6 +2799,7 @@ function SquadEditor({
   draftMode = activeDraftMode,
   onSave,
   onClose,
+  forecastLoading = false,
 }: {
   catalog: Player[];
   selectedIds: number[];
@@ -2807,6 +2810,7 @@ function SquadEditor({
   draftMode?: boolean;
   onSave: (ids: number[], lockedIds?: number[]) => void;
   onClose: () => void;
+  forecastLoading?: boolean;
 }) {
   const [ids, setIds] = useState<number[]>(() =>
     initialClear ? [] : selectedIds,
@@ -3041,14 +3045,26 @@ function SquadEditor({
             <button className="clear-btn" onClick={clearSquad}>
               Start over
             </button>
-            <button className="preset-btn" onClick={autoFillBest}>
-              {draftMode
-                ? "Optimise squad around locks"
-                : "Build best 15-player squad"}
+            <button
+              className="preset-btn"
+              onClick={autoFillBest}
+              disabled={forecastLoading}
+            >
+              {forecastLoading
+                ? "Loading projections..."
+                : draftMode
+                  ? "Optimise squad around locks"
+                  : "Build best 15-player squad"}
             </button>
             {ids.length > 0 && ids.length < 15 && (
-              <button className="fill-btn" onClick={autoFillRemaining}>
-                Auto-fill remaining ({15 - ids.length})
+              <button
+                className="fill-btn"
+                onClick={autoFillRemaining}
+                disabled={forecastLoading}
+              >
+                {forecastLoading
+                  ? "Loading..."
+                  : `Auto-fill remaining (${15 - ids.length})`}
               </button>
             )}
           </div>
@@ -4208,6 +4224,7 @@ function MyTeamV2({
   onWhy,
   setTab,
   onReplacePlayer,
+  forecastLoading = false,
 }: {
   squad: Player[];
   xi: Player[];
@@ -4244,6 +4261,7 @@ function MyTeamV2({
   onWhy: (transfer: Transfer) => void;
   setTab: (tab: string) => void;
   onReplacePlayer?: (p: Player) => void;
+  forecastLoading?: boolean;
 }) {
   const starters = new Set(xi.map((p) => p.id));
   const bench = benchOrder(horizon, squad, xi);
@@ -4290,9 +4308,11 @@ function MyTeamV2({
           <span className="label">THIS WEEK'S VERDICT</span>
           <span className={"pill " + (decision.roll ? "green" : "amber")}>
             {draftMode
-              ? draftPlan
-                ? "DRAFT IMPROVEMENT"
-                : "DRAFT OPTIMISED"
+              ? forecastLoading
+                ? "CALCULATING"
+                : draftPlan
+                  ? "DRAFT IMPROVEMENT"
+                  : "DRAFT OPTIMISED"
               : decision.roll
                 ? "ROLL TRANSFER"
                 : "RECOMMENDED MOVE"}
@@ -4300,18 +4320,22 @@ function MyTeamV2({
         </div>
         <h2>
           {draftMode
-            ? draftPlan
-              ? `Re-optimise ${draftPlan.changes.length} squad places`
-              : "No better £100m structure found"
+            ? forecastLoading
+              ? "Calculating optimizations..."
+              : draftPlan
+                ? `Re-optimise ${draftPlan.changes.length} squad places`
+                : "No better £100m structure found"
             : weakest
               ? `${weakest.out.name} → ${weakest.in.name}`
               : "Roll your transfer"}
         </h2>
         <p className="recommend-gain">
           {draftMode
-            ? draftPlan
-              ? `+${draftPlan.gain} lineup-aware objective points over ${horizon} GWs`
-              : "The whole-squad search preserved your locks and respected the hard budget cap."
+            ? forecastLoading
+              ? "Running whole-squad search across candidates..."
+              : draftPlan
+                ? `+${draftPlan.gain} lineup-aware objective points over ${horizon} GWs`
+                : "The whole-squad search preserved your locks and respected the hard budget cap."
             : weakest
               ? `+${weakest.net} projected points over ${horizon} GWs`
               : `No direct swap clears the ${TRANSFER_GAIN_THRESHOLDS[(horizon >= 5 ? 5 : horizon >= 3 ? 3 : 1) as 1 | 3 | 5].toFixed(1)}-point threshold.`}
@@ -5424,14 +5448,7 @@ function LeaguesView({
         setFetchedLeagues(list);
         if (list.length === 0) {
           setError("No classic mini-leagues were found for this FPL account. You can still load one by League ID.");
-          return;
         }
-        setSelectedLeagueId((current) => {
-          if (current) return current;
-          return savedDefaultId && list.some((league) => league.id === savedDefaultId)
-            ? savedDefaultId
-            : list[0].id;
-        });
       })
       .catch((reason) => {
         if (active) {
@@ -5445,7 +5462,7 @@ function LeaguesView({
     return () => {
       active = false;
     };
-  }, [fplAccount?.teamId, userLeagues.length, currentGameweek, savedDefaultId]);
+  }, [fplAccount?.teamId, userLeagues.length, currentGameweek]);
 
   const loadLeague = useCallback(async (id: number) => {
     setLoading(true);
