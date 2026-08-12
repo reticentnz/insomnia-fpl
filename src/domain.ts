@@ -2306,7 +2306,7 @@ export function optimizeInitialSquad(
       .join(",");
     const cached = fastScoreCache.get(key);
     if (cached !== undefined) return cached;
-    const score = projectedTeamScore(horizon, candidateSquad).total;
+    const score = candidateSquad.reduce((sum, p) => sum + (scoreCache.get(p.id) ?? horizonProjection(p, horizon)), 0);
     fastScoreCache.set(key, score);
     return score;
   };
