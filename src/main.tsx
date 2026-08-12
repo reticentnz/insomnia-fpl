@@ -334,7 +334,7 @@ const adminActionDetails = [
   { id: "relink-player-teams", icon: "⤢", title: "Relink players to clubs", description: "Refresh official player-to-club observations, then re-import the linked manager squad." },
 ];
 
-function AdminView() {
+function AdminView({ system, forecast, horizon }: { system: SystemStatus | null; forecast: ForecastSummary | null; horizon: number }) {
   const [status, setStatus] = useState<AdminStatus | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [token, setToken] = useState(() => sessionStorage.getItem("fpl-admin-token") || "");
@@ -359,6 +359,7 @@ function AdminView() {
   };
   const running = status?.operations.some(operation => operation.status === "RUNNING") || false;
   return <div className="admin-view">
+    <ForecastReadinessPanel system={system} forecast={forecast} requestedHorizon={horizon} />
     <section className="admin-summary-grid">
       <div className="admin-metric"><small>Season</small><b>{status?.season || "—"}</b></div>
       <div className="admin-metric"><small>Linked team</small><b>{status?.manager?.teamName || "Not linked"}</b><span>{status?.manager ? `${status.manager.playerCount} players · #${status.manager.teamId}` : "Connect a team from My Team"}</span></div>
@@ -1667,7 +1668,6 @@ function App() {
             </div>
           </div>
         )}
-        <ForecastReadinessPanel system={systemStatus} forecast={forecastSummary} requestedHorizon={horizon} />
         {catalogMode === "demo-conflict" && (
           <div className="validation-warning conflict-banner">
             <Shield size={16} />
@@ -1731,7 +1731,7 @@ function App() {
           </>
         )}
         {tab === "Admin" ? (
-          <AdminView />
+          <AdminView system={systemStatus} forecast={forecastSummary} horizon={horizon} />
         ) : tab === "Players" ? (
           <PlayersV2
             filtered={filteredPlayers}

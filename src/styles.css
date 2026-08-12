@@ -276,7 +276,7 @@ header {
   grid-template-columns: minmax(250px, 1.25fr) minmax(440px, 2fr) auto;
   align-items: center;
   gap: 20px;
-  margin: -12px 0 24px;
+  margin: 0;
   padding: 16px 18px;
   border: 1px solid color-mix(in srgb, var(--forecast-state) 30%, transparent);
   border-radius: var(--radius-lg);
@@ -3618,7 +3618,7 @@ h2 {
   header { align-items: center; margin-bottom: 20px; }
   header h1 { max-width: calc(100vw - 90px); font-size: 28px; line-height: 1.08; }
   header .muted { max-width: calc(100vw - 76px); font-size: 12px; }
-  .forecast-readiness { margin-top: -6px; padding: 14px; }
+  .forecast-readiness { padding: 14px; }
   .forecast-readiness-metrics { grid-template-columns: 1fr 1fr; gap: 10px 16px; }
   .avatar { width: 38px; height: 38px; }
   .horizon-row.plan-controls { display: grid; gap: 12px; padding: 13px; overflow: visible; }
