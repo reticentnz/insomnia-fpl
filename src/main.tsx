@@ -90,6 +90,7 @@ import {
   type SignalSourceConfig,
   DEFAULT_SIGNAL_SOURCE_CONFIG,
   fetchSystemStatus,
+  triggerForecastRecompute,
   fetchLatestForecast,
   type ForecastSummary,
   fetchBacktest,
@@ -459,6 +460,8 @@ function App() {
   const [squadChallenge, setSquadChallenge] = useState<SquadChallengeResult | null>(null);
   const [stagedSignalReviews, setStagedSignalReviews] = useState<Record<string, "VERIFIED" | "REJECTED">>({});
   const [applyingBatch, setApplyingBatch] = useState(false);
+  const [recomputeRequest, setRecomputeRequest] = useState<{ triggeredAt: number; baselineRunId: string | null } | null>(null);
+  const [recomputeReadyAt, setRecomputeReadyAt] = useState<number | null>(null);
   const [challengeLoading, setChallengeLoading] = useState(false);
   const [challengeError, setChallengeError] = useState<string | null>(null);
   const [challengeRawOutput, setChallengeRawOutput] = useState<string>("");
@@ -476,15 +479,39 @@ function App() {
   const icons = debugEnabled
     ? { ...primaryIcons, "Model Debug": Gauge }
     : primaryIcons;
+  const recomputeBusy = recomputeRequest != null || recomputeReadyAt != null;
   useEffect(() => {
     if (!livePlayers?.length) { setForecastSummary(null); return; }
     let active = true;
     const refresh = () => fetchLatestForecast(horizon as 1 | 3 | 5).then(value => { if (active) setForecastSummary(value); }).catch(() => { if (active) setForecastSummary(null); });
     void refresh();
-    const timer = window.setInterval(refresh, 30_000);
+    const timer = window.setInterval(refresh, recomputeBusy ? 2_000 : 30_000);
     return () => { active = false; window.clearInterval(timer); };
-  }, [livePlayers, horizon]);
-  useEffect(() => { setCanonicalRecommendation(null); }, [activePlanId, horizon]);
+  }, [livePlayers, horizon, recomputeBusy]);
+  // Resolve the signal-triggered recompute once a new forecast run lands
+  // (or the rebuild fails or times out so the banner can't hang).
+  useEffect(() => {
+    if (!recomputeRequest) return;
+    const recalculating = systemStatus?.isRecalculating === true;
+    const newRun = forecastSummary?.id && forecastSummary.id !== recomputeRequest.baselineRunId;
+    if (newRun && !recalculating) {
+      setRecomputeReadyAt(Date.now());
+      setRecomputeRequest(null);
+      const timer = window.setTimeout(() => setRecomputeReadyAt(null), 8000);
+      return () => window.clearTimeout(timer);
+    }
+    if (recalculating) setRecomputeReadyAt(null);
+    if (!recalculating && systemStatus?.recomputeError) {
+      setRecomputeReadyAt(null);
+      setRecomputeRequest(null);
+      setToast({ message: `Forecast rebuild failed: ${systemStatus.recomputeError}` });
+      return;
+    }
+    // Safety cap: the server's own isRecalculating flag keeps the banner accurate
+    // if a rebuild runs long; only stop the client-side wait so polling recovers.
+    const timeout = window.setTimeout(() => setRecomputeRequest(null), 120_000);
+    return () => window.clearTimeout(timeout);
+  }, [recomputeRequest, systemStatus, forecastSummary]);
   const catalog = useMemo(() => {
     const base = livePlayers && livePlayers.length > 0 ? livePlayers : [];
     if (!forecastSummary || forecastSummary.horizon !== horizon) return base;
@@ -1317,6 +1344,18 @@ function App() {
       setCapturedAt(data.capturedAt || null);
       const approvedCount = updates.filter((u) => u.status === "VERIFIED").length;
       const rejectedCount = updates.filter((u) => u.status === "REJECTED").length;
+      // Rebuilding the immutable forecast so approved role evidence is reflected
+      // in stored projections and downstream transfer recommendations.
+      const approvedRoleImpact = updatedSignals.some(
+        (s) => s.status === "VERIFIED" && s.interpretation?.modelImpact === "ROLE",
+      );
+      if (approvedRoleImpact) {
+        setRecomputeRequest({
+          triggeredAt: Date.now(),
+          baselineRunId: forecastSummary?.id ?? null,
+        });
+        triggerForecastRecompute().catch(() => {});
+      }
       const parts = [];
       if (approvedCount) parts.push(`${approvedCount} approved`);
       if (rejectedCount) parts.push(`${rejectedCount} rejected`);
@@ -1444,9 +1483,9 @@ function App() {
     let active = true;
     const refresh = () => fetchSystemStatus().then((status) => { if (active) setSystemStatus(status); });
     void refresh();
-    const timer = window.setInterval(refresh, 30_000);
+    const timer = window.setInterval(refresh, recomputeBusy ? 2_000 : 30_000);
     return () => { active = false; window.clearInterval(timer); };
-  }, []);
+  }, [recomputeBusy]);
 
   const handleOnboardingImport = async (teamIdStr: string) => {
     const idNum = parseTeamId(teamIdStr);
@@ -1701,6 +1740,36 @@ function App() {
               setImportModalOpen(true);
             }}
           />
+        )}
+        {(tab === "My Team" || tab === "Transfers") &&
+          (recomputeRequest || recomputeReadyAt || systemStatus?.isRecalculating) && (
+          <div className={`recompute-banner ${recomputeReadyAt ? "ready" : "running"}`} role="status" aria-live="polite">
+            {recomputeRequest ? (
+              <>
+                <span className={`recompute-dot ${systemStatus?.isRecalculating ? "pulse" : ""}`} aria-hidden="true" />
+                <span>
+                  <b>Rebuilding projections from approved signals…</b>
+                  <small>Your current numbers and transfer recommendations use the previous forecast until the rebuild finishes.</small>
+                </span>
+              </>
+            ) : recomputeReadyAt ? (
+              <>
+                <span className="recompute-check" aria-hidden="true">✓</span>
+                <span>
+                  <b>Projections updated</b>
+                  <small>Approved signals are now reflected — transfer recommendations are current.</small>
+                </span>
+              </>
+            ) : systemStatus?.isRecalculating ? (
+              <>
+                <span className="recompute-dot pulse" aria-hidden="true" />
+                <span>
+                  <b>Rebuilding projections from approved signals…</b>
+                  <small>{systemStatus.recomputeMessage || "A forecast rebuild is running in the background."}</small>
+                </span>
+              </>
+            ) : null}
+          </div>
         )}
         {tab !== "Ask" && tab !== "Model Debug" && tab !== "Leagues" && tab !== "Signals" && tab !== "Admin" && (
           <>

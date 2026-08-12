@@ -40,7 +40,7 @@ import { evaluateDecision, listDecisions, recordDecision } from './decision-jour
 import { getUserState, updateAiState, updateUserState } from './user-state-service.mjs'
 import { assembleProjectionInputCatalog, projectionCatalogInputVersions } from '../src/server/catalog-service.ts'
 import { runBacktest } from '../src/server/backtest-service.ts'
-import { baseRole, latestForecastSummary } from '../src/server/forecast-service.ts'
+import { baseRole, createForecastRun, latestForecastSummary } from '../src/server/forecast-service.ts'
 import { CatalogueCache, catalogueCacheKey, catalogueRequestKey } from '../src/server/catalog-cache.ts'
 import { ConcurrencyLimiter, TtlCache } from '../src/server/upstream-control.ts'
 import { HttpRequestError, MAX_JSON_BODY_BYTES, readJsonBody, sanitizeError } from '../src/server/http-security.mjs'
@@ -52,12 +52,24 @@ let systemStatus = {
   status: 'initializing',
   isSeeding: false,
   isIngesting: false,
+  isRecalculating: false,
+  recomputeMessage: null,
+  lastForecastRunId: null,
   message: 'Initializing database schema...',
   playerCount: 0,
   lastIngestedAt: null,
   nextIngestAt: null,
   ingestIntervalHours: 12
 }
+
+// Debounced in-process forecast recompute triggered after signal approvals.
+// It rebuilds an immutable ForecastRun from the current stored catalogue
+// (no upstream FPL network fetch) so approved role evidence is reflected in
+// stored projections that drive transfer recommendations.
+const RECOMPUTE_DEBOUNCE_MS = 3000
+let recomputeRunning = false
+let recomputeQueued = false
+let recomputeLastTriggeredAt = 0
 
 let scheduledIngestTimer = null
 const INGEST_RETRY_DELAY_MS = 15 * 60 * 1000
@@ -227,6 +239,42 @@ async function triggerBackgroundIngest() {
     await scheduleNextIngestion({ notBefore: Date.now() + INGEST_RETRY_DELAY_MS }).catch(scheduleError => console.error('⚠️ Could not schedule ingestion retry:', sanitizeError(scheduleError)))
     return false
   }
+}
+
+async function triggerForecastRecompute() {
+  if (systemStatus.isIngesting || systemStatus.isSeeding) return { status: 'blocked', message: 'FPL ingestion is already in progress; wait for it to finish.' }
+  recomputeLastTriggeredAt = Date.now()
+  recomputeQueued = true
+  // Return quickly; the debounce loop below drains into a single background job.
+  if (recomputeRunning) return { status: 'queued', message: 'A forecast recompute is already running; the latest approved signals will be included.' }
+  recomputeRunning = true
+  systemStatus.isRecalculating = true
+  systemStatus.recomputeMessage = 'Rebuilding projections from the latest approved signals...'
+  systemStatus.recomputeError = null
+  void (async () => {
+    while (recomputeQueued) {
+      // Debounce bursts of approvals so a batch produces a single forecast run.
+      const idleMs = Date.now() - recomputeLastTriggeredAt
+      if (idleMs < RECOMPUTE_DEBOUNCE_MS) {
+        await new Promise(resolve => setTimeout(resolve, RECOMPUTE_DEBOUNCE_MS - idleMs))
+        continue
+      }
+      recomputeQueued = false
+      try {
+        const db = await getDb()
+        const result = await createForecastRun(db, { asOf: new Date().toISOString() })
+        systemStatus.lastForecastRunId = result.id
+        systemStatus.recomputeError = null
+      } catch (error) {
+        systemStatus.recomputeError = sanitizeError(error)
+        console.error('⚠️ Signal-triggered forecast recompute failed:', sanitizeError(error))
+      }
+    }
+    recomputeRunning = false
+    systemStatus.isRecalculating = false
+    systemStatus.recomputeMessage = null
+  })()
+  return { status: 'started', message: 'Forecast recompute scheduled.' }
 }
 
 function readRequestBody(req) { return readJsonBody(req) }
@@ -988,6 +1036,15 @@ function startServerOnAvailablePort(targetPort) {
         'content-type': 'application/json; charset=utf-8',
         'cache-control': 'no-store'
       }).end(JSON.stringify({ ...systemStatus, season: FPL_SEASON, currentSeason: FPL_SEASON }))
+      return
+    }
+
+    if (request === '/api/forecast-runs/recompute' && req.method === 'POST') {
+      try {
+        sendJson(res, 202, await triggerForecastRecompute())
+      } catch (error) {
+        sendJson(res, 500, { error: error instanceof Error ? error.message : 'Unable to schedule forecast recompute' })
+      }
       return
     }
 

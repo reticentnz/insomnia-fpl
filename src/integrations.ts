@@ -1040,6 +1040,10 @@ export type SystemStatus = {
   status: 'initializing' | 'seeding' | 'ready' | 'error';
   isSeeding: boolean;
   isIngesting?: boolean;
+  isRecalculating?: boolean;
+  recomputeMessage?: string | null;
+  recomputeError?: string | null;
+  lastForecastRunId?: string | null;
   message: string;
   playerCount: number;
   lastIngestedAt?: string | null;
@@ -1050,11 +1054,20 @@ export type SystemStatus = {
 export async function fetchSystemStatus(): Promise<SystemStatus> {
   try {
     const res = await fetch('/api/system-status')
-    if (!res.ok) return { reachable: false, status: 'error', isSeeding: false, isIngesting: false, message: `Status unavailable: HTTP ${res.status}`, playerCount: 0 }
+    if (!res.ok) return { reachable: false, status: 'error', isSeeding: false, isIngesting: false, isRecalculating: false, message: `Status unavailable: HTTP ${res.status}`, playerCount: 0 }
     return { ...(await res.json()), reachable: true }
   } catch {
-    return { reachable: false, status: 'error', isSeeding: false, isIngesting: false, message: 'Server status unavailable', playerCount: 0 }
+    return { reachable: false, status: 'error', isSeeding: false, isIngesting: false, isRecalculating: false, message: 'Server status unavailable', playerCount: 0 }
   }
+}
+
+export type ForecastRecomputeResult = { status: 'blocked' | 'queued' | 'started'; message?: string };
+
+export async function triggerForecastRecompute(): Promise<ForecastRecomputeResult> {
+  const response = await fetch('/api/forecast-runs/recompute', { method: 'POST', headers: { 'content-type': 'application/json' }, body: '{}' })
+  const data = await response.json().catch(() => null)
+  if (!response.ok) throw new Error((data?.error) || `Forecast recompute unavailable: HTTP ${response.status}`)
+  return data as ForecastRecomputeResult
 }
 
 export type AdminOperation = { id: string; status: 'IDLE' | 'RUNNING' | 'SUCCEEDED' | 'FAILED'; startedAt: string | null; finishedAt: string | null; message: string | null; error: string | null };

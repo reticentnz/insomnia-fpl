@@ -5,6 +5,7 @@ export type ForecastStatusInput = {
   status: 'initializing' | 'seeding' | 'ready' | 'error'
   isSeeding: boolean
   isIngesting?: boolean
+  isRecalculating?: boolean
   ingestIntervalHours?: number
 }
 
@@ -21,7 +22,7 @@ export function deriveForecastReadiness(system: ForecastStatusInput | null, fore
   const staleAfterHours = Math.max(24, intervalHours > 0 ? intervalHours * 2 : 24)
   const asOfMs = forecast ? Date.parse(forecast.asOf) : Number.NaN
   const ageHours = Number.isFinite(asOfMs) ? Math.max(0, (now - asOfMs) / 3_600_000) : null
-  const running = Boolean(system?.isSeeding || system?.isIngesting || system?.status === 'initializing' || system?.status === 'seeding')
+  const running = Boolean(system?.isSeeding || system?.isIngesting || system?.isRecalculating || system?.status === 'initializing' || system?.status === 'seeding')
   let state: ForecastReadinessState
   if (system?.reachable === false || system?.status === 'error') state = 'FAILED'
   else if (running) state = 'RUNNING'
