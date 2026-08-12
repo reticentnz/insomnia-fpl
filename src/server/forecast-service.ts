@@ -41,7 +41,7 @@ const number = (value: unknown, fallback = 0) => Number.isFinite(Number(value)) 
 const nullableNumber = (value: unknown) => value == null ? undefined : number(value)
 const clamp = (value: number, min: number, max: number) => Math.min(max, Math.max(min, value))
 
-function baseRole(player: ProjectionCatalogPlayer): PlayerRoleProfile {
+export function baseRole(player: ProjectionCatalogPlayer): PlayerRoleProfile {
   const official = player.official
   const position = String(official.position || 'MID')
   const minutes = Math.max(0, number(official.minutes))
@@ -51,9 +51,12 @@ function baseRole(player: ProjectionCatalogPlayer): PlayerRoleProfile {
   const reportedChance = nullableNumber(official.chance_of_playing)
   const defaultChance = ['i', 'u'].includes(String(official.status)) ? 0 : 100
   const chance = clamp(reportedChance ?? defaultChance, 0, 100) / 100
-  // Use season-wide gameweeks for historical rate (prevents backups with a handful of appearances
-  // from getting inflated per-game targets like 90 mins). Signals override current role.
-  const target = clamp((minutes / 38) * chance, 0, 90)
+  // Blend FPL availability (health) with season-minute coverage so a healthy
+  // player with limited minutes is not an automatic no-show, while a full
+  // season starter is clearly favoured. Signals override the final role.
+  const seasonCoverage = clamp(minutes / 2850, 0, 1)
+  const blend = chance * (0.55 + 0.45 * seasonCoverage)
+  const target = clamp(blend * 90, 0, 90)
   const isGoalkeeper = position === 'GK'
   const minutesIfStarting = isGoalkeeper ? 90 : 86
   const substituteProbabilityWhenBenched = isGoalkeeper ? .005 : .2

@@ -106,7 +106,7 @@ import {
 import { type PlayerSignal, sanitizeExternalUrl } from "./player-signals";
 import { createToolContext } from "./intelligence";
 import { reviewDecision, type DecisionReview } from "./decision-review";
-import { projectionBreakdown } from "./model";
+import { playerRoleProfile, projectionBreakdown } from "./model";
 import { deriveForecastReadiness } from "./forecast-status";
 import "./styles.css";
 
@@ -8149,7 +8149,7 @@ function PlayerDrawer({
               {activeAdjustments.length > 0 && (
                 <div className="player-signal-effective">
                   <span>Effective model role</span>
-                  <b>{Math.round((player.roleProfile?.startProbability ?? 1) * 100)}% start chance · {roleProjection.expectedMinutes.toFixed(0)} expected mins</b>
+                  <b>{Math.round(playerRoleProfile(player).startProbability * 100)}% start chance · {roleProjection.expectedMinutes.toFixed(0)} expected mins</b>
                 </div>
               )}
               <div className="player-signal-list">

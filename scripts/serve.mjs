@@ -40,7 +40,7 @@ import { evaluateDecision, listDecisions, recordDecision } from './decision-jour
 import { getUserState, updateAiState, updateUserState } from './user-state-service.mjs'
 import { assembleProjectionInputCatalog, projectionCatalogInputVersions } from '../src/server/catalog-service.ts'
 import { runBacktest } from '../src/server/backtest-service.ts'
-import { latestForecastSummary } from '../src/server/forecast-service.ts'
+import { baseRole, latestForecastSummary } from '../src/server/forecast-service.ts'
 import { CatalogueCache, catalogueCacheKey, catalogueRequestKey } from '../src/server/catalog-cache.ts'
 import { ConcurrencyLimiter, TtlCache } from '../src/server/upstream-control.ts'
 import { HttpRequestError, MAX_JSON_BODY_BYTES, readJsonBody, sanitizeError } from '../src/server/http-security.mjs'
@@ -455,13 +455,42 @@ async function refreshLiveData() {
   const players=catalog.players.map((item,index)=>{
     const official=item.official||{},first=item.fixtures[0]
     const availability=Number(official.chance_of_playing??100)
-    const baseRole={startProbability:Math.max(0,Math.min(1,availability/100)),minutesIfStarting:item.official.position==='GK'?90:86,substituteProbabilityWhenBenched:item.official.position==='GK'?.005:.2,minutesIfSubstitute:item.official.position==='GK'?5:18,confidence:'MEDIUM',derivedFromSignalIds:[]}
-    const signals=item.roleSignals.map(signal=>({id:signal.id,playerId:item.fplId,gameweek:null,kind:signal.kind,value:signal.value,sourceType:signal.sourceType,sourceUrl:signal.sourceUrl||null,evidenceSummary:signal.evidenceSummary||'',confidence:Number(signal.confidence??1),observedAt:signal.observedAt,validUntil:signal.validUntil,status:'VERIFIED'}))
-    const roleProfile=resolvePlayerRole(baseRole,signals,{now:new Date(asOf),gameweek:currentGameweek||undefined})
+    const signals=toCatalogRoleSignals(item)
+    const roleProfile=resolvePlayerRole(baseRole(item),signals,{now:new Date(asOf),gameweek:currentGameweek||undefined})
     const expectedMinutes=roleProfile.startProbability*roleProfile.minutesIfStarting+(1-roleProfile.startProbability)*roleProfile.substituteProbabilityWhenBenched*roleProfile.minutesIfSubstitute
     return {id:item.fplId,name:item.name,club:item.team.shortName,clubName:item.team.name,position:official.position,price:Number(official.price_tenths||0)/10,form:Number(official.form||0),ownership:Number(official.ownership_percent||0),minutes:availability,expectedMinutes,roleProfile,fixture:first?`${first.opponent.shortName} (${first.isHome?'H':'A'})`:'Blank',difficulty:first?.difficulty||3,projection:Number(official.ep_next||0),colour:colours[index%colours.length],status:String(official.status||'a'),chanceOfPlaying:official.chance_of_playing==null?undefined:Number(official.chance_of_playing),news:official.news||null,transfersIn:Number(official.transfers_in||0),transfersOut:Number(official.transfers_out||0),active:Boolean(official.active),dataConfidence:item.provenance.underlyingObservationId?'HIGH':'MEDIUM',upcomingFixtures:item.fixtures.map(fixture=>({gameweek:fixture.gameweekFplId||0,opponent:fixture.opponent.shortName,venue:fixture.isHome?'H':'A',difficulty:fixture.difficulty||3})),stats:{minutes:Number(official.minutes||0),starts:Number(official.starts||0),totalPoints:Number(official.total_points||0),goals:Number(official.goals_scored||0),assists:Number(official.assists||0),cleanSheets:Number(official.clean_sheets||0),goalsConceded:Number(official.goals_conceded||0),saves:Number(official.saves||0),bonus:Number(official.bonus||0),bps:Number(official.bps||0),yellowCards:Number(official.yellow_cards||0),redCards:Number(official.red_cards||0),ownGoals:Number(official.own_goals||0),penaltiesMissed:Number(official.penalties_missed||0),penaltiesSaved:Number(official.penalties_saved||0),expectedGoals:Number(official.expected_goals||0),expectedAssists:Number(official.expected_assists||0),expectedGoalsConceded:Number(official.expected_goals_conceded||0)}}
   })
   return {capturedAt:catalog.freshness.official.observedAt||catalog.asOf,currentGameweek,deadline,modelVersion:'role-aware-v2.0',players,freshness:catalog.freshness,inputHash:catalog.inputHash}
+}
+
+function toCatalogRoleSignals(item) {
+  const gameweekByFixture = new Map((item.fixtures || []).map(fixture => [fixture.gameweekId, fixture.gameweekFplId]))
+  return (item.roleSignals || []).map(signal => ({
+    id: signal.id,
+    playerId: item.fplId,
+    gameweek: signal.gameweekId ? (gameweekByFixture.get(signal.gameweekId) ?? null) : null,
+    kind: signal.kind,
+    value: signal.value,
+    sourceType: signal.sourceType,
+    sourceUrl: signal.sourceUrl || null,
+    evidenceSummary: signal.evidenceSummary || '',
+    confidence: Number(signal.confidence ?? 1),
+    observedAt: signal.observedAt,
+    validUntil: signal.validUntil,
+    status: 'VERIFIED',
+  }))
+}
+
+function enrichCatalogRoles(catalogue) {
+  const futureFixtures = (catalogue.players || []).flatMap(player => player.fixtures).filter(fixture => fixture.gameweekId && fixture.kickoffAt && Date.parse(fixture.kickoffAt) >= Date.parse(catalogue.asOf)).sort((left, right) => (left.gameweekFplId || Infinity) - (right.gameweekFplId || Infinity))
+  const currentGameweek = futureFixtures[0]?.gameweekFplId || null
+  const now = new Date(catalogue.asOf)
+  const players = (catalogue.players || []).map(item => {
+    const roleProfile = resolvePlayerRole(baseRole(item), toCatalogRoleSignals(item), { now, gameweek: currentGameweek || undefined })
+    const expectedMinutes = roleProfile.startProbability * roleProfile.minutesIfStarting + (1 - roleProfile.startProbability) * roleProfile.substituteProbabilityWhenBenched * roleProfile.minutesIfSubstitute
+    return { ...item, roleProfile, expectedMinutes, dataConfidence: roleProfile.confidence }
+  })
+  return { ...catalogue, players }
 }
 
 function formatProviderAnswer(raw) {
@@ -1050,16 +1079,19 @@ function startServerOnAvailablePort(targetPort) {
         const key = catalogueCacheKey(requestKey, await projectionCatalogInputVersions(db, options.season))
         const cached = catalogueCache.get(key)
         if (cached) {
-          sendJson(res, 200, { schemaVersion: 1, season: cached.season || FPL_SEASON, currentSeason: cached.season || FPL_SEASON, ...cached, cache: { status: 'FRESH' } })
+          const enriched = enrichCatalogRoles(cached)
+          sendJson(res, 200, { schemaVersion: 1, season: cached.season || FPL_SEASON, currentSeason: cached.season || FPL_SEASON, ...enriched, cache: { status: 'FRESH' } })
           return
         }
         const catalogue = await assembleProjectionInputCatalog(db, options)
         await catalogueCache.put(key, requestKey, catalogue)
-        sendJson(res, 200, { schemaVersion: 1, season: catalogue.season || FPL_SEASON, currentSeason: catalogue.season || FPL_SEASON, ...catalogue, cache: { status: 'MISS' } })
+        const enriched = enrichCatalogRoles(catalogue)
+        sendJson(res, 200, { schemaVersion: 1, season: catalogue.season || FPL_SEASON, currentSeason: catalogue.season || FPL_SEASON, ...enriched, cache: { status: 'MISS' } })
       } catch (error) {
         const restart = await catalogueCache.getRestart(requestKey)
         if (restart) {
-          sendJson(res, 200, { schemaVersion: 1, season: restart.season || FPL_SEASON, currentSeason: restart.season || FPL_SEASON, ...restart, cache: { status: 'STALE_RESTART' } })
+          const enriched = enrichCatalogRoles(restart)
+          sendJson(res, 200, { schemaVersion: 1, season: restart.season || FPL_SEASON, currentSeason: restart.season || FPL_SEASON, ...enriched, cache: { status: 'STALE_RESTART' } })
           return
         }
         sendJson(res, 503, { schemaVersion: 1, cache: { status: 'MISS' }, error: error instanceof Error ? error.message : 'Catalogue unavailable' })
