@@ -51,8 +51,9 @@ function baseRole(player: ProjectionCatalogPlayer): PlayerRoleProfile {
   const reportedChance = nullableNumber(official.chance_of_playing)
   const defaultChance = ['i', 'u'].includes(String(official.status)) ? 0 : 100
   const chance = clamp(reportedChance ?? defaultChance, 0, 100) / 100
-  const completeGameweeks = Math.max(1, Math.ceil(minutes / 90))
-  const target = clamp((minutes / completeGameweeks) * chance, 0, 90)
+  // Use season-wide gameweeks for historical rate (prevents backups with a handful of appearances
+  // from getting inflated per-game targets like 90 mins). Signals override current role.
+  const target = clamp((minutes / 38) * chance, 0, 90)
   const isGoalkeeper = position === 'GK'
   const minutesIfStarting = isGoalkeeper ? 90 : 86
   const substituteProbabilityWhenBenched = isGoalkeeper ? .005 : .2

@@ -44,6 +44,10 @@ export type ProjectionCatalogPlayer = {
   underlying: Record<string, unknown> | null
   roleSignals: Array<Record<string, unknown>>
   provenance: InputProvenance
+  // Fields added by the /api/catalog response transformer (used by client mapper)
+  expectedMinutes?: number
+  roleProfile?: any
+  dataConfidence?: string
 }
 
 export type ProjectionInputCatalog = {

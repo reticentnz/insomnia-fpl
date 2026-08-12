@@ -2298,15 +2298,6 @@ export function optimizeInitialSquad(
   );
   const playerScore = (player: Player) =>
     scoreCache.get(player.id) ?? horizonProjection(player, horizon);
-  const gameweekScoreCache = new Map<string, number>();
-  const gameweekScore = (player: Player, gameweek: number) => {
-    const key = `${player.id}:${gameweek}`;
-    const cached = gameweekScoreCache.get(key);
-    if (cached !== undefined) return cached;
-    const score = gameweekProjection(player, gameweek);
-    gameweekScoreCache.set(key, score);
-    return score;
-  };
   const fastScoreCache = new Map<string, number>();
   const fastScore = (candidateSquad: Player[]) => {
     const key = candidateSquad
@@ -2315,11 +2306,7 @@ export function optimizeInitialSquad(
       .join(",");
     const cached = fastScoreCache.get(key);
     if (cached !== undefined) return cached;
-    const score = scoreDraftSquadAcrossGameweeks(
-      horizon,
-      candidateSquad,
-      gameweekScore,
-    ).total;
+    const score = projectedTeamScore(horizon, candidateSquad).total;
     fastScoreCache.set(key, score);
     return score;
   };
