@@ -5619,7 +5619,7 @@ function SignalsTab({
             <button className="ghost-btn" disabled={creatorSourceBusy} onClick={() => void handleToggleCreatorSource(source.id, !source.enabled)}>{source.enabled ? "Pause" : "Enable"}</button>
             <button className="ghost-btn danger" disabled={creatorSourceBusy} onClick={() => void handleRemoveCreatorSource(source.id)}>Remove</button>
           </article>)}
-          {!creatorFeeds.sources.length && <p className="creator-feed-empty">No channels followed yet. Adding one queues its latest three videos.</p>}
+          {!creatorFeeds.sources.length && <p className="creator-feed-empty">No channels followed yet. Existing uploads are ignored when a channel is added; only future videos will be queued.</p>}
         </div>
         {!!creatorFeeds.videos.length && <>
           <div className="creator-video-summary" aria-label="Creator video processing summary">

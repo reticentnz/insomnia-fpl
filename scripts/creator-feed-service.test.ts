@@ -2,7 +2,7 @@ import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
-import { addCreatorSource, getCreatorVideoDetail, listCreatorSources, normalizeYoutubeSource, parseYoutubeFeed, processCreatorQueue, retryCreatorVideo, transcriptForPrompt } from './creator-feed-service.mjs'
+import { addCreatorSource, getCreatorVideoDetail, listCreatorSources, normalizeYoutubeSource, parseYoutubeFeed, pollCreatorSources, processCreatorQueue, retryCreatorVideo, transcriptForPrompt } from './creator-feed-service.mjs'
 import { migrateDatabase } from './db-migrate.mjs'
 import { closeDb, getDb } from './db.mjs'
 
@@ -35,9 +35,14 @@ describe('native YouTube creator feeds', () => {
     const database = path.join(directory, 'feed.sqlite')
     await migrateDatabase(database)
     const db = getDb(database)
-    const xml = `<feed xmlns:yt="http://www.youtube.com/xml/schemas/2015"><title>Test Creator</title><entry><yt:videoId>videoABC123</yt:videoId><title>GW1 roles</title><published>2026-08-13T10:00:00Z</published></entry></feed>`
-    await addCreatorSource(db, { channelId: 'UC1234567890123456789012' }, async () => new Response(xml))
-    expect(await listCreatorSources(db)).toMatchObject({ sources: [{ name: 'Test Creator' }], videos: [{ id: 'videoABC123', status: 'DISCOVERED' }] })
+    const existingXml = `<feed xmlns:yt="http://www.youtube.com/xml/schemas/2015"><title>Test Creator</title><entry><yt:videoId>oldVideo123</yt:videoId><title>Old upload</title><published>2026-08-13T10:00:00Z</published></entry></feed>`
+    await addCreatorSource(db, { channelId: 'UC1234567890123456789012' }, async () => new Response(existingXml))
+    expect(await listCreatorSources(db)).toMatchObject({ sources: [{ name: 'Test Creator' }], videos: [] })
+    expect(await pollCreatorSources(db, async () => new Response(existingXml))).toMatchObject({ discovered: 0 })
+
+    const newXml = `<feed xmlns:yt="http://www.youtube.com/xml/schemas/2015"><title>Test Creator</title><entry><yt:videoId>videoABC123</yt:videoId><title>GW1 roles</title><published>2099-08-13T10:00:00Z</published></entry><entry><yt:videoId>oldVideo123</yt:videoId><title>Old upload</title><published>2026-08-13T10:00:00Z</published></entry></feed>`
+    expect(await pollCreatorSources(db, async () => new Response(newXml))).toMatchObject({ discovered: 1 })
+    expect(await listCreatorSources(db)).toMatchObject({ videos: [{ id: 'videoABC123', status: 'DISCOVERED' }] })
 
     const result = await processCreatorQueue(db, {
       transcriptFetcher: async () => ({ status: 'ok', languageCode: 'en', isGenerated: true, segments: [{ text: 'Salah will start', start: 12, duration: 2 }] }),
@@ -59,8 +64,10 @@ describe('native YouTube creator feeds', () => {
     const database = path.join(directory, 'feed.sqlite')
     await migrateDatabase(database)
     const db = getDb(database)
-    const xml = `<feed xmlns:yt="http://www.youtube.com/xml/schemas/2015"><title>Test Creator</title><entry><yt:videoId>retryABC123</yt:videoId><title>Retry me</title><published>2026-08-13T10:00:00Z</published></entry></feed>`
-    await addCreatorSource(db, { channelId: 'UC1234567890123456789012' }, async () => new Response(xml))
+    const baselineXml = `<feed xmlns:yt="http://www.youtube.com/xml/schemas/2015"><title>Test Creator</title></feed>`
+    await addCreatorSource(db, { channelId: 'UC1234567890123456789012' }, async () => new Response(baselineXml))
+    const newXml = `<feed xmlns:yt="http://www.youtube.com/xml/schemas/2015"><title>Test Creator</title><entry><yt:videoId>retryABC123</yt:videoId><title>Retry me</title><published>2099-08-13T10:00:00Z</published></entry></feed>`
+    await pollCreatorSources(db, async () => new Response(newXml))
     await db.query(`UPDATE "CreatorVideo" SET "status"='RETRY',"next_attempt_at"='2099-01-01T00:00:00Z',"last_error"='Old provider error' WHERE "id"=$1`, ['retryABC123'])
     await retryCreatorVideo(db, 'retryABC123')
     expect(await getCreatorVideoDetail(db, 'retryABC123')).toMatchObject({ status: 'DISCOVERED', error: null })

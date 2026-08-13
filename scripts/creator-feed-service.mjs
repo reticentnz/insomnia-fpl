@@ -94,13 +94,14 @@ export async function addCreatorSource(db, input, fetchImpl = fetch) {
   const id = `youtube:${normalized.channelId}`
   await db.query(`INSERT INTO "CreatorSource" ("id","channel_id","name","feed_url","enabled","created_at","updated_at") VALUES ($1,$2,$3,$4,1,$5,$5)
     ON CONFLICT ("channel_id") DO UPDATE SET "name"=excluded."name","feed_url"=excluded."feed_url","enabled"=1,"updated_at"=excluded."updated_at"`, [id, normalized.channelId, String(input.name || feed.sourceName).trim().slice(0, 160), normalized.feedUrl, now])
-  await discoverCreatorVideos(db, id, feed, { initialLimit: 3 })
   return id
 }
 
-async function discoverCreatorVideos(db, sourceId, feed, { initialLimit = 15 } = {}) {
-  const existing = await db.query(`SELECT COUNT(*) AS count FROM "CreatorVideo" WHERE "source_id"=$1`, [sourceId])
-  const entries = feed.entries.slice(0, Number(existing.rows[0]?.count) ? 15 : initialLimit)
+async function discoverCreatorVideos(db, sourceId, feed, { publishedAfter } = {}) {
+  const baseline = Date.parse(publishedAfter || '')
+  const entries = feed.entries
+    .filter(entry => Number.isFinite(baseline) && Number.isFinite(Date.parse(entry.publishedAt || '')) && Date.parse(entry.publishedAt) > baseline)
+    .slice(0, 15)
   const now = new Date().toISOString()
   for (const entry of entries) {
     await db.query(`INSERT INTO "CreatorVideo" ("id","source_id","title","url","published_at","status","created_at","updated_at") VALUES ($1,$2,$3,$4,$5,'DISCOVERED',$6,$6)
@@ -118,7 +119,7 @@ export async function pollCreatorSources(db, fetchImpl = fetch) {
       const response = await fetchImpl(source.feed_url, { headers: { 'user-agent': 'insomnia-fpl/0.1' }, signal: AbortSignal.timeout(15_000) })
       if (!response.ok) throw new Error(`HTTP ${response.status}`)
       const feed = parseYoutubeFeed(await response.text())
-      discovered += await discoverCreatorVideos(db, source.id, feed)
+      discovered += await discoverCreatorVideos(db, source.id, feed, { publishedAfter: source.created_at })
       await db.query(`UPDATE "CreatorSource" SET "name"=$2,"last_polled_at"=$3,"last_error"=NULL,"updated_at"=$3 WHERE "id"=$1`, [source.id, feed.sourceName || source.name, now])
     } catch (error) {
       await db.query(`UPDATE "CreatorSource" SET "last_polled_at"=$2,"last_error"=$3,"updated_at"=$2 WHERE "id"=$1`, [source.id, now, String(error?.message || error).slice(0, 500)])
