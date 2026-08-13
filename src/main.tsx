@@ -3,7 +3,6 @@ import { createRoot } from "react-dom/client";
 import {
   bestXI,
   benchOrder,
-  buildDraftImprovementPlan,
   buildLegalDefaultSquad,
   buildLegalRemainingSquad,
   computeDraftFingerprint,
@@ -19,7 +18,6 @@ import {
   isLegalTransfer,
   isPlayerInjured,
   isPlayerFlagged,
-  optimizeInitialSquad,
   players as demoPlayers,
   priceMovementAlert,
   netTransfers,
@@ -104,6 +102,10 @@ import {
   runAdminOperation,
   type AdminStatus,
 } from "./integrations";
+import {
+  buildDraftImprovementPlanAsync,
+  optimizeInitialSquadAsync,
+} from "./optimizer-worker-client";
 import { type PlayerSignal, sanitizeExternalUrl } from "./player-signals";
 import { createToolContext } from "./intelligence";
 import { reviewDecision, type DecisionReview } from "./decision-review";
@@ -444,6 +446,7 @@ function App() {
   const [pendingTransfer, setPendingTransfer] = useState<Transfer | null>(null);
   const [comparison, setComparison] = useState<Transfer | null>(null);
   const [syncingAccount, setSyncingAccount] = useState(false);
+  const [repairingLiveSquad, setRepairingLiveSquad] = useState(false);
   const [userName, setUserName] = useState("Alex");
   const [hadSavedSquad, setHadSavedSquad] = useState(false);
   const [selectedIds, setSelectedIds] = useState<number[]>([]);
@@ -614,17 +617,43 @@ function App() {
           ),
     [draftMode, horizon, squad, catalog, manager],
   );
-  const draftPlan = useMemo(
-    () =>
-      draftMode && squad.length === 15
-        ? buildDraftImprovementPlan(squad, catalog, {
-            lockedPlayerIds: lockedIds,
-            horizon: horizon as 1 | 3 | 5,
-            budget: INITIAL_SQUAD_BUDGET,
-          })
-        : null,
-    [draftMode, squad, catalog, lockedIds, horizon],
-  );
+  const [draftPlan, setDraftPlan] = useState<DraftImprovementPlan | null>(null);
+  const [draftPlanLoading, setDraftPlanLoading] = useState(false);
+  useEffect(() => {
+    if (!draftMode || squad.length !== 15) {
+      setDraftPlan(null);
+      setDraftPlanLoading(false);
+      return;
+    }
+    let active = true;
+    setDraftPlan(null);
+    setDraftPlanLoading(true);
+    buildDraftImprovementPlanAsync(squad, catalog, {
+      lockedPlayerIds: lockedIds,
+      horizon: horizon as 1 | 3 | 5,
+      budget: INITIAL_SQUAD_BUDGET,
+    })
+      .then((plan) => {
+        if (active) setDraftPlan(plan);
+      })
+      .catch((error) => {
+        if (active) {
+          setDraftPlan(null);
+          setToast({
+            message:
+              error instanceof Error
+                ? error.message
+                : "Squad optimisation failed",
+          });
+        }
+      })
+      .finally(() => {
+        if (active) setDraftPlanLoading(false);
+      });
+    return () => {
+      active = false;
+    };
+  }, [draftMode, squad, catalog, lockedIds, horizon]);
   const legalBundles = useMemo(
     () =>
       draftMode && draftPlan
@@ -722,12 +751,30 @@ function App() {
         } else {
           setCatalogMode("live");
           if (!hadSavedSquad) {
-            const legalPicks = incomingDraftMode
-              ? optimizeInitialSquad(data.players, {
+            let legalPicks: Player[];
+            if (incomingDraftMode) {
+              try {
+                legalPicks = await optimizeInitialSquadAsync(data.players, {
                   horizon: 5,
                   budget: INITIAL_SQUAD_BUDGET,
-                })
-              : buildLegalDefaultSquad(data.players, 100 + manager.bank);
+                });
+              } catch (error) {
+                if (!active) return;
+                setToast({
+                  message:
+                    error instanceof Error
+                      ? error.message
+                      : "Squad optimisation failed",
+                });
+                return;
+              }
+            } else {
+              legalPicks = buildLegalDefaultSquad(
+                data.players,
+                100 + manager.bank,
+              );
+            }
+            if (!active) return;
             setSelectedIds(legalPicks.map((p) => p.id));
             setCatalogMode("demo-live");
           }
@@ -888,8 +935,43 @@ function App() {
       }
     }).catch(() => {});
   }, []);
+
+  const askContextSignature = useMemo(
+    () =>
+      submittedQuestion
+        ? JSON.stringify({
+            q: submittedQuestion,
+            h: horizon,
+            gw: currentGameweek || 1,
+            bank: effectiveBank,
+            ft: draftMode ? 5 : manager.freeTransfers,
+            squad: squad
+              .map((p): [number, number, number | null] => [p.id, +p.price.toFixed(1), p.sellingPrice ?? null])
+              .sort((a, b) => a[0] - b[0]),
+            players: catalog
+              .map((p) =>
+                [
+                  p.id,
+                  +p.price.toFixed(1),
+                  +horizonProjection(p, horizon).toFixed(1),
+                  p.fixture || "",
+                  (p.upcomingFixtures || [])
+                    .slice(0, horizon)
+                    .map((f) => `${f.opponent} (${f.venue})`)
+                    .join(","),
+                ].join("|"),
+              )
+              .sort()
+              .join(";"),
+          })
+        : "",
+    [submittedQuestion, horizon, currentGameweek, effectiveBank, draftMode, manager, squad, catalog],
+  );
+  const lastAskSignatureRef = useRef("");
+
   useEffect(() => {
     if (!submittedQuestion) {
+      lastAskSignatureRef.current = "";
       setReview(null);
       setLlmAnswer(null);
       setLlmProvider("Deterministic Engine");
@@ -897,6 +979,8 @@ function App() {
       setLlmLoading(false);
       return;
     }
+    if (askContextSignature === lastAskSignatureRef.current) return;
+    lastAskSignatureRef.current = askContextSignature;
     let active = true;
     setLlmLoading(true);
     setLlmError(null);
@@ -949,18 +1033,7 @@ function App() {
     return () => {
       active = false;
     };
-  }, [
-    submittedQuestion,
-    horizon,
-    squad,
-    catalog,
-    apiKey,
-    aiProvider,
-    analysisNonce,
-    currentGameweek,
-    deadlineTime,
-    manager,
-  ]);
+  }, [askContextSignature, apiKey, aiProvider, analysisNonce]);
   const answer = review
     ? `${review.arbiter.decision}: ${review.arbiter.mainArgument} ${review.arbiter.strongestCounterargument} Confidence: ${review.arbiter.confidence}.`
     : "";
@@ -1272,21 +1345,31 @@ function App() {
     setTab("Players");
     setExplanationTransfer(null);
   };
-  const repairLiveSquad = () => {
-    if (!livePlayers) return;
-    const legal = draftMode
-      ? optimizeInitialSquad(livePlayers, {
-          lockedPlayerIds: lockedIds,
-          horizon: horizon as 1 | 3 | 5,
-          budget: INITIAL_SQUAD_BUDGET,
-        })
-      : buildLegalDefaultSquad(livePlayers, 100 + manager.bank);
-    saveSquad(legal.map((p) => p.id));
-    setCatalogMode("live");
-    setToast({
-      message:
-        "A new live-data starter squad is ready. Review it before using any recommendation.",
-    });
+  const repairLiveSquad = async () => {
+    if (!livePlayers || repairingLiveSquad) return;
+    setRepairingLiveSquad(true);
+    try {
+      const legal = draftMode
+        ? await optimizeInitialSquadAsync(livePlayers, {
+            lockedPlayerIds: lockedIds,
+            horizon: horizon as 1 | 3 | 5,
+            budget: INITIAL_SQUAD_BUDGET,
+          })
+        : buildLegalDefaultSquad(livePlayers, 100 + manager.bank);
+      saveSquad(legal.map((p) => p.id));
+      setCatalogMode("live");
+      setToast({
+        message:
+          "A new live-data starter squad is ready. Review it before using any recommendation.",
+      });
+    } catch (error) {
+      setToast({
+        message:
+          error instanceof Error ? error.message : "Squad optimisation failed",
+      });
+    } finally {
+      setRepairingLiveSquad(false);
+    }
   };
   // Stage a signal review locally — no network call, no model recalculation
   const reviewSquadSignal = (
@@ -1741,7 +1824,13 @@ function App() {
               It has not been replaced. Continue with the saved demo snapshot or
               start a reviewed live squad.
             </span>
-            <button onClick={repairLiveSquad}>Create live starter squad</button>
+            <button
+              onClick={() => void repairLiveSquad()}
+              disabled={repairingLiveSquad}
+              aria-busy={repairingLiveSquad}
+            >
+              {repairingLiveSquad ? "Repairing squad…" : "Create live starter squad"}
+            </button>
           </div>
         )}
 
@@ -1871,7 +1960,7 @@ function App() {
               setTargetSwapPlayer(p);
               setTab("Transfers");
             }}
-            forecastLoading={!forecastSummary || forecastSummary.horizon !== horizon}
+            forecastLoading={draftPlanLoading || !forecastSummary || forecastSummary.horizon !== horizon}
             leagueCoverage={canonicalRecommendation?.league?.coverageByFplId}
             leagueName={canonicalRecommendation?.league?.leagueName}
           />
@@ -2907,6 +2996,8 @@ function SquadEditor({
     "pts" | "price-desc" | "price-asc" | "name"
   >("pts");
   const [pendingIncoming, setPendingIncoming] = useState<Player | null>(null);
+  const [optimizing, setOptimizing] = useState(false);
+  const [optimizerError, setOptimizerError] = useState<string | null>(null);
 
   const currentSquad = useMemo(
     () =>
@@ -3022,38 +3113,65 @@ function SquadEditor({
         ? current.filter((item) => item !== id)
         : [...current, id],
     );
-  const autoFillBest = () =>
-    setIds(
-      (draftMode
-        ? optimizeInitialSquad(catalog, {
-            lockedPlayerIds: editorLockedIds,
-            excludedPlayerIds: excludedIds,
-            horizon: horizon as 1 | 3 | 5,
-            budget: INITIAL_SQUAD_BUDGET,
-          })
-        : buildLegalDefaultSquad(catalog, 100 + bank, excludedIds)
-      ).map((p) => p.id),
-    );
-  const autoFillRemaining = () => {
+  const autoFillBest = async () => {
+    setOptimizerError(null);
+    if (!draftMode) {
+      setIds(
+        buildLegalDefaultSquad(catalog, 100 + bank, excludedIds).map(
+          (player) => player.id,
+        ),
+      );
+      return;
+    }
+    setOptimizing(true);
+    try {
+      const optimized = await optimizeInitialSquadAsync(catalog, {
+        lockedPlayerIds: editorLockedIds,
+        excludedPlayerIds: excludedIds,
+        horizon: horizon as 1 | 3 | 5,
+        budget: INITIAL_SQUAD_BUDGET,
+      });
+      setIds(optimized.map((player) => player.id));
+    } catch (error) {
+      setOptimizerError(
+        error instanceof Error ? error.message : "Squad optimisation failed",
+      );
+    } finally {
+      setOptimizing(false);
+    }
+  };
+  const autoFillRemaining = async () => {
     const preserve = [...new Set([...editorLockedIds, ...ids])];
     setEditorLockedIds(preserve);
-    setIds(
-      (draftMode
-        ? optimizeInitialSquad(catalog, {
-            lockedPlayerIds: preserve,
-            excludedPlayerIds: excludedIds,
-            horizon: horizon as 1 | 3 | 5,
-            budget: INITIAL_SQUAD_BUDGET,
-          })
-        : buildLegalRemainingSquad(
-            ids,
-            catalog,
-            horizon,
-            100 + bank,
-            excludedIds,
-          )
-      ).map((p) => p.id),
-    );
+    setOptimizerError(null);
+    if (!draftMode) {
+      setIds(
+        buildLegalRemainingSquad(
+          ids,
+          catalog,
+          horizon,
+          100 + bank,
+          excludedIds,
+        ).map((player) => player.id),
+      );
+      return;
+    }
+    setOptimizing(true);
+    try {
+      const optimized = await optimizeInitialSquadAsync(catalog, {
+        lockedPlayerIds: preserve,
+        excludedPlayerIds: excludedIds,
+        horizon: horizon as 1 | 3 | 5,
+        budget: INITIAL_SQUAD_BUDGET,
+      });
+      setIds(optimized.map((player) => player.id));
+    } catch (error) {
+      setOptimizerError(
+        error instanceof Error ? error.message : "Squad optimisation failed",
+      );
+    } finally {
+      setOptimizing(false);
+    }
   };
 
   const formationString = useMemo(() => {
@@ -3146,10 +3264,12 @@ function SquadEditor({
             </button>
             <button
               className="preset-btn"
-              onClick={autoFillBest}
-              disabled={forecastLoading}
+              onClick={() => void autoFillBest()}
+              disabled={forecastLoading || optimizing}
             >
-              {forecastLoading
+              {optimizing
+                ? "Optimising in background..."
+                : forecastLoading
                 ? "Loading projections..."
                 : draftMode
                   ? "Optimise squad around locks"
@@ -3158,14 +3278,17 @@ function SquadEditor({
             {ids.length > 0 && ids.length < 15 && (
               <button
                 className="fill-btn"
-                onClick={autoFillRemaining}
-                disabled={forecastLoading}
+                onClick={() => void autoFillRemaining()}
+                disabled={forecastLoading || optimizing}
               >
-                {forecastLoading
+                {optimizing
+                  ? "Optimising..."
+                  : forecastLoading
                   ? "Loading..."
                   : `Auto-fill remaining (${15 - ids.length})`}
               </button>
             )}
+            {optimizerError && <small className="negative">{optimizerError}</small>}
           </div>
         </div>
 
@@ -7510,7 +7633,9 @@ function ResolvedPlayerActions({
 
   const squadIds = useMemo(() => new Set(squad.map((p) => p.id)), [squad]);
 
-  const recTransfer = useMemo(() => {
+  const recTransfer = useMemo<
+    Pick<Transfer, "out" | "in" | "net" | "selectionAwareGain"> | null
+  >(() => {
     const match = text.match(/(?:BUY|TRANSFER|SWAP):\s*([A-Za-z\s'-]+)\s*(?:->|to|for)\s*([A-Za-z\s'-]+)/i) ||
                   text.match(/([A-Za-z\s'-]+)\s*->\s*([A-Za-z\s'-]+)/i);
     if (match) {

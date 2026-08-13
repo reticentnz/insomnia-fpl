@@ -739,6 +739,68 @@ function enrichCatalogRoles(catalogue) {
   return { ...catalogue, players }
 }
 
+function compactClientCatalog(catalogue, fixtureHorizon = 5) {
+  const horizon = Math.max(1, Math.min(5, Number(fixtureHorizon) || 5))
+  const asOfMs = Date.parse(catalogue.asOf)
+  const futureFixtures = (catalogue.players || [])
+    .flatMap(player => player.fixtures || [])
+    .filter(fixture => fixture.gameweekId && fixture.kickoffAt && Date.parse(fixture.kickoffAt) >= asOfMs)
+    .sort((left, right) => (left.gameweekFplId || Infinity) - (right.gameweekFplId || Infinity))
+  const currentGameweek = futureFixtures[0]?.gameweekFplId || null
+  const players = (catalogue.players || []).map(item => {
+    const official = item.official || {}
+    const fixtures = (item.fixtures || [])
+      .filter(fixture => fixture.kickoffAt && Date.parse(fixture.kickoffAt) >= asOfMs)
+      .sort((left, right) => (left.gameweekFplId || Infinity) - (right.gameweekFplId || Infinity))
+      .slice(0, horizon)
+      .map(fixture => ({
+        gameweek: fixture.gameweekFplId || 0,
+        opponent: fixture.opponent.shortName,
+        venue: fixture.isHome ? 'H' : 'A',
+        difficulty: fixture.difficulty || 5,
+      }))
+    const first = fixtures[0]
+    return {
+      id: item.fplId,
+      name: item.name,
+      club: item.team.shortName,
+      position: String(official.position || 'MID'),
+      price: Number(official.price_tenths || 0) / 10,
+      form: Number(official.form || 0),
+      ownership: Number(official.ownership_percent || 0),
+      minutes: Number(official.chance_of_playing ?? 100),
+      expectedMinutes: item.expectedMinutes,
+      roleProfile: item.roleProfile,
+      dataConfidence: item.dataConfidence,
+      fixture: first ? `${first.opponent} (${first.venue})` : 'BLANK',
+      difficulty: first?.difficulty || 5,
+      projection: Number(official.ep_next || 0),
+      status: String(official.status || 'a'),
+      chanceOfPlaying: official.chance_of_playing == null ? undefined : Number(official.chance_of_playing),
+      news: official.news == null ? undefined : String(official.news),
+      transfersIn: Number(official.transfers_in || 0),
+      transfersOut: Number(official.transfers_out || 0),
+      active: Boolean(official.active),
+      stats: {
+        minutes: Number(official.minutes || 0),
+        starts: Number(official.starts || 0),
+        expectedGoals: Number(official.expected_goals || 0),
+        expectedAssists: Number(official.expected_assists || 0),
+      },
+      upcomingFixtures: fixtures,
+    }
+  })
+  return {
+    schemaVersion: 1,
+    season: catalogue.season || FPL_SEASON,
+    currentSeason: catalogue.season || FPL_SEASON,
+    capturedAt: catalogue.freshness?.official?.observedAt || catalogue.asOf,
+    currentGameweek,
+    deadline: null,
+    players,
+  }
+}
+
 function formatProviderAnswer(raw) {
   const cleaned = String(raw || '').trim().replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/, '')
   let parsed = null
@@ -1366,28 +1428,33 @@ function startServerOnAvailablePort(targetPort) {
       }
     }
 
-    if (request === '/api/catalog' && req.method === 'GET') {
+    if ((request === '/api/catalog' || request === '/api/client-catalog') && req.method === 'GET') {
       const params = new URL(req.url || '/', `http://${host}`).searchParams
       const options = { asOf: params.get('asOf') || undefined, season: params.get('season') || undefined }
       const requestKey = catalogueRequestKey(options)
+      const clientResponse = request === '/api/client-catalog'
+      const fixtureHorizon = params.get('fixtureHorizon') || 5
+      const responsePayload = (catalogue, cacheStatus) => {
+        const enriched = enrichCatalogRoles(catalogue)
+        return clientResponse
+          ? { ...compactClientCatalog(enriched, fixtureHorizon), cache: { status: cacheStatus } }
+          : { schemaVersion: 1, season: catalogue.season || FPL_SEASON, currentSeason: catalogue.season || FPL_SEASON, ...enriched, cache: { status: cacheStatus } }
+      }
       try {
         const db = await getDb()
         const key = catalogueCacheKey(requestKey, await projectionCatalogInputVersions(db, options.season))
         const cached = catalogueCache.get(key)
         if (cached) {
-          const enriched = enrichCatalogRoles(cached)
-          sendJson(res, 200, { schemaVersion: 1, season: cached.season || FPL_SEASON, currentSeason: cached.season || FPL_SEASON, ...enriched, cache: { status: 'FRESH' } })
+          sendJson(res, 200, responsePayload(cached, 'FRESH'))
           return
         }
         const catalogue = await assembleProjectionInputCatalog(db, options)
         await catalogueCache.put(key, requestKey, catalogue)
-        const enriched = enrichCatalogRoles(catalogue)
-        sendJson(res, 200, { schemaVersion: 1, season: catalogue.season || FPL_SEASON, currentSeason: catalogue.season || FPL_SEASON, ...enriched, cache: { status: 'MISS' } })
+        sendJson(res, 200, responsePayload(catalogue, 'MISS'))
       } catch (error) {
         const restart = await catalogueCache.getRestart(requestKey)
         if (restart) {
-          const enriched = enrichCatalogRoles(restart)
-          sendJson(res, 200, { schemaVersion: 1, season: restart.season || FPL_SEASON, currentSeason: restart.season || FPL_SEASON, ...enriched, cache: { status: 'STALE_RESTART' } })
+          sendJson(res, 200, responsePayload(restart, 'STALE_RESTART'))
           return
         }
         sendJson(res, 503, { schemaVersion: 1, cache: { status: 'MISS' }, error: error instanceof Error ? error.message : 'Catalogue unavailable' })

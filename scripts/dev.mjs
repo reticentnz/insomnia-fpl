@@ -25,10 +25,12 @@ function getLatestMtime(dir) {
 }
 
 const outFile = path.join(process.cwd(), 'dist', 'assets', 'app.js')
+const workerOutFile = path.join(process.cwd(), 'dist', 'assets', 'optimizer-worker.js')
 const srcMtime = getLatestMtime(path.join(process.cwd(), 'src'))
 const outMtime = fs.existsSync(outFile) ? fs.statSync(outFile).mtimeMs : 0
+const workerOutMtime = fs.existsSync(workerOutFile) ? fs.statSync(workerOutFile).mtimeMs : 0
 
-if (!fs.existsSync(outFile) || srcMtime > outMtime) {
+if (!fs.existsSync(outFile) || !fs.existsSync(workerOutFile) || srcMtime > Math.min(outMtime, workerOutMtime)) {
   console.log('⚡ Building app with esbuild...')
   console.time('⚡ Build complete')
 
@@ -45,6 +47,15 @@ if (!fs.existsSync(outFile) || srcMtime > outMtime) {
     '--jsx=automatic',
     '--loader:.css=empty',
     '--loader:.tsx=tsx',
+    '--sourcemap',
+    '--log-level=warning'
+  ], { stdio: ['ignore', 'ignore', 'inherit'] })
+
+  execFileSync(esbuildBin, [
+    'src/optimizer-worker.ts',
+    '--bundle',
+    '--outfile=dist/assets/optimizer-worker.js',
+    '--format=esm',
     '--sourcemap',
     '--log-level=warning'
   ], { stdio: ['ignore', 'ignore', 'inherit'] })

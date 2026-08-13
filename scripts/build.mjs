@@ -18,6 +18,14 @@ execFileSync(esbuildBin, [
   '--minify'
 ], { stdio: 'inherit' })
 
+execFileSync(esbuildBin, [
+  'src/optimizer-worker.ts',
+  '--bundle',
+  '--outfile=dist/assets/optimizer-worker.js',
+  '--format=esm',
+  '--minify'
+], { stdio: 'inherit' })
+
 fs.copyFileSync('src/styles.css', 'dist/assets/app.css')
 fs.copyFileSync('src/favicon.svg', 'dist/favicon.svg')
 fs.copyFileSync('index.html', 'dist/index.html')

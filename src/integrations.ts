@@ -584,35 +584,13 @@ export async function fetchProjectionCatalog(asOf?: string): Promise<ProjectionI
   return await response.json() as ProjectionInputCatalog
 }
 
-function playerFromProjectionCatalog(item: ProjectionInputCatalog['players'][number]): Player {
-  const official = item.official as Record<string, unknown>
-  const fixture = item.fixtures[0]
-  const position = String(official.position || 'MID') as Player['position']
-  return {
-    id: item.fplId,
-    name: item.name,
-    club: item.team.shortName,
-    position,
-    price: Number(official.price_tenths || 0) / 10,
-    form: Number(official.form || 0),
-    ownership: Number(official.ownership_percent || 0),
-    minutes: Number(official.chance_of_playing ?? 100),
-    expectedMinutes: item.expectedMinutes ?? Math.min(90, 90 * (Number(official.chance_of_playing ?? 100) / 100) * (0.55 + 0.45 * Math.min(1, Number(official.minutes || 0) / 2850))),
-    roleProfile: item.roleProfile,
-    dataConfidence: (item.dataConfidence as any) ?? (item.roleProfile as any)?.confidence ?? 'MEDIUM',
-    fixture: fixture ? `${fixture.opponent.shortName} (${fixture.difficulty || '-'})` : 'BLANK',
-    difficulty: fixture?.difficulty || 5,
-    projection: Number(official.ep_next || 0),
-    colour: getTeamColor(item.team.shortName),
-    status: String(official.status || 'a'),
-    chanceOfPlaying: official.chance_of_playing == null ? undefined : Number(official.chance_of_playing),
-    news: official.news == null ? undefined : String(official.news),
-    transfersIn: Number(official.transfers_in || 0),
-    transfersOut: Number(official.transfers_out || 0),
-    active: Boolean(official.active),
-    stats: { minutes: Number(official.minutes || 0), starts: Number(official.starts || 0), expectedGoals: Number(official.expected_goals || 0), expectedAssists: Number(official.expected_assists || 0) },
-    upcomingFixtures: item.fixtures.map(value => ({ gameweek: value.gameweekFplId || 0, opponent: value.opponent.shortName, venue: value.isHome ? 'H' : 'A', difficulty: value.difficulty || 5 })),
-  }
+type ClientCatalogResponse = {
+  capturedAt: string
+  currentGameweek: number | null
+  deadline: string | null
+  season?: string
+  currentSeason?: string
+  players: Array<Omit<Player, 'colour'> & { colour?: string }>
 }
 
 export async function fetchLiveCatalog(retries = 3): Promise<{capturedAt:string;currentGameweek:number|null;deadline:string|null;season:string|null;players:Player[]}> {
@@ -621,12 +599,16 @@ export async function fetchLiveCatalog(retries = 3): Promise<{capturedAt:string;
     const controller = new AbortController()
     const timeoutId = window.setTimeout(() => controller.abort(), 12000)
     try {
-      const response = await fetch('/api/catalog', { signal: controller.signal })
+      const response = await fetch('/api/client-catalog?fixtureHorizon=5', { signal: controller.signal })
       if (response.ok) {
-        const catalogue = await response.json() as ProjectionInputCatalog & { season?: string; currentSeason?: string }
-        const gameweeks = catalogue.players.flatMap(player => player.fixtures.map(fixture => ({ gameweek: fixture.gameweekFplId, kickoffAt: fixture.kickoffAt }))).filter(item => item.gameweek != null)
-        const next = gameweeks.sort((a, b) => Number(a.gameweek) - Number(b.gameweek))[0]
-        return { capturedAt: catalogue.freshness.official.observedAt || catalogue.asOf, currentGameweek: next?.gameweek || null, deadline: null, season: catalogue.season || catalogue.currentSeason || null, players: catalogue.players.map(playerFromProjectionCatalog) }
+        const catalogue = await response.json() as ClientCatalogResponse
+        const players = catalogue.players.map(player => ({
+          ...player,
+          colour: player.colour || getTeamColor(player.club),
+          expectedMinutes: player.expectedMinutes ?? Math.min(90, 90 * (player.minutes / 100)),
+          dataConfidence: player.dataConfidence ?? player.roleProfile?.confidence ?? 'MEDIUM',
+        }))
+        return { capturedAt: catalogue.capturedAt, currentGameweek: catalogue.currentGameweek, deadline: catalogue.deadline, season: catalogue.season || catalogue.currentSeason || null, players }
       }
       lastError = new Error(`Live FPL data unavailable: ${response.status}`)
     } catch (err) {
