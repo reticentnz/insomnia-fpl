@@ -487,14 +487,27 @@ function AdminView({ system, forecast, horizon }: { system: SystemStatus | null;
     <section className="admin-actions-grid">
       {adminActionDetails.map(action => {
         const operation = status?.operations.find(candidate => candidate.id === action.id);
+        const scheduleId = ({
+          "fpl-sync": "official",
+          "signals-sync": "underlying",
+          "odds-sync": "market",
+          "team-refresh": "manager",
+          "creator-sync": "creator",
+        } as Record<string, string>)[action.id];
+        const schedule = scheduleId ? status?.scheduledRefreshes?.[scheduleId] : null;
         const busy = operation?.status === "RUNNING" || starting === action.id;
+        const lastRefresh = operation?.finishedAt || schedule?.lastRefreshedAt;
+        const nextRefresh = !scheduleId ? "Manual only" : !schedule?.enabled ? "Disabled" : !schedule.available ? "Unavailable" : formatOperationalTime(schedule.nextRefreshAt);
         return <article className="admin-action-card" key={action.id}>
           <div className="admin-action-icon">{action.icon}</div>
           <div className="admin-action-copy"><h3>{action.title}</h3><p>{action.description}</p></div>
           <div className={`admin-operation-state state-${(operation?.status || "IDLE").toLowerCase()}`}>
             <span>{busy ? "Running" : operation?.status === "SUCCEEDED" ? "Completed" : operation?.status === "FAILED" ? "Failed" : "Ready"}</span>
             {(operation?.message || operation?.error) && <small>{operation.error || operation.message}</small>}
-            {operation?.finishedAt && <time>{formatOperationalTime(operation.finishedAt)}</time>}
+          </div>
+          <div className="admin-refresh-times">
+            <span><small>Last refresh</small><b>{formatOperationalTime(lastRefresh)}</b></span>
+            <span><small>Next scheduled</small><b>{nextRefresh}</b></span>
           </div>
           <button className="dark-btn" disabled={running || Boolean(starting) || (status?.authenticationRequired && !token)} onClick={() => void run(action.id)}>
             {busy ? "Running…" : `Run ${action.title}`}

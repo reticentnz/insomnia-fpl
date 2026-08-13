@@ -1096,6 +1096,7 @@ export async function triggerForecastRecompute(): Promise<ForecastRecomputeResul
 
 export type AdminOperation = { id: string; status: 'IDLE' | 'RUNNING' | 'SUCCEEDED' | 'FAILED'; startedAt: string | null; finishedAt: string | null; message: string | null; error: string | null };
 export type AdminFeedRun = { id: string; source: string; status: string; startedAt: string; finishedAt: string | null; insertedCount: number; updatedCount: number; unmatchedCount: number; usedCache: boolean; error: string | null };
+export type ScheduledRefresh = { enabled: boolean; available: boolean; intervalHours: number; lastRefreshedAt: string | null; nextRefreshAt: string | null };
 export type AdminStatus = {
   authenticationRequired: boolean;
   operations: AdminOperation[];
@@ -1103,6 +1104,7 @@ export type AdminStatus = {
   unresolved: { players: number; fixtures: number };
   manager: { teamId: number; teamName: string; lastSynced: string | null; playerCount: number } | null;
   oddsConfigured: boolean;
+  scheduledRefreshes: Record<string, ScheduledRefresh>;
   season: string;
 };
 
