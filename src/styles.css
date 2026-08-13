@@ -1077,6 +1077,26 @@ h2 {
   font-weight: 700;
 }
 
+.momentum-badge {
+  display: inline-block;
+  margin-top: 3px;
+  font-size: 10px;
+  font-weight: 700;
+  padding: 1px 6px;
+  border-radius: var(--radius-full);
+  line-height: 1.4;
+}
+
+.momentum-badge.buy {
+  background: rgba(0, 255, 135, 0.14);
+  color: var(--accent-emerald);
+}
+
+.momentum-badge.sell {
+  background: rgba(239, 68, 68, 0.15);
+  color: #f87171;
+}
+
 .arrow-muted {
   color: var(--accent-emerald);
 }
@@ -1781,39 +1801,36 @@ h2 {
   gap: 8px;
 }
 
-.recompute-banner {
+.recompute-toast {
+  position: fixed;
+  right: 24px;
+  bottom: 72px;
+  z-index: 101;
   display: flex;
-  align-items: flex-start;
+  align-items: center;
   gap: 10px;
-  margin: 12px 24px 0;
-  padding: 10px 14px;
+  padding: 10px 16px;
   border-radius: 10px;
   font-size: 13px;
-  border: 1px solid rgba(245, 158, 11, 0.35);
-  background: rgba(245, 158, 11, 0.12);
+  font-weight: 600;
   color: #fcd34d;
+  border: 1px solid rgba(245, 158, 11, 0.4);
+  background: rgba(24, 24, 38, 0.95);
+  box-shadow: 0 12px 30px rgba(0, 0, 0, 0.35);
+  animation: fadeIn 0.2s ease;
+  max-width: min(360px, calc(100vw - 40px));
 }
-.recompute-banner.ready {
-  border-color: rgba(16, 185, 129, 0.4);
-  background: rgba(16, 185, 129, 0.12);
-  color: #6ee7b7;
-}
-.recompute-banner span b { display: block; font-size: 13px; }
-.recompute-banner span small { display: block; margin-top: 2px; font-weight: 400; opacity: 0.85; }
-.recompute-dot {
+.recompute-toast-spinner {
   flex-shrink: 0;
-  width: 8px;
-  height: 8px;
-  margin-top: 3px;
+  width: 14px;
+  height: 14px;
   border-radius: 50%;
-  background: #f59e0b;
+  border: 2px solid rgba(245, 158, 11, 0.25);
+  border-top-color: #f59e0b;
+  animation: recomputeSpin 0.8s linear infinite;
 }
-.recompute-dot.pulse { animation: recomputePulse 1.2s ease-in-out infinite; }
-@keyframes recomputePulse {
-  0%, 100% { opacity: 0.3; transform: scale(0.8); }
-  50% { opacity: 1; transform: scale(1.2); }
-}
-.recompute-check {
+@keyframes recomputeSpin { to { transform: rotate(360deg); } }
+.recompute-toast-check {
   flex-shrink: 0;
   width: 18px;
   height: 18px;

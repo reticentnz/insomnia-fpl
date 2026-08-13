@@ -149,6 +149,23 @@ const primaryIcons = {
   Ask: Bot,
   Admin: Settings,
 };
+
+// ── Transfer momentum (informational only; never re-ranks suggestions) ──────
+type TransferMomentum =
+  | { tone: "buy"; label: string; detail: string }
+  | { tone: "sell"; label: string; detail: string }
+  | null;
+
+function momentumBadge(player: Player): TransferMomentum {
+  const inK = (player.transfersIn || 0) / 1000;
+  const outK = (player.transfersOut || 0) / 1000;
+  const net = inK - outK;
+  const owned = player.ownership ?? 0;
+  if (Math.abs(net) < 5) return { tone: "buy", label: `${owned.toFixed(0)}%`, detail: "low transfer activity" };
+  if (net > 0)
+    return { tone: "buy", label: `${owned.toFixed(0)}% · ${inK.toFixed(0)}k in`, detail: "rising · act before price-lock" };
+  return { tone: "sell", label: `${owned.toFixed(0)}% · ${outK.toFixed(0)}k out`, detail: "falling · sell before drop" };
+}
 type ManagerSettings = { bank: number; freeTransfers: number };
 type ToastState = { message: string; undo?: boolean } | null;
 let activeManagerSettings: ManagerSettings = { bank: 1.2, freeTransfers: 1 };
@@ -489,7 +506,7 @@ function App() {
     return () => { active = false; window.clearInterval(timer); };
   }, [livePlayers, horizon, recomputeBusy]);
   // Resolve the signal-triggered recompute once a new forecast run lands
-  // (or the rebuild fails or times out so the banner can't hang).
+  // (or the rebuild fails or times out so the indicator can't hang).
   useEffect(() => {
     if (!recomputeRequest) return;
     const recalculating = systemStatus?.isRecalculating === true;
@@ -497,8 +514,7 @@ function App() {
     if (newRun && !recalculating) {
       setRecomputeReadyAt(Date.now());
       setRecomputeRequest(null);
-      const timer = window.setTimeout(() => setRecomputeReadyAt(null), 8000);
-      return () => window.clearTimeout(timer);
+      return;
     }
     if (recalculating) setRecomputeReadyAt(null);
     if (!recalculating && systemStatus?.recomputeError) {
@@ -507,11 +523,19 @@ function App() {
       setToast({ message: `Forecast rebuild failed: ${systemStatus.recomputeError}` });
       return;
     }
-    // Safety cap: the server's own isRecalculating flag keeps the banner accurate
-    // if a rebuild runs long; only stop the client-side wait so polling recovers.
+    // Safety cap: the server's own isRecalculating flag keeps the indicator
+    // accurate if a rebuild runs long; only stop the client-side wait so polling recovers.
     const timeout = window.setTimeout(() => setRecomputeRequest(null), 120_000);
     return () => window.clearTimeout(timeout);
   }, [recomputeRequest, systemStatus, forecastSummary]);
+  // Dedicated effect so the success indicator clears even though recomputeRequest
+  // becomes null in the same commit the ready timestamp is set. Keeping the timer
+  // inside the resolution effect above would let its cleanup cancel the auto-hide.
+  useEffect(() => {
+    if (recomputeReadyAt == null) return;
+    const timer = window.setTimeout(() => setRecomputeReadyAt(null), 8000);
+    return () => window.clearTimeout(timer);
+  }, [recomputeReadyAt]);
   const catalog = useMemo(() => {
     const base = livePlayers && livePlayers.length > 0 ? livePlayers : [];
     if (!forecastSummary || forecastSummary.horizon !== horizon) return base;
@@ -1741,36 +1765,6 @@ function App() {
             }}
           />
         )}
-        {(tab === "My Team" || tab === "Transfers") &&
-          (recomputeRequest || recomputeReadyAt || systemStatus?.isRecalculating) && (
-          <div className={`recompute-banner ${recomputeReadyAt ? "ready" : "running"}`} role="status" aria-live="polite">
-            {recomputeRequest ? (
-              <>
-                <span className={`recompute-dot ${systemStatus?.isRecalculating ? "pulse" : ""}`} aria-hidden="true" />
-                <span>
-                  <b>Rebuilding projections from approved signals…</b>
-                  <small>Your current numbers and transfer recommendations use the previous forecast until the rebuild finishes.</small>
-                </span>
-              </>
-            ) : recomputeReadyAt ? (
-              <>
-                <span className="recompute-check" aria-hidden="true">✓</span>
-                <span>
-                  <b>Projections updated</b>
-                  <small>Approved signals are now reflected — transfer recommendations are current.</small>
-                </span>
-              </>
-            ) : systemStatus?.isRecalculating ? (
-              <>
-                <span className="recompute-dot pulse" aria-hidden="true" />
-                <span>
-                  <b>Rebuilding projections from approved signals…</b>
-                  <small>{systemStatus.recomputeMessage || "A forecast rebuild is running in the background."}</small>
-                </span>
-              </>
-            ) : null}
-          </div>
-        )}
         {tab !== "Ask" && tab !== "Model Debug" && tab !== "Leagues" && tab !== "Signals" && tab !== "Admin" && (
           <>
             <PlanControls
@@ -1930,6 +1924,21 @@ function App() {
           >
             ×
           </button>
+        </div>
+      )}
+      {(recomputeRequest || systemStatus?.isRecalculating || recomputeReadyAt) && (
+        <div className="recompute-toast" role="status" aria-live="polite">
+          {recomputeReadyAt ? (
+            <>
+              <span className="recompute-toast-check" aria-hidden="true">✓</span>
+              <span>Projections updated — approved signals are now reflected</span>
+            </>
+          ) : (
+            <>
+              <span className="recompute-toast-spinner" aria-hidden="true" />
+              <span>Rebuilding projections from approved signals…</span>
+            </>
+          )}
         </div>
       )}
       {Object.keys(stagedSignalReviews).length > 0 && (
@@ -6754,6 +6763,14 @@ function TransfersV2({
                     <small>
                       {t.out.club} · £{t.out.price.toFixed(1)}m
                     </small>
+                    {(() => {
+                      const m = momentumBadge(t.out);
+                      return m ? (
+                        <small className={"momentum-badge " + m.tone} title={m.detail}>
+                          {m.label}
+                        </small>
+                      ) : null;
+                    })()}
                   </div>
                 </div>
                 <ArrowRight size={17} className="arrow-muted" />
@@ -6769,15 +6786,23 @@ function TransfersV2({
                     <small>
                       {t.in.club} · £{t.in.price.toFixed(1)}m
                     </small>
+                    {(() => {
+                      const m = momentumBadge(t.in);
+                      return m ? (
+                        <small className={"momentum-badge " + m.tone} title={m.detail}>
+                          {m.label}
+                        </small>
+                      ) : null;
+                    })()}
                   </div>
                 </div>
                 <div className="fixture-col">
                   <span className="fixture">{t.in.fixture}</span>
                   {t.priceAlert === "RISING_SOON" && (
-                    <span className="price-pill green">🔥 Price rise</span>
+                    <span className="price-pill green">🔥 Act now · price rising</span>
                   )}
                   {t.sellOffWarning && (
-                    <span className="price-pill red">⚠️ Sell-off risk</span>
+                    <span className="price-pill red">⚠️ Sell-off risk · act soon</span>
                   )}
                 </div>
                 <div className="gain">
