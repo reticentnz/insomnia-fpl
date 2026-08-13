@@ -15,8 +15,8 @@ describe('SQLite numbered parameter compatibility',()=>{
 })
 
 describe('creator signal ingestion helpers',()=>{
-  it('normalizes legacy n8n items into stable structured claims',()=>{
-    const payload=normalizeCreatorPayload({creator:'PL Mate',videoUrl:'https://www.youtube.com/watch?v=abc123',videoTitle:'Hidden gems',items:[{rawPlayerName:'Kai Havt',club:'Arsenal',category:'Rotation',text:'Too risky for GW1',timestampSeconds:122,depthRole:'ROTATION'}]})
+  it('normalizes native extraction output into stable structured claims',()=>{
+    const payload=normalizeCreatorPayload({source:{platform:'YOUTUBE',externalId:'abc123',creator:'PL Mate',url:'https://www.youtube.com/watch?v=abc123',title:'Hidden gems'},claims:[{rawPlayerName:'Kai Havt',club:'Arsenal',category:'Rotation',text:'Too risky for GW1',timestampSeconds:122,depthRole:'ROTATION'}]})
     expect(payload.source.externalId).toBe('abc123')
     expect(payload.claims[0].externalClaimId).toBe('YOUTUBE:abc123:122:kai havt:ROTATION')
   })

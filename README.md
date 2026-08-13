@@ -6,11 +6,13 @@ An FPL planning companion built around deterministic, explainable recommendation
 
 ```bash
 npm install
+python3 -m venv .venv
+.venv/bin/pip install -r requirements.txt
 npm run db:migrate
 npm run dev
 ```
 
-Then open `http://localhost:4173`. `npm run build` runs the deterministic domain verification and creates a production bundle in `dist/`; the lightweight Node server serves it locally.
+Set `PYTHON_BIN=.venv/bin/python` in `.env.local`, then open `http://localhost:4173`. The Docker image installs this Python dependency automatically. `npm run build` runs the deterministic domain verification and creates a production bundle in `dist/`; the lightweight Node server serves it locally.
 
 ## Docker and Unraid
 
@@ -26,7 +28,6 @@ docker run -d \
   -p 4173:4173 \
   -e DATABASE_URL='file:/app/data/insomnia-fpl.db' \
   -e APP_DATA_DIR='/app/data' \
-  -e SIGNAL_INGEST_TOKEN='replace-with-a-long-random-token' \
   -e SIGNAL_CONFIG_FILE='/app/data/signal-config.json' \
   -e FPL_INGEST_CACHE_PATH='/app/data/cache/fpl-official.json' \
   -e FPL_CATALOG_CACHE_FILE='/app/data/cache/projection-catalog.json' \
@@ -38,38 +39,11 @@ docker run -d \
 
 Alternatively, copy `compose.example.yaml` to `compose.yaml`, then run `docker compose up -d --build`. The bind-mounted `./data` directory retains the SQLite database, WAL files and restart cache when the container is stopped or replaced. Ensure it is writable by container UID 1000 before the first start.
 
-The container exposes a liveness check at `/api/health`. From n8n, use `http://insomnia-fpl:4173` when both containers share a user-defined Docker network. Otherwise use the Unraid server's fixed LAN address and mapped port.
-
-The creator-signal endpoint is `POST /api/signals/ingest`. It requires `Authorization: Bearer <SIGNAL_INGEST_TOKEN>` and an `application/json` body. n8n should send one stable video ID plus structured claims; retrying the same payload is idempotent:
-
-```json
-{
-  "schemaVersion": 1,
-  "source": {
-    "platform": "YOUTUBE",
-    "externalId": "JmJBKn7Zurk",
-    "creator": "PL Mate",
-    "title": "Ranking your FPL hidden gems",
-    "url": "https://www.youtube.com/watch?v=JmJBKn7Zurk"
-  },
-  "claims": [
-    {
-      "rawPlayerName": "Kai Havt",
-      "clubHint": "Arsenal",
-      "category": "ROTATION",
-      "sentiment": "NEGATIVE",
-      "summary": "Too risky for GW1 due to competition for striker minutes.",
-      "timestampSeconds": 122,
-      "depthRole": "ROTATION",
-      "confidence": 0.8
-    }
-  ]
-}
-```
+The container exposes a liveness check at `/api/health`.
 
 Matched claims become auditable player signals. Uncertain names are retained in the Signals review queue; linking one to a player can save that spelling as a persistent alias so later claims resolve automatically. General opinions remain evidence only; projections change only when a verified claim includes explicit role/minutes fields.
 
-GitHub is optional. The image can be built directly on Unraid from a copied or cloned working tree. For repeatable updates, push the repository to GitHub and publish an image to GitHub Container Registry; Unraid can then pull `ghcr.io/<owner>/<repository>:latest`. Keep database URLs and ingestion tokens in Unraid/n8n secrets, never in GitHub or the image.
+GitHub is optional. The image can be built directly on Unraid from a copied or cloned working tree. For repeatable updates, push the repository to GitHub and publish an image to GitHub Container Registry; Unraid can then pull `ghcr.io/<owner>/<repository>:latest`. Keep database URLs and provider keys in runtime secrets, never in GitHub or the image.
 
 ## Security & Network Access
 
@@ -113,7 +87,9 @@ ODDS_API_KEY=replace-with-your-key npm run ingest:signals
 
 `ingest:signals` pulls Understat EPL player aggregates into auditable historical snapshots and imports de-vigged EPL match-winner and clean-sheet probabilities from The Odds API. Clean-sheet probabilities use each opponent's Under 0.5 `team_totals` market when bookmakers offer it. Understat is used as the attacking-rate input when a snapshot exists; odds are retained for later team-strength adjustments. Both feeds retain the raw response, use a local cache when a refresh fails, and never create verified injury or role overrides.
 
-The production server schedules every pull-based source by default: official FPL every 12 hours, Understat every 24 hours, betting markets every 6 hours when `ODDS_API_KEY` is configured, and a linked manager team every 12 hours. These schedules use the last successful database refresh as their anchor, so container restarts and manual refreshes do not create duplicate runs. Override them with `FPL_INGEST_INTERVAL_HOURS`, `UNDERLYING_INGEST_INTERVAL_HOURS`, `MARKET_INGEST_INTERVAL_HOURS`, and `MANAGER_REFRESH_INTERVAL_HOURS`; set any value to `0` to disable that schedule. Creator signals remain push-based through the authenticated n8n endpoint.
+The production server schedules every pull-based source by default: official FPL every 12 hours, Understat every 24 hours, betting markets every 6 hours when `ODDS_API_KEY` is configured, a linked manager team every 12 hours, and user-added YouTube creator feeds every 30 minutes. These schedules use durable database state, so container restarts and manual refreshes do not create duplicate work. Override them with `FPL_INGEST_INTERVAL_HOURS`, `UNDERLYING_INGEST_INTERVAL_HOURS`, `MARKET_INGEST_INTERVAL_HOURS`, `MANAGER_REFRESH_INTERVAL_HOURS`, and `CREATOR_INGEST_INTERVAL_HOURS`; set any value to `0` to disable that schedule.
+
+Add YouTube channels from the **Signals** page using a channel ID, `/channel/UC…` URL, or canonical RSS feed URL. The app discovers uploads through YouTube RSS, retrieves available English manual or generated captions with `youtube-transcript-api`, and asks the configured LLM provider to extract structured FPL claims. The latest three uploads are queued when a channel is first added. Captions-unavailable videos are retained as `NO_TRANSCRIPT`; transient failures retry with exponential backoff.
 
 The in-app **Admin** page exposes the official FPL sync, an odds-only sync, linked-manager-team refresh, and a player-to-club relink workflow. It also shows live operation state and recent `FeedRun` audit records. Set `ADMIN_TOKEN` to require a bearer token for admin commands; when it is unset, commands remain available for local/self-hosted use. The odds action requires `ODDS_API_KEY`.
 

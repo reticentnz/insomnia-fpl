@@ -60,7 +60,7 @@ describe('WP-07 optional source ingestion', () => {
     expect(url.searchParams.get('markets')).not.toContain('btts')
     const eventUrl = new URL(eventTeamTotalsUrl({ eventId: 'event/one', apiKey: 'secret', regions: 'uk' }))
     expect(eventUrl.pathname).toContain('/events/event%2Fone/odds')
-    expect(eventUrl.searchParams.get('markets')).toBe('team_totals')
+    expect(eventUrl.searchParams.get('markets')).toBe('btts,team_totals')
   })
 
   it('de-vigs opponent Under 0.5 team totals into clean-sheet probabilities', () => {
@@ -71,6 +71,13 @@ describe('WP-07 optional source ingestion', () => {
     expect(cleanSheetProbabilities([], 'Alpha FC', 'Beta United')).toEqual({ homeCleanSheet: null, awayCleanSheet: null })
   })
 
+  it('falls back to market-fitted Poisson clean-sheet probabilities when team totals are unavailable', () => {
+    expect(cleanSheetProbabilities([], 'Alpha FC', 'Beta United', { homeExpectedGoals: 1.8, awayExpectedGoals: 1.1 })).toEqual({
+      homeCleanSheet: Math.exp(-1.1),
+      awayCleanSheet: Math.exp(-1.8),
+    })
+  })
+
   it('resolves the season from official data when no environment override exists', async () => {
     const db = await seed()
     expect(await resolveSignalSeason(db, { env: {} })).toBe('2026/27')
@@ -78,6 +85,12 @@ describe('WP-07 optional source ingestion', () => {
 
   it('does not derive expected goals from H2H-only markets', () => {
     expect(deriveExpectedGoals({ homeWin: .5, draw: .25, awayWin: .25, over25: null, btts: null })).toBeNull()
+  })
+
+  it('derives expected goals from the H2H and totals markets returned by the featured endpoint', () => {
+    expect(deriveExpectedGoals({ homeWin: .5, draw: .25, awayWin: .25, over25: .5, btts: null })).toMatchObject({
+      derivationMethod: 'POISSON_MARKETS_V1',
+    })
   })
 
   it('records reviewable underlying statuses and never auto-selects ambiguous identities', async () => {
@@ -115,15 +128,23 @@ describe('WP-07 optional source ingestion', () => {
     expect(result).toMatchObject({ sourceSeason: 2025, rows: [expect.objectContaining({ _sourceSeason: '2025' })] })
   })
 
-  it('stores expected goals only when complete goal-market inputs are available', async () => {
+  it('stores expected goals when H2H and totals inputs are available', async () => {
     const db = await seed()
     await ingestMarketEvents(db, { season: '2026/27', capturedAt: '2026-08-15T12:30:00Z', events: [marketEvent([h2h])] })
-    await ingestMarketEvents(db, { season: '2026/27', capturedAt: '2026-08-15T12:31:00Z', events: [marketEvent([h2h, totals, btts])] })
+    await ingestMarketEvents(db, { season: '2026/27', capturedAt: '2026-08-15T12:31:00Z', events: [marketEvent([h2h, totals])] })
     const rows = (await db.query('SELECT "home_expected_goals", "away_expected_goals", "derivation_method" FROM "MarketFixtureObservation" ORDER BY "captured_at"')).rows
     expect(rows[0]).toEqual({ home_expected_goals: null, away_expected_goals: null, derivation_method: null })
     expect(rows[1]).toMatchObject({ derivation_method: 'POISSON_MARKETS_V1' })
     expect(rows[1].home_expected_goals).toBeGreaterThan(0)
     expect(rows[1].away_expected_goals).toBeGreaterThan(0)
+  })
+
+  it('stores Poisson clean-sheet probabilities when team-total markets are unavailable', async () => {
+    const db = await seed()
+    await ingestMarketEvents(db, { season: '2026/27', capturedAt: '2026-08-15T12:31:00Z', events: [marketEvent([h2h, totals])] })
+    const row = (await db.query('SELECT "home_clean_sheet_probability", "away_clean_sheet_probability", "home_expected_goals", "away_expected_goals" FROM "MarketFixtureObservation"')).rows[0]
+    expect(row.home_clean_sheet_probability).toBeCloseTo(Math.exp(-row.away_expected_goals))
+    expect(row.away_clean_sheet_probability).toBeCloseTo(Math.exp(-row.home_expected_goals))
   })
 
   it('stores clean-sheet probabilities from team-total markets', async () => {

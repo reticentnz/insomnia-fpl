@@ -50,6 +50,7 @@ import { HttpRequestError, MAX_JSON_BODY_BYTES, readJsonBody, sanitizeError } fr
 import { createPlayerSignal, listPlayerSignals, revisePlayerSignalInterpretation, updatePlayerSignalStatuses } from '../src/server/signal-service.ts'
 import { latestSuccessfulFeedRun } from './feed-run.mjs'
 import { nextIngestSchedule, parseIngestIntervalHours } from '../src/server/ingest-scheduler.ts'
+import { addCreatorSource, deleteCreatorSource, listCreatorSources, pollCreatorSources, processCreatorQueue, setCreatorSourceEnabled, transcriptForPrompt } from './creator-feed-service.mjs'
 
 let systemStatus = {
   status: 'initializing',
@@ -68,6 +69,7 @@ let systemStatus = {
     underlying: { enabled: true, available: true, intervalHours: 24, lastRefreshedAt: null, nextRefreshAt: null },
     market: { enabled: true, available: false, intervalHours: 6, lastRefreshedAt: null, nextRefreshAt: null },
     manager: { enabled: true, available: false, intervalHours: 12, lastRefreshedAt: null, nextRefreshAt: null },
+    creator: { enabled: true, available: true, intervalHours: 0.5, lastRefreshedAt: null, nextRefreshAt: null },
   },
 }
 
@@ -85,7 +87,7 @@ const scheduledAuxiliaryTimers = new Map()
 const INGEST_RETRY_DELAY_MS = 15 * 60 * 1000
 const MAX_TIMER_DELAY_MS = 2_147_483_647
 
-const adminOperations = Object.fromEntries(['fpl-sync', 'signals-sync', 'odds-sync', 'team-refresh', 'relink-player-teams'].map(id => [id, {
+const adminOperations = Object.fromEntries(['fpl-sync', 'signals-sync', 'odds-sync', 'team-refresh', 'creator-sync', 'relink-player-teams'].map(id => [id, {
   id, status: 'IDLE', startedAt: null, finishedAt: null, message: null, error: null,
 }]))
 
@@ -150,6 +152,8 @@ function configureScheduledIngestion() {
   systemStatus.scheduledRefreshes.market.enabled = systemStatus.scheduledRefreshes.market.intervalHours > 0
   systemStatus.scheduledRefreshes.manager.intervalHours = parseIngestIntervalHours(process.env.MANAGER_REFRESH_INTERVAL_HOURS, 12)
   systemStatus.scheduledRefreshes.manager.enabled = systemStatus.scheduledRefreshes.manager.intervalHours > 0
+  systemStatus.scheduledRefreshes.creator.intervalHours = parseIngestIntervalHours(process.env.CREATOR_INGEST_INTERVAL_HOURS, .5)
+  systemStatus.scheduledRefreshes.creator.enabled = systemStatus.scheduledRefreshes.creator.intervalHours > 0
   if (hours <= 0) {
     console.log('⏱️ Periodic FPL ingestion is disabled (FPL_INGEST_INTERVAL_HOURS=0).')
     systemStatus.nextIngestAt = null
@@ -200,6 +204,16 @@ function clearAuxiliaryTimer(id) {
 }
 
 function auxiliaryRefreshDefinition(id) {
+  if (id === 'creator') return {
+    operationId: 'creator-sync',
+    source: null,
+    label: 'YouTube creator feeds',
+    lastCompleted: async () => {
+      const result = await (await getDb()).query(`SELECT MAX(COALESCE("processed_at","updated_at")) AS completed_at FROM "CreatorVideo"`)
+      return result.rows[0]?.completed_at || null
+    },
+    work: refreshNativeCreatorFeeds,
+  }
   if (id === 'underlying') return {
     operationId: 'signals-sync',
     source: 'UNDERLYING',
@@ -233,11 +247,20 @@ async function scheduleAuxiliaryRefresh(id, { notBefore = 0 } = {}) {
 
   const definition = auxiliaryRefreshDefinition(id)
   let completedAt = null
+  if (id === 'creator') {
+    const sources = await (await getDb()).query(`SELECT COUNT(*) AS count FROM "CreatorSource" WHERE "enabled"=1`)
+    if (!Number(sources.rows[0]?.count || 0)) {
+      Object.assign(state, { available: false, lastRefreshedAt: null, nextRefreshAt: null })
+      return
+    }
+  }
   if (id === 'market' && !String(process.env.ODDS_API_KEY || '').trim()) {
     Object.assign(state, { available: false, lastRefreshedAt: null, nextRefreshAt: null })
     return
   }
-  if (id === 'manager') {
+  if (definition.lastCompleted) {
+    completedAt = await definition.lastCompleted()
+  } else if (id === 'manager') {
     const manager = await getCurrentManager(await getDb()).catch(() => null)
     completedAt = manager?.account?.lastSynced || null
     if (!manager?.account?.teamId) {
@@ -267,7 +290,7 @@ async function scheduleAuxiliaryRefresh(id, { notBefore = 0 } = {}) {
 }
 
 async function scheduleAuxiliaryRefreshes({ retryOperationId = null } = {}) {
-  await Promise.all(['underlying', 'market', 'manager'].map(id => {
+  await Promise.all(['underlying', 'market', 'manager', 'creator'].map(id => {
     const definition = auxiliaryRefreshDefinition(id)
     const notBefore = definition.operationId === retryOperationId ? Date.now() + INGEST_RETRY_DELAY_MS : 0
     return scheduleAuxiliaryRefresh(id, { notBefore })
@@ -710,13 +733,6 @@ function tokenMatches(actual,expected){
   return left.length===right.length&&timingSafeEqual(left,right)
 }
 
-function requireIngestToken(req,res){
-  const expected=process.env.SIGNAL_INGEST_TOKEN||''
-  if(!expected){sendJson(res,503,{error:'SIGNAL_INGEST_TOKEN is not configured'});return false}
-  if(!tokenMatches(bearerToken(req),expected)){sendJson(res,401,{error:'Invalid ingestion token'});return false}
-  return true
-}
-
 function requireAdminToken(req, res) {
   const expected = process.env.ADMIN_TOKEN || ''
   if (!expected) return true
@@ -845,6 +861,41 @@ async function processCreatorPayload(rawPayload){
   }
   const unresolved=results.filter(row=>row.matchStatus!=='MATCHED').length
   return {contentId,created:results.filter(row=>row.created).length,matched:results.length-unresolved,unresolved,claims:results}
+}
+
+function parseCreatorExtraction(value){
+  const cleaned=String(value||'').trim().replace(/^```(?:json)?\s*/i,'').replace(/\s*```$/,'')
+  const parsed=JSON.parse(cleaned)
+  if(!parsed||typeof parsed!=='object'||!Array.isArray(parsed.claims))throw new Error('LLM extraction did not return a claims array')
+  return parsed
+}
+
+function creatorExtractionPrompt(video,transcript){
+  return `Extract only FPL-relevant, player-specific claims from this timestamped YouTube transcript.
+Return JSON with one property, "claims", containing at most 40 objects. Each object must contain:
+rawPlayerName, clubHint (string or null), positionHint (GK/DEF/MID/FWD or null), category (ROLE, ROTATION, INJURY, SET_PIECES, PENALTIES, PRESEASON, TACTICS, VALUE, STATS, TRANSFER, FPL_SELECTION, or OTHER), sentiment (POSITIVE, NEGATIVE, MIXED, or NEUTRAL), summary, evidenceText, timestampSeconds, timeHorizon (GW<number>, SHORT_TERM, MEDIUM_TERM, SEASON, or UNKNOWN), and confidence (0 to 1).
+Optional fields are depthRole (FIRST_CHOICE, ROTATION, BACKUP, OUT), startProbability, minutesIfStarting, substituteProbabilityWhenBenched, minutesIfSubstitute, numericClaims, and relatedMentions.
+Never infer numeric probabilities or minutes from vague language; include those values only when the speaker explicitly states them. A creator's own buy/sell/start/bench choice is FPL_SELECTION, not evidence of real-world minutes. Exclude sponsor reads, jokes, repetitions, and claims that are not about a named player. Use the timestamp where the evidence begins. Do not add facts not present in the transcript.
+
+Video: ${video.title}
+Creator: ${video.source_name}
+Published: ${video.published_at||'unknown'}
+
+Transcript:
+${transcriptForPrompt(transcript.segments)}`
+}
+
+async function refreshNativeCreatorFeeds(){
+  const db=await getDb()
+  const poll=await pollCreatorSources(db)
+  const queue=await processCreatorQueue(db,{limit:Number(process.env.CREATOR_INGEST_BATCH_SIZE)||2,extractClaims:async({video,transcript})=>{
+    const llm=await callLLMProvider(creatorExtractionPrompt(video,transcript),{rawJson:true,maxOutputTokens:4000})
+    if(!llm?.answer)throw new Error('No LLM provider is configured or reachable')
+    const extracted=parseCreatorExtraction(llm.answer)
+    const payload={schemaVersion:1,source:{platform:'YOUTUBE',externalId:video.id,creator:video.source_name,title:video.title,url:video.url,publishedAt:video.published_at},claims:extracted.claims}
+    return {provider:llm.provider,payload,ingest:processCreatorPayload}
+  }})
+  return `Polled ${poll.sources} creator source${poll.sources===1?'':'s'}; processed ${queue.processed} video${queue.processed===1?'':'s'}; extracted ${queue.claims} signal${queue.claims===1?'':'s'}.`
 }
 
 
@@ -1017,13 +1068,14 @@ async function callLLMProvider(prompt, customConfig = {}) {
   const deepseekKey = (userProvider === 'deepseek' && userKey) ? userKey : process.env.DEEPSEEK_API_KEY
   const anthropicKey = (userProvider === 'anthropic' && userKey) ? userKey : process.env.ANTHROPIC_API_KEY
   const ollamaHost = process.env.OLLAMA_HOST || 'http://localhost:11434'
+  const maxOutputTokens = Math.max(200, Math.min(8000, Number(customConfig.maxOutputTokens) || 1200))
 
   if (geminiKey && (userProvider === 'gemini' || !userKey)) {
     const model = customConfig.userModel || process.env.GEMINI_MODEL || 'gemini-2.0-flash'
     const res = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${geminiKey}`, {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ contents: [{ parts: [{ text: prompt }] }], generationConfig:{maxOutputTokens:1200,responseMimeType:'application/json'} })
+      body: JSON.stringify({ contents: [{ parts: [{ text: prompt }] }], generationConfig:{maxOutputTokens,responseMimeType:'application/json'} })
     })
     if (!res.ok) {
       const errText = await res.text()
@@ -1031,7 +1083,7 @@ async function callLLMProvider(prompt, customConfig = {}) {
     }
     const data = await res.json()
     const text = data.candidates?.[0]?.content?.parts?.[0]?.text
-    if (text) return { answer: formatProviderAnswer(text), provider: `Gemini (${model})` }
+    if (text) return { answer: customConfig.rawJson ? text : formatProviderAnswer(text), provider: `Gemini (${model})` }
   }
 
   if (openaiKey && (userProvider === 'openai' || !userKey)) {
@@ -1039,7 +1091,7 @@ async function callLLMProvider(prompt, customConfig = {}) {
     const res = await fetch('https://api.openai.com/v1/chat/completions', {
       method: 'POST',
       headers: { 'content-type': 'application/json', 'authorization': `Bearer ${openaiKey}` },
-      body: JSON.stringify({ model, messages: [{ role: 'user', content: prompt }], max_completion_tokens:1200, response_format:{type:'json_object'} })
+      body: JSON.stringify({ model, messages: [{ role: 'user', content: prompt }], max_completion_tokens:maxOutputTokens, response_format:{type:'json_object'} })
     })
     if (!res.ok) {
       const errText = await res.text()
@@ -1047,7 +1099,7 @@ async function callLLMProvider(prompt, customConfig = {}) {
     }
     const data = await res.json()
     const text = data.choices?.[0]?.message?.content
-    if (text) return { answer: formatProviderAnswer(text), provider: `OpenAI (${model})` }
+    if (text) return { answer: customConfig.rawJson ? text : formatProviderAnswer(text), provider: `OpenAI (${model})` }
   }
 
   if (deepseekKey && userProvider === 'deepseek') {
@@ -1055,7 +1107,7 @@ async function callLLMProvider(prompt, customConfig = {}) {
     const res = await fetch('https://api.deepseek.com/chat/completions', {
       method: 'POST',
       headers: { 'content-type': 'application/json', 'authorization': `Bearer ${deepseekKey}` },
-      body: JSON.stringify({ model, messages: [{ role: 'user', content: prompt }], max_tokens: 1200, response_format: { type: 'json_object' } })
+      body: JSON.stringify({ model, messages: [{ role: 'user', content: prompt }], max_tokens: maxOutputTokens, response_format: { type: 'json_object' } })
     })
     if (!res.ok) {
       const errText = await res.text()
@@ -1063,7 +1115,7 @@ async function callLLMProvider(prompt, customConfig = {}) {
     }
     const data = await res.json()
     const text = data.choices?.[0]?.message?.content
-    if (text) return { answer: formatProviderAnswer(text), provider: `DeepSeek (${model})` }
+    if (text) return { answer: customConfig.rawJson ? text : formatProviderAnswer(text), provider: `DeepSeek (${model})` }
   }
 
   if (anthropicKey && (userProvider === 'anthropic' || !userKey)) {
@@ -1071,7 +1123,7 @@ async function callLLMProvider(prompt, customConfig = {}) {
     const res = await fetch('https://api.anthropic.com/v1/messages', {
       method: 'POST',
       headers: { 'content-type': 'application/json', 'x-api-key': anthropicKey, 'anthropic-version': '2023-06-01' },
-      body: JSON.stringify({ model, max_tokens:1200, messages: [{ role: 'user', content: prompt }] })
+      body: JSON.stringify({ model, max_tokens:maxOutputTokens, messages: [{ role: 'user', content: prompt }] })
     })
     if (!res.ok) {
       const errText = await res.text()
@@ -1079,18 +1131,18 @@ async function callLLMProvider(prompt, customConfig = {}) {
     }
     const data = await res.json()
     const text = data.content?.[0]?.text
-    if (text) return { answer: formatProviderAnswer(text), provider: `Anthropic (${model})` }
+    if (text) return { answer: customConfig.rawJson ? text : formatProviderAnswer(text), provider: `Anthropic (${model})` }
   }
 
   try {
     const res = await fetch(`${ollamaHost}/api/generate`, {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ model: 'llama3', prompt, stream: false, format:'json', options:{num_predict:650} })
+      body: JSON.stringify({ model: 'llama3', prompt, stream: false, format:'json', options:{num_predict:maxOutputTokens} })
     })
     if (res.ok) {
       const data = await res.json()
-      if (data.response) return { answer: formatProviderAnswer(data.response), provider: 'Ollama (Local)' }
+      if (data.response) return { answer: customConfig.rawJson ? data.response : formatProviderAnswer(data.response), provider: 'Ollama (Local)' }
     }
   } catch {}
 
@@ -1521,6 +1573,34 @@ function startServerOnAvailablePort(targetPort) {
       return
     }
 
+    if (request === '/api/creator-sources' && req.method === 'GET') {
+      try { sendJson(res, 200, await listCreatorSources(await getDb())) }
+      catch (error) { sendJson(res, 500, { error: error instanceof Error ? error.message : 'Creator sources unavailable' }) }
+      return
+    }
+
+    if (request === '/api/creator-sources' && req.method === 'POST') {
+      try {
+        const payload = await readRequestBody(req)
+        const id = await addCreatorSource(await getDb(), payload)
+        if (!startAdminOperation('creator-sync', refreshNativeCreatorFeeds)) await scheduleAuxiliaryRefresh('creator')
+        sendJson(res, 201, { id, ...(await listCreatorSources(await getDb())) })
+      } catch (error) { sendJson(res, 400, { error: error instanceof Error ? error.message : 'Could not add creator source' }) }
+      return
+    }
+
+    const creatorSourceMatch=request.match(/^\/api\/creator-sources\/(.+)$/)
+    if(creatorSourceMatch&&req.method==='PATCH'){
+      try{const payload=await readRequestBody(req);await setCreatorSourceEnabled(await getDb(),decodeURIComponent(creatorSourceMatch[1]),Boolean(payload.enabled));await scheduleAuxiliaryRefresh('creator');sendJson(res,200,await listCreatorSources(await getDb()))}
+      catch(error){sendJson(res,400,{error:error instanceof Error?error.message:'Could not update creator source'})}
+      return
+    }
+    if(creatorSourceMatch&&req.method==='DELETE'){
+      try{await deleteCreatorSource(await getDb(),decodeURIComponent(creatorSourceMatch[1]));await scheduleAuxiliaryRefresh('creator');sendJson(res,200,await listCreatorSources(await getDb()))}
+      catch(error){sendJson(res,400,{error:error instanceof Error?error.message:'Could not delete creator source'})}
+      return
+    }
+
     if (request.startsWith('/api/admin/actions/') && req.method === 'POST') {
       if (!requireAdminToken(req, res)) return
       const action = decodeURIComponent(request.slice('/api/admin/actions/'.length))
@@ -1551,6 +1631,8 @@ function startServerOnAvailablePort(targetPort) {
         }
       } else if (action === 'team-refresh') {
         work = refreshLinkedManagerTeam
+      } else if (action === 'creator-sync') {
+        work = refreshNativeCreatorFeeds
       } else {
         work = async () => {
           systemStatus.isIngesting = true
@@ -1703,8 +1785,15 @@ function startServerOnAvailablePort(targetPort) {
       try{
         const db=await getDb(),params=new URL(req.url||'/',`http://${host}`).searchParams
         const limit=Math.min(50,Math.max(1,Number(params.get('limit'))||12))
-        const result=await db.query('SELECT "id","source","external_event_id","captured_at","kickoff_at","home_team_name","away_team_name","home_win_probability","draw_probability","away_win_probability","home_clean_sheet_probability","away_clean_sheet_probability" FROM "MarketFixtureObservation" ORDER BY COALESCE("kickoff_at","captured_at") ASC,"captured_at" DESC LIMIT $1',[limit])
-        sendJson(res,200,{snapshots:result.rows.map(row=>({id:row.id,source:row.source,externalEventId:row.external_event_id,capturedAt:row.captured_at,kickoff:row.kickoff_at,homeTeam:row.home_team_name,awayTeam:row.away_team_name,homeWinProb:row.home_win_probability==null?null:Number(row.home_win_probability),drawProb:row.draw_probability==null?null:Number(row.draw_probability),awayWinProb:row.away_win_probability==null?null:Number(row.away_win_probability),homeCleanSheetProb:row.home_clean_sheet_probability==null?null:Number(row.home_clean_sheet_probability),awayCleanSheetProb:row.away_clean_sheet_probability==null?null:Number(row.away_clean_sheet_probability)}))})
+        const marketMaxAgeMs=Number(process.env.FPL_MARKET_MAX_AGE_MS||48*60*60*1000)
+        const result=await db.query(`SELECT observation."id",observation."source",observation."external_event_id",observation."captured_at",observation."kickoff_at",observation."home_team_name",observation."away_team_name",observation."home_win_probability",observation."draw_probability",observation."away_win_probability",observation."home_clean_sheet_probability",observation."away_clean_sheet_probability",observation."fixture_id",observation."home_expected_goals",observation."away_expected_goals"
+          FROM "MarketFixtureObservation" observation JOIN "FeedRun" run ON run."id"=observation."feed_run_id"
+          WHERE run."status" IN ('SUCCEEDED','PARTIAL') AND NOT EXISTS (
+            SELECT 1 FROM "MarketFixtureObservation" newer JOIN "FeedRun" newer_run ON newer_run."id"=newer."feed_run_id"
+            WHERE newer."external_event_id"=observation."external_event_id" AND newer_run."status" IN ('SUCCEEDED','PARTIAL')
+              AND (datetime(newer."captured_at")>datetime(observation."captured_at") OR (newer."captured_at"=observation."captured_at" AND newer."id">observation."id"))
+          ) ORDER BY COALESCE(observation."kickoff_at",observation."captured_at") ASC,observation."captured_at" DESC LIMIT $1`,[limit])
+        sendJson(res,200,{snapshots:result.rows.map(row=>({id:row.id,source:row.source,externalEventId:row.external_event_id,capturedAt:row.captured_at,kickoff:row.kickoff_at,homeTeam:row.home_team_name,awayTeam:row.away_team_name,homeWinProb:row.home_win_probability==null?null:Number(row.home_win_probability),drawProb:row.draw_probability==null?null:Number(row.draw_probability),awayWinProb:row.away_win_probability==null?null:Number(row.away_win_probability),homeCleanSheetProb:row.home_clean_sheet_probability==null?null:Number(row.home_clean_sheet_probability),awayCleanSheetProb:row.away_clean_sheet_probability==null?null:Number(row.away_clean_sheet_probability),forecastEligible:Boolean(row.fixture_id&&row.home_expected_goals!=null&&row.away_expected_goals!=null&&Date.parse(row.captured_at)>=Date.now()-marketMaxAgeMs)}))})
       }catch(error){sendJson(res,500,{error:error instanceof Error?error.message:'Unable to read market snapshots'})}
       return
     }
@@ -1755,17 +1844,6 @@ function startServerOnAvailablePort(targetPort) {
       }catch(error){
         sendJson(res,400,{error:error instanceof Error?error.message:'Unable to batch update signals'})
       }
-      return
-    }
-
-    // Secured n8n webhook. Source identity is assigned here, never by the caller.
-    if(request==='/api/signals/ingest'&&req.method==='POST'){
-      if(!requireIngestToken(req,res))return
-      try{
-        const payload=await readRequestBody(req)
-        const result=await processCreatorPayload(payload)
-        sendJson(res,201,result)
-      }catch(error){sendJson(res,400,{error:error instanceof Error?error.message:'Ingest failed'})}
       return
     }
 
@@ -2226,6 +2304,11 @@ function startServerOnAvailablePort(targetPort) {
       } catch (err) {
         if (!res.headersSent) sendJson(res, errorStatus(err), { error: sanitizeError(err) })
       }
+      return
+    }
+
+    if (request.startsWith('/api/')) {
+      sendJson(res, 404, { error: 'API route not found' })
       return
     }
 

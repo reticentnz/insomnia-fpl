@@ -7,7 +7,7 @@ import type { ProjectionInputCatalog } from './core/types'
 export type RawFplBootstrap = { elements: Array<Record<string, unknown>>; teams: Array<Record<string, unknown>>; events: Array<Record<string, unknown>>; fixtures: Array<Record<string, unknown>> }
 export type ExplanationContext = { modelVersion:string; horizon:number; squad:Player[]; catalog:Player[]; captain:Player|null; transfers:Transfer[]; decision: { roll: boolean; transfer: Transfer | null; freeTransfers: number; reason: string }; bank:number; freeTransfers:number; startingXI?: Player[]; currentGameweek?: number }
 export type TeamMarketSnapshot = {
-  id: number;
+  id: string;
   source: string;
   externalEventId: string;
   capturedAt: string;
@@ -19,6 +19,7 @@ export type TeamMarketSnapshot = {
   awayWinProb: number | null;
   homeCleanSheetProb: number | null;
   awayCleanSheetProb: number | null;
+  forecastEligible: boolean;
 };
 
 function apiErrorMessage(data: any, fallback: string) {
@@ -1090,6 +1091,33 @@ export type AdminStatus = {
   oddsConfigured: boolean;
   season: string;
 };
+
+export type CreatorSource = { id: string; channelId: string; name: string; feedUrl: string; enabled: boolean; lastPolledAt: string | null; lastError: string | null };
+export type CreatorVideo = { id: string; sourceId: string; sourceName: string; title: string; url: string; publishedAt: string | null; status: 'DISCOVERED' | 'PROCESSING' | 'COMPLETE' | 'NO_TRANSCRIPT' | 'RETRY' | 'FAILED'; attempts: number; claimCount: number; error: string | null; processedAt: string | null };
+export type CreatorFeedState = { sources: CreatorSource[]; videos: CreatorVideo[] };
+
+async function creatorFeedRequest(url: string, init?: RequestInit): Promise<CreatorFeedState> {
+  const response = await fetch(url, init)
+  const data = await response.json().catch(() => null)
+  if (!response.ok) throw new Error(typeof data?.error === 'string' ? data.error : data?.error?.message || `Creator feed request failed: HTTP ${response.status}`)
+  return data
+}
+
+export function fetchCreatorSources(): Promise<CreatorFeedState> {
+  return creatorFeedRequest('/api/creator-sources')
+}
+
+export function addCreatorSource(channelIdOrUrl: string, name = ''): Promise<CreatorFeedState> {
+  return creatorFeedRequest('/api/creator-sources', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ url: channelIdOrUrl, name: name || undefined }) })
+}
+
+export function setCreatorSourceEnabled(id: string, enabled: boolean): Promise<CreatorFeedState> {
+  return creatorFeedRequest(`/api/creator-sources/${encodeURIComponent(id)}`, { method: 'PATCH', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ enabled }) })
+}
+
+export function removeCreatorSource(id: string): Promise<CreatorFeedState> {
+  return creatorFeedRequest(`/api/creator-sources/${encodeURIComponent(id)}`, { method: 'DELETE' })
+}
 
 export async function fetchAdminStatus(): Promise<AdminStatus> {
   const response = await fetch('/api/admin/status')

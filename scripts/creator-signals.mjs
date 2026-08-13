@@ -71,18 +71,18 @@ const fplSelectionPattern=/\b(bench boost|my bench|gw\s*\d+\s+bench|bench goalke
 export function normalizeCreatorPayload(payload){
   if(!payload||typeof payload!=='object')throw new Error('JSON object payload is required')
   const rawSource=payload.source&&typeof payload.source==='object'?payload.source:{}
-  const url=String(rawSource.url||payload.sourceUrl||payload.videoUrl||'').trim()
-  const externalId=String(rawSource.externalId||payload.videoId||youtubeExternalId(url)||hash(url||JSON.stringify(payload).slice(0,1000))).trim()
+  const url=String(rawSource.url||'').trim()
+  const externalId=String(rawSource.externalId||youtubeExternalId(url)||hash(url||JSON.stringify(payload).slice(0,1000))).trim()
   const platform=String(rawSource.platform||'YOUTUBE').toUpperCase().slice(0,30)
   const source={
     platform,
     externalId:externalId.slice(0,160),
-    creator:String(rawSource.creator||payload.creator||'Unknown creator').trim().slice(0,160),
-    title:String(rawSource.title||payload.videoTitle||'Untitled source').trim().slice(0,500),
+    creator:String(rawSource.creator||'Unknown creator').trim().slice(0,160),
+    title:String(rawSource.title||'Untitled source').trim().slice(0,500),
     url:url.slice(0,2000),
-    publishedAt:rawSource.publishedAt||payload.publishedAt||null,
+    publishedAt:rawSource.publishedAt||null,
   }
-  const rawClaims=Array.isArray(payload.claims)?payload.claims:Array.isArray(payload.items)?payload.items:[]
+  const rawClaims=Array.isArray(payload.claims)?payload.claims:[]
   if(!rawClaims.length)throw new Error('claims array is required')
   const claims=rawClaims.slice(0,100).map((raw,index)=>{
     if(!raw||typeof raw!=='object')return null

@@ -102,6 +102,11 @@ import {
   fetchAdminStatus,
   runAdminOperation,
   type AdminStatus,
+  fetchCreatorSources,
+  addCreatorSource,
+  setCreatorSourceEnabled,
+  removeCreatorSource,
+  type CreatorFeedState,
   type ManualPlayerSignalInput,
 } from "./integrations";
 import {
@@ -424,6 +429,7 @@ const adminActionDetails = [
   { id: "signals-sync", icon: "◉", title: "Sync performance + odds", description: "Fetch Understat and configured EPL markets, then rebuild the stored forecast." },
   { id: "odds-sync", icon: "◈", title: "Sync betting odds", description: "Fetch current EPL markets and rebuild the forecast with de-vigged probabilities." },
   { id: "team-refresh", icon: "⚽", title: "Refresh linked team", description: "Re-import the currently linked manager squad, prices, bank, and points." },
+  { id: "creator-sync", icon: "▶", title: "Sync creator feeds", description: "Poll enabled YouTube channels, fetch available captions, and extract pending FPL signals." },
   { id: "relink-player-teams", icon: "⤢", title: "Relink players to clubs", description: "Refresh official player-to-club observations, then re-import the linked manager squad." },
 ];
 
@@ -5005,6 +5011,10 @@ function SignalsTab({
   const [signals, setSignals] = useState<PlayerSignal[]>([]);
   const [marketSnapshots, setMarketSnapshots] = useState<TeamMarketSnapshot[]>([]);
   const [creatorClaims, setCreatorClaims] = useState<CreatorClaim[]>([]);
+  const [creatorFeeds, setCreatorFeeds] = useState<CreatorFeedState>({ sources: [], videos: [] });
+  const [creatorSourceInput, setCreatorSourceInput] = useState("");
+  const [creatorSourceBusy, setCreatorSourceBusy] = useState(false);
+  const [creatorSourceError, setCreatorSourceError] = useState<string | null>(null);
   const [claimSelections, setClaimSelections] = useState<Record<string, number>>({});
   const [claimReviewingId, setClaimReviewingId] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
@@ -5022,7 +5032,6 @@ function SignalsTab({
   const [laneFilter, setLaneFilter] = useState<"" | "ADJUSTMENTS" | "NEEDS" | "CONTEXT">("");
   const [editingSignalId, setEditingSignalId] = useState<string | number | null>(null);
   const [interpretationSaving, setInterpretationSaving] = useState(false);
-  const ingestEndpoint = `${window.location.origin}/api/signals/ingest`;
 
   const playerMap = useMemo(() => {
     const m = new Map<number, Player>();
@@ -5045,12 +5054,45 @@ function SignalsTab({
     }).catch(() => {});
   }, []);
 
+  const loadCreatorFeeds = useCallback(() => {
+    fetchCreatorSources().then(setCreatorFeeds).catch((reason) => setCreatorSourceError(reason instanceof Error ? reason.message : "Creator feeds unavailable"));
+  }, []);
+
   useEffect(() => {
     loadSignals();
     loadCreatorClaims();
+    loadCreatorFeeds();
     fetchTeamMarketSnapshots().then(setMarketSnapshots).catch(() => {});
     fetchSignalConfig().then(setSignalConfig).catch(() => {});
-  }, [loadSignals, loadCreatorClaims]);
+  }, [loadSignals, loadCreatorClaims, loadCreatorFeeds]);
+
+  useEffect(() => {
+    const timer = window.setInterval(loadCreatorFeeds, 15_000);
+    return () => window.clearInterval(timer);
+  }, [loadCreatorFeeds]);
+
+  async function handleAddCreatorSource() {
+    if (!creatorSourceInput.trim()) return;
+    setCreatorSourceBusy(true); setCreatorSourceError(null);
+    try { setCreatorFeeds(await addCreatorSource(creatorSourceInput.trim())); setCreatorSourceInput(""); }
+    catch (reason) { setCreatorSourceError(reason instanceof Error ? reason.message : "Could not add source"); }
+    finally { setCreatorSourceBusy(false); }
+  }
+
+  async function handleToggleCreatorSource(id: string, enabled: boolean) {
+    setCreatorSourceBusy(true); setCreatorSourceError(null);
+    try { setCreatorFeeds(await setCreatorSourceEnabled(id, enabled)); }
+    catch (reason) { setCreatorSourceError(reason instanceof Error ? reason.message : "Could not update source"); }
+    finally { setCreatorSourceBusy(false); }
+  }
+
+  async function handleRemoveCreatorSource(id: string) {
+    if (!window.confirm("Remove this creator source and its video processing history? Existing player signals will be kept.")) return;
+    setCreatorSourceBusy(true); setCreatorSourceError(null);
+    try { setCreatorFeeds(await removeCreatorSource(id)); }
+    catch (reason) { setCreatorSourceError(reason instanceof Error ? reason.message : "Could not remove source"); }
+    finally { setCreatorSourceBusy(false); }
+  }
 
   async function handleSaveConfig(updated: SignalSourceConfig) {
     setConfigSaving(true);
@@ -5322,6 +5364,7 @@ function SignalsTab({
                     <span><small>AWAY CS</small><strong>{marketPercent(snapshot.awayCleanSheetProb)}</strong></span>
                   </div>
                   <div className="market-context-favourite">Favourite: <b>{favourite?.label || "Unavailable"}</b>{favourite ? ` · ${marketPercent(favourite.value)}` : ""}</div>
+                  <div className="market-context-updated">{snapshot.forecastEligible ? "Ready for forecast strength" : "Context only · stale, incomplete or unlinked markets"}</div>
                   <div className="market-context-updated">Updated {relativeTime(snapshot.capturedAt)}</div>
                 </article>
               );
@@ -5390,28 +5433,31 @@ function SignalsTab({
         </div>
       </div>
 
-      {/* n8n info card */}
-      <div className="n8n-info-card">
-        <div className="n8n-info-icon">📡</div>
-        <div>
-          <b>n8n creator-signal ingestion</b>
-          <p>
-            Send structured creator/video metadata and a <code>claims[]</code> array from n8n. The request requires <code>Authorization: Bearer $SIGNAL_INGEST_TOKEN</code>. Names are linked using club, position, price, and remembered aliases; evidence is created as{" "}
-            <span className="pill amber" style={{ fontSize: "11px", padding: "1px 6px" }}>PENDING</span>{" "}
-            unless the source is set to auto-approve below.
-          </p>
-          <div className="n8n-endpoint-row">
-            <code className="n8n-endpoint">{ingestEndpoint}</code>
-            <button
-              className="ghost-btn"
-              style={{ fontSize: "12px", padding: "4px 10px" }}
-              onClick={() => navigator.clipboard.writeText(ingestEndpoint)}
-            >
-              Copy
-            </button>
-          </div>
+      <section className="creator-feed-card">
+        <div className="creator-feed-heading">
+          <div><span className="eyebrow">YOUTUBE INTELLIGENCE</span><h2>Creator feeds</h2><p>New videos are discovered through RSS. Available captions are fetched locally and converted into reviewable FPL signals by your configured LLM.</p></div>
+          <button className="ghost-btn" onClick={loadCreatorFeeds}>Refresh status</button>
         </div>
-      </div>
+        <div className="creator-source-form">
+          <input value={creatorSourceInput} onChange={(event) => setCreatorSourceInput(event.target.value)} onKeyDown={(event) => { if (event.key === "Enter") void handleAddCreatorSource(); }} placeholder="YouTube channel ID, /channel/UC… URL, or RSS feed URL" />
+          <button className="dark-btn" disabled={creatorSourceBusy || !creatorSourceInput.trim()} onClick={() => void handleAddCreatorSource()}>{creatorSourceBusy ? "Working…" : "Add source"}</button>
+        </div>
+        {creatorSourceError && <div className="admin-error" role="alert">{creatorSourceError}</div>}
+        <div className="creator-source-list">
+          {creatorFeeds.sources.map((source) => <article key={source.id} className="creator-source-row">
+            <div><b>{source.name}</b><small>{source.channelId} · {source.lastPolledAt ? `polled ${relativeTime(source.lastPolledAt)}` : "waiting for first poll"}</small>{source.lastError && <span>{source.lastError}</span>}</div>
+            <button className="ghost-btn" disabled={creatorSourceBusy} onClick={() => void handleToggleCreatorSource(source.id, !source.enabled)}>{source.enabled ? "Pause" : "Enable"}</button>
+            <button className="ghost-btn danger" disabled={creatorSourceBusy} onClick={() => void handleRemoveCreatorSource(source.id)}>Remove</button>
+          </article>)}
+          {!creatorFeeds.sources.length && <p className="creator-feed-empty">No channels followed yet. Adding one queues its latest three videos.</p>}
+        </div>
+        {!!creatorFeeds.videos.length && <div className="creator-video-list">
+          {creatorFeeds.videos.slice(0, 8).map((video) => <a href={video.url} target="_blank" rel="noreferrer" key={video.id} className="creator-video-row" title={video.error || undefined}>
+            <span><b>{video.title}</b><small>{video.sourceName} · {video.publishedAt ? relativeTime(video.publishedAt) : "publish date unknown"}</small></span>
+            <span className={`creator-video-status status-${video.status.toLowerCase()}`}>{video.status.replaceAll("_", " ")}{video.claimCount ? ` · ${video.claimCount} claims` : ""}</span>
+          </a>)}
+        </div>}
+      </section>
 
       {/* Source trust settings */}
       <div className="ingest-drawer">
@@ -5555,7 +5601,7 @@ function SignalsTab({
         <div className="signal-feed-empty">
           <p className="muted">
             {signals.length === 0
-              ? "No signals yet. Run a Squad Challenge or connect your n8n workflow to start ingesting intelligence."
+              ? "No signals yet. Run a Squad Challenge or add a YouTube creator source to start ingesting intelligence."
               : "No signals match the current filters."}
           </p>
         </div>

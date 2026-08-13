@@ -27,12 +27,19 @@ ENV NODE_ENV=production \
     FPL_INGEST_INTERVAL_HOURS=12 \
     UNDERLYING_INGEST_INTERVAL_HOURS=24 \
     MARKET_INGEST_INTERVAL_HOURS=6 \
-    MANAGER_REFRESH_INTERVAL_HOURS=12
+    MANAGER_REFRESH_INTERVAL_HOURS=12 \
+    CREATOR_INGEST_INTERVAL_HOURS=0.5 \
+    PYTHON_BIN=/opt/venv/bin/python
 
 WORKDIR /app
 
 COPY package.json package-lock.json ./
 RUN --mount=type=cache,target=/root/.npm npm install --omit=dev --no-audit
+
+COPY requirements.txt ./
+RUN apk add --no-cache python3 py3-pip \
+    && python3 -m venv /opt/venv \
+    && /opt/venv/bin/pip install --no-cache-dir -r requirements.txt
 
 COPY --from=build --chown=node:node /app/dist ./dist
 COPY --from=build --chown=node:node /app/scripts ./scripts

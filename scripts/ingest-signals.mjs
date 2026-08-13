@@ -135,7 +135,7 @@ export function marketProbabilities(bookmakers, marketKey) {
 }
 
 /** Convert each team's Under 0.5 team-total price into the opponent's clean-sheet probability. */
-export function cleanSheetProbabilities(bookmakers, homeTeam, awayTeam) {
+export function cleanSheetProbabilities(bookmakers, homeTeam, awayTeam, expectedGoals = null) {
   const observations = { home: [], away: [] }
   for (const bookmaker of bookmakers || []) {
     const market = (bookmaker.markets || []).find(candidate => candidate.key === 'team_totals')
@@ -155,7 +155,17 @@ export function cleanSheetProbabilities(bookmakers, homeTeam, awayTeam) {
     }
   }
   const average = values => values.length ? values.reduce((sum, value) => sum + value, 0) / values.length : null
-  return { homeCleanSheet: average(observations.home), awayCleanSheet: average(observations.away) }
+  const directHome = average(observations.home)
+  const directAway = average(observations.away)
+  const homeExpectedGoals = Number(expectedGoals?.homeExpectedGoals)
+  const awayExpectedGoals = Number(expectedGoals?.awayExpectedGoals)
+  // Prefer de-vigged Under 0.5 team-total prices. When bookmakers do not
+  // publish that niche market, use the same market-fitted Poisson rates that
+  // drive fixture strength: P(opponent scores zero) = exp(-opponent xG).
+  return {
+    homeCleanSheet: directHome ?? (awayExpectedGoals > 0 ? Math.exp(-awayExpectedGoals) : null),
+    awayCleanSheet: directAway ?? (homeExpectedGoals > 0 ? Math.exp(-homeExpectedGoals) : null),
+  }
 }
 
 function poisson(value, lambda) {
@@ -177,19 +187,20 @@ function marketMetrics(home, away) {
   return { homeWin, draw, over25, btts }
 }
 
-/** Fit independent home/away Poisson rates to de-vigged H2H, totals and BTTS markets. */
+/** Fit independent home/away Poisson rates to de-vigged H2H and totals markets, with BTTS as an optional extra constraint. */
 export function deriveExpectedGoals(probabilities) {
   const homeWin = finite(probabilities?.homeWin)
   const draw = finite(probabilities?.draw)
   const awayWin = finite(probabilities?.awayWin)
   const over25 = finite(probabilities?.over25)
   const btts = finite(probabilities?.btts)
-  if (![homeWin, draw, awayWin, over25, btts].every(value => value > 0 && value < 1)) return null
+  if (![homeWin, draw, awayWin, over25].every(value => value > 0 && value < 1)) return null
   if (Math.abs(homeWin + draw + awayWin - 1) > 0.04) return null
+  const hasBtts = btts > 0 && btts < 1
   let best = null
   for (let home = 0.2; home <= 4.5; home += 0.05) for (let away = 0.2; away <= 4.5; away += 0.05) {
     const fit = marketMetrics(home, away)
-    const score = (fit.homeWin - homeWin) ** 2 + (fit.draw - draw) ** 2 + ((1 - fit.homeWin - fit.draw) - awayWin) ** 2 + (fit.over25 - over25) ** 2 + (fit.btts - btts) ** 2
+    const score = (fit.homeWin - homeWin) ** 2 + (fit.draw - draw) ** 2 + ((1 - fit.homeWin - fit.draw) - awayWin) ** 2 + (fit.over25 - over25) ** 2 + (hasBtts ? (fit.btts - btts) ** 2 : 0)
     if (!best || score < best.score) best = { home, away, score }
   }
   return { homeExpectedGoals: Number(best.home.toFixed(2)), awayExpectedGoals: Number(best.away.toFixed(2)), derivationMethod: MARKET_XG_METHOD }
@@ -244,7 +255,9 @@ export function featuredOddsUrl({ apiKey, regions = 'uk' } = {}) {
 export function eventTeamTotalsUrl({ eventId, apiKey, regions = 'uk' } = {}) {
   const params = new URLSearchParams({
     regions: String(regions),
-    markets: 'team_totals',
+    // BTTS is not available from the featured response, but it can be
+    // requested alongside team totals from the per-event endpoint.
+    markets: 'btts,team_totals',
     oddsFormat: 'decimal',
     dateFormat: 'iso',
     apiKey: String(apiKey || ''),
@@ -346,13 +359,13 @@ export async function ingestMarketEvents(db, { season, events, capturedAt = new 
       const h2h = marketProbabilities(event.bookmakers, 'h2h')
       const totals = marketProbabilities(event.bookmakers, 'totals')
       const btts = marketProbabilities(event.bookmakers, 'btts')
-      const cleanSheets = cleanSheetProbabilities(event.bookmakers, event.home_team, event.away_team)
       const homeWin = h2h?.[event.home_team] ?? null
       const draw = h2h?.Draw ?? null
       const awayWin = h2h?.[event.away_team] ?? null
       const over25 = totals?.['Over 2.5'] ?? totals?.Over ?? null
       const bothTeamsToScore = btts?.Yes ?? null
       const expected = deriveExpectedGoals({ homeWin, draw, awayWin, over25, btts: bothTeamsToScore })
+      const cleanSheets = cleanSheetProbabilities(event.bookmakers, event.home_team, event.away_team, expected)
       const fixtureId = matchFixture(event, fixtures)
       if (!fixtureId) unmatched += 1
       await db.query(`INSERT INTO "MarketFixtureObservation" ("id","feed_run_id","source","external_event_id","fixture_id","captured_at","kickoff_at","home_team_name","away_team_name","home_win_probability","draw_probability","away_win_probability","over_2_5_probability","btts_probability","home_clean_sheet_probability","away_clean_sheet_probability","home_expected_goals","away_expected_goals","derivation_method","raw_payload_json") VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20)`, [randomUUID(), runId, source, String(event.id), fixtureId, capturedAt, event.commence_time || null, event.home_team, event.away_team, homeWin, draw, awayWin, over25, bothTeamsToScore, cleanSheets.homeCleanSheet, cleanSheets.awayCleanSheet, expected?.homeExpectedGoals ?? null, expected?.awayExpectedGoals ?? null, expected?.derivationMethod ?? null, JSON.stringify(event)])
