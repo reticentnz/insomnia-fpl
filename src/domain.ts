@@ -1987,6 +1987,14 @@ export function transferDecision(
   pool: Player[] = players,
 ): TransferDecision {
   const ranked = transfers(h, bank, freeTransfers, squad, pool);
+  return transferDecisionFromRanked(h, freeTransfers, ranked);
+}
+
+export function transferDecisionFromRanked(
+  h: number,
+  freeTransfers: number,
+  ranked: Transfer[],
+): TransferDecision {
   const best = ranked[0] ?? null;
   if (!best || best.net < 1)
     return {

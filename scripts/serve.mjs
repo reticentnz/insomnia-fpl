@@ -1,7 +1,8 @@
 import http from 'node:http'
 import fs from 'node:fs'
 import path from 'node:path'
-import { randomUUID, timingSafeEqual } from 'node:crypto'
+import { createHash, randomUUID, timingSafeEqual } from 'node:crypto'
+import { gzipSync } from 'node:zlib'
 import { resolvePlayerRole } from '../src/player-signals.ts'
 import { interpretManualSignalText, matchCreatorClaim, normalizeCreatorPayload, signalDraftFromClaim } from './creator-signals.mjs'
 
@@ -283,7 +284,29 @@ function errorStatus(error, fallback = 500) {
   return error instanceof HttpRequestError ? error.status : fallback
 }
 
-function sendJson(res,status,payload){
+function responseEtag(body) {
+  return `"${createHash('sha256').update(body).digest('base64url')}"`
+}
+
+function sendBody(res, status, body, headers = {}) {
+  const raw = Buffer.isBuffer(body) ? body : Buffer.from(body)
+  if (status === 200 && headers.etag && res.requestHeaders?.['if-none-match'] === headers.etag) {
+    res.writeHead(304, headers).end()
+    return
+  }
+  let output = raw
+  if (raw.length >= 1024) {
+    headers.vary = headers.vary ? `${headers.vary}, Accept-Encoding` : 'Accept-Encoding'
+    if (/\bgzip\b/i.test(String(res.requestHeaders?.['accept-encoding'] || ''))) {
+      output = gzipSync(raw, { level: 6 })
+      headers['content-encoding'] = 'gzip'
+    }
+  }
+  headers['content-length'] = String(output.length)
+  res.writeHead(status, headers).end(output)
+}
+
+function sendJson(res,status,payload,options={}){
   let safePayload = payload
   if (status >= 400) {
     const rawError = payload && typeof payload === 'object' ? payload.error : null
@@ -292,9 +315,11 @@ function sendJson(res,status,payload){
     const { error: _discardedError, schemaVersion: _discardedVersion, ...context } = payload && typeof payload === 'object' ? payload : {}
     safePayload = { schemaVersion: 1, ...context, error: { code, message, requestId: res.requestId || 'unknown' } }
   }
-  const headers={'content-type':'application/json; charset=utf-8','cache-control':'no-store'}
+  const body = Buffer.from(JSON.stringify(safePayload))
+  const headers={'content-type':'application/json; charset=utf-8','cache-control':options.cacheControl||'no-store'}
+  if(options.etag)headers.etag=responseEtag(body)
   if(res.requestId)headers['x-request-id']=res.requestId
-  res.writeHead(status,headers).end(JSON.stringify(safePayload))
+  sendBody(res,status,body,headers)
 }
 
 // ── Signal source config (persisted beside the SQLite database) ─────────────
@@ -1302,6 +1327,7 @@ function pruneSquadChallengeJobs(){
 function startServerOnAvailablePort(targetPort) {
   const server = http.createServer(async (req, res) => {
     res.requestId = randomUUID()
+    res.requestHeaders = req.headers
     const request = (req.url || '/').split('?')[0]
 
     // Every API write that carries a payload is JSON-only. Empty command
@@ -1437,7 +1463,7 @@ function startServerOnAvailablePort(targetPort) {
       const responsePayload = (catalogue, cacheStatus) => {
         const enriched = enrichCatalogRoles(catalogue)
         return clientResponse
-          ? { ...compactClientCatalog(enriched, fixtureHorizon), cache: { status: cacheStatus } }
+          ? compactClientCatalog(enriched, fixtureHorizon)
           : { schemaVersion: 1, season: catalogue.season || FPL_SEASON, currentSeason: catalogue.season || FPL_SEASON, ...enriched, cache: { status: cacheStatus } }
       }
       try {
@@ -1445,16 +1471,16 @@ function startServerOnAvailablePort(targetPort) {
         const key = catalogueCacheKey(requestKey, await projectionCatalogInputVersions(db, options.season))
         const cached = catalogueCache.get(key)
         if (cached) {
-          sendJson(res, 200, responsePayload(cached, 'FRESH'))
+          sendJson(res, 200, responsePayload(cached, 'FRESH'), clientResponse ? { cacheControl: 'public, max-age=30, stale-while-revalidate=300', etag: true } : undefined)
           return
         }
         const catalogue = await assembleProjectionInputCatalog(db, options)
         await catalogueCache.put(key, requestKey, catalogue)
-        sendJson(res, 200, responsePayload(catalogue, 'MISS'))
+        sendJson(res, 200, responsePayload(catalogue, 'MISS'), clientResponse ? { cacheControl: 'public, max-age=30, stale-while-revalidate=300', etag: true } : undefined)
       } catch (error) {
         const restart = await catalogueCache.getRestart(requestKey)
         if (restart) {
-          sendJson(res, 200, responsePayload(restart, 'STALE_RESTART'))
+          sendJson(res, 200, responsePayload(restart, 'STALE_RESTART'), clientResponse ? { cacheControl: 'public, max-age=30, stale-while-revalidate=300', etag: true } : undefined)
           return
         }
         sendJson(res, 503, { schemaVersion: 1, cache: { status: 'MISS' }, error: error instanceof Error ? error.message : 'Catalogue unavailable' })
@@ -2037,12 +2063,19 @@ function startServerOnAvailablePort(targetPort) {
           const indexPath = path.join(process.cwd(), 'dist', 'index.html')
           return fs.readFile(indexPath, (err2, indexData) => {
             if (err2) return res.writeHead(404).end('Not found')
-            res.writeHead(200, { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-store' }).end(indexData)
+            const headers = { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-cache', etag: responseEtag(indexData) }
+            sendBody(res, 200, indexData, headers)
           })
         }
         return res.writeHead(404).end('Not found')
       }
-      res.writeHead(200, { 'content-type': mime[path.extname(file)] || 'application/octet-stream', 'cache-control': 'no-store' }).end(data)
+      const extension = path.extname(file)
+      const headers = {
+        'content-type': mime[extension] || 'application/octet-stream',
+        'cache-control': extension === '.html' ? 'no-cache' : 'public, max-age=0, must-revalidate',
+        etag: responseEtag(data),
+      }
+      sendBody(res, 200, data, headers)
     })
   })
 

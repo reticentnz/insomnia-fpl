@@ -25,7 +25,7 @@ import {
   resolvePlanningMode,
   resolveSquadSaveTarget,
   squadIds,
-  transferDecision,
+  transferDecisionFromRanked,
   transfers,
   validateInitialSquad,
   validateSquad,
@@ -687,14 +687,12 @@ function App() {
             hitCost: 0,
             freeTransfers: 0,
           }
-        : transferDecision(
+        : transferDecisionFromRanked(
             horizon,
-            manager.bank,
             manager.freeTransfers,
-            squad,
-            catalog,
+            topTransfers,
           ),
-    [draftMode, draftPlan, horizon, squad, catalog, manager],
+    [draftMode, draftPlan, horizon, topTransfers, manager.freeTransfers],
   );
 
   const chipImpacts = useMemo(
