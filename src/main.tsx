@@ -189,6 +189,16 @@ type ToastState = {
   persistent?: boolean;
 } | null;
 
+function signalCarriesRoleImpact(signal: PlayerSignal) {
+  const value = signal.interpretation?.value || signal.value;
+  return signal.interpretation?.modelImpact === "ROLE" ||
+    typeof value.startProbability === "number" ||
+    typeof value.minutesIfStarting === "number" ||
+    typeof value.substituteProbabilityWhenBenched === "number" ||
+    typeof value.minutesIfSubstitute === "number" ||
+    Boolean(value.depthRole);
+}
+
 const TOAST_DURATION_MS: Record<ToastTone, number> = {
   success: 4_000,
   info: 4_500,
@@ -1485,6 +1495,32 @@ function App() {
     });
   };
 
+  const refreshForecastAfterSignalMutation = async () => {
+    setRecomputeReadyAt(null);
+    setRecomputeRequest({
+      triggeredAt: Date.now(),
+      baselineRunId: forecastSummary?.id ?? null,
+    });
+    try {
+      const result = await triggerForecastRecompute();
+      if (result.status === "blocked") throw new Error(result.message || "Forecast refresh could not be started");
+      // Role profiles update immediately; the immutable points forecast is
+      // picked up by the existing fast polling once its new run completes.
+      fetchLiveCatalog().then((data) => {
+        setLivePlayers(data.players);
+        setCapturedAt(data.capturedAt || null);
+      }).catch(() => {});
+      return true;
+    } catch (error) {
+      setRecomputeRequest(null);
+      setToast({
+        message: `Signal saved, but forecast refresh failed to start: ${error instanceof Error ? error.message : "unknown error"}`,
+        tone: "error",
+      });
+      return false;
+    }
+  };
+
   const applyBatchReview = async () => {
     const requestedUpdates = Object.entries(stagedSignalReviews).map(([id, status]) => ({
       id,
@@ -1541,26 +1577,19 @@ function App() {
       setCapturedAt(data.capturedAt || null);
       const approvedCount = updates.filter((u) => u.status === "VERIFIED").length;
       const rejectedCount = updates.filter((u) => u.status === "REJECTED").length;
-      // Rebuilding the immutable forecast so approved role evidence is reflected
-      // in stored projections and downstream transfer recommendations.
-      const approvedRoleImpact = updatedSignals.some(
-        (s) => s.status === "VERIFIED" && s.interpretation?.modelImpact === "ROLE",
-      );
-      if (approvedRoleImpact) {
-        setRecomputeRequest({
-          triggeredAt: Date.now(),
-          baselineRunId: forecastSummary?.id ?? null,
-        });
-        triggerForecastRecompute().catch(() => {});
-      }
+      // Both applying and removing a role signal change model inputs.
+      const roleMutation = updatedSignals.some(signalCarriesRoleImpact);
+      const refreshStarted = roleMutation ? await refreshForecastAfterSignalMutation() : false;
       const parts = [];
       if (approvedCount) parts.push(`${approvedCount} approved`);
       if (rejectedCount) parts.push(`${rejectedCount} rejected`);
       if (staleReviewCount) parts.push(`${staleReviewCount} stale review${staleReviewCount === 1 ? "" : "s"} removed`);
-      setToast({
-        message: `${parts.join(", ")} · Projections refreshed.`,
-        tone: "success",
-      });
+      if (!roleMutation || refreshStarted) {
+        setToast({
+          message: `${parts.join(", ")}${roleMutation ? " · Forecast refresh started." : ""}`,
+          tone: "success",
+        });
+      }
     } catch (error) {
       setChallengeError(
         error instanceof Error ? error.message : "Could not apply evidence changes",
@@ -1582,10 +1611,15 @@ function App() {
         ? data.players.find((candidate) => candidate.id === playerId) || current
         : current,
     );
-    setToast({
-      message: `${input.evidenceSummary} Projections recalculated.`,
-      tone: "success",
-    });
+    const updatedPlayer = data.players.find((candidate) => candidate.id === playerId);
+    const affectsModel = isSignalAppliedToRole(updatedPlayer?.roleProfile, signal.id);
+    const refreshStarted = affectsModel ? await refreshForecastAfterSignalMutation() : false;
+    if (!affectsModel || refreshStarted) {
+      setToast({
+        message: `${input.evidenceSummary}${affectsModel ? " Forecast refresh started." : ""}`,
+        tone: "success",
+      });
+    }
     return signal;
   };
   const handleManualOverride = async (
@@ -2100,11 +2134,16 @@ function App() {
             onUnstageSignal={unstageSignalReview}
             onApplyBatch={applyBatchReview}
             applyingBatch={applyingBatch}
-            onSignalDeleted={(signal) => {
-              setToast({ message: "Signal deleted.", tone: "success" });
-              if (signal.status === "VERIFIED" && signal.interpretation?.modelImpact === "ROLE") {
-                setRecomputeRequest({ triggeredAt: Date.now(), baselineRunId: forecastSummary?.id ?? null });
-                triggerForecastRecompute().catch(() => {});
+            onModelSignalMutation={refreshForecastAfterSignalMutation}
+            onSignalDeleted={async (_signal, affectedModel) => {
+              const refreshStarted = affectedModel ? await refreshForecastAfterSignalMutation() : false;
+              if (!affectedModel || refreshStarted) {
+                setToast({
+                  message: affectedModel
+                    ? "Signal deleted. Forecast refresh started."
+                    : "Signal deleted. It had no model impact, so no forecast refresh was needed.",
+                  tone: "success",
+                });
               }
             }}
           />
@@ -5016,6 +5055,7 @@ function SignalsTab({
   onUnstageSignal,
   onApplyBatch,
   applyingBatch,
+  onModelSignalMutation,
   onSignalDeleted,
 }: {
   catalog: Player[];
@@ -5029,7 +5069,8 @@ function SignalsTab({
   onUnstageSignal: (signalId: string | number) => void;
   onApplyBatch: () => void;
   applyingBatch: boolean;
-  onSignalDeleted: (signal: PlayerSignal) => void;
+  onModelSignalMutation: () => Promise<boolean>;
+  onSignalDeleted: (signal: PlayerSignal, affectedModel: boolean) => Promise<void>;
 }) {
   const [signals, setSignals] = useState<PlayerSignal[]>([]);
   const [marketSnapshots, setMarketSnapshots] = useState<TeamMarketSnapshot[]>([]);
@@ -5184,6 +5225,7 @@ function SignalsTab({
 
   async function handleDeleteSignal(signal: PlayerSignal) {
     const playerName = playerMap.get(signal.playerId)?.name || `Player #${signal.playerId}`;
+    const affectedModel = isSignalAppliedToRole(playerMap.get(signal.playerId)?.roleProfile, signal.id);
     if (!window.confirm(`Permanently delete this signal for ${playerName}? This cannot be undone.`)) return;
     setDeletingSignalId(signal.id);
     setDeleteSignalError(null);
@@ -5191,7 +5233,7 @@ function SignalsTab({
       const deleted = await deletePlayerSignal(signal.id);
       setSignals((current) => current.filter((item) => item.id !== signal.id));
       onUnstageSignal(signal.id);
-      onSignalDeleted(deleted);
+      await onSignalDeleted(deleted, affectedModel);
     } catch (error) {
       setDeleteSignalError(error instanceof Error ? error.message : "Could not delete signal");
     } finally {
@@ -5202,7 +5244,8 @@ function SignalsTab({
   async function saveInterpretation(signal: PlayerSignal, startProbability: number, depthRole: "FIRST_CHOICE" | "ROTATION" | "BACKUP" | "OUT") {
     setInterpretationSaving(true);
     try {
-      await revisePlayerSignalInterpretation(signal.id, {
+      const affectedModel = isSignalAppliedToRole(playerMap.get(signal.playerId)?.roleProfile, signal.id);
+      const updated = await revisePlayerSignalInterpretation(signal.id, {
         claimClass: depthRole === "ROTATION" ? "ROTATION" : "REAL_WORLD_ROLE",
         modelImpact: "ROLE",
         value: { ...signal.value, startProbability, depthRole, note: signal.evidenceSummary },
@@ -5210,13 +5253,17 @@ function SignalsTab({
       });
       setEditingSignalId(null);
       loadSignals();
+      if (affectedModel || (updated.status === "VERIFIED" && signalCarriesRoleImpact(updated))) {
+        await onModelSignalMutation();
+      }
     } finally { setInterpretationSaving(false); }
   }
 
   async function markSignalAsContext(signal: PlayerSignal) {
     setInterpretationSaving(true);
     try {
-      await revisePlayerSignalInterpretation(signal.id, {
+      const affectedModel = isSignalAppliedToRole(playerMap.get(signal.playerId)?.roleProfile, signal.id);
+      const updated = await revisePlayerSignalInterpretation(signal.id, {
         claimClass: signal.claimClass === "FPL_SELECTION" ? "FPL_SELECTION" : "VALUE_OPINION",
         modelImpact: "NONE",
         value: { note: signal.evidenceSummary },
@@ -5225,6 +5272,9 @@ function SignalsTab({
       });
       setEditingSignalId(null);
       loadSignals();
+      if (affectedModel || (updated.status === "VERIFIED" && signalCarriesRoleImpact(updated))) {
+        await onModelSignalMutation();
+      }
     } finally { setInterpretationSaving(false); }
   }
 
@@ -5784,6 +5834,7 @@ function SignalsTab({
                 </div>
 
                 <div className="signal-card-body">
+                  <div className="signal-card-summary">
                   {player ? (
                     <button
                       className="signal-player-chip"
@@ -5800,8 +5851,12 @@ function SignalsTab({
                     </span>
                   )}
                   <p className="signal-evidence">{signal.evidenceSummary}</p>
-                  <div className={`signal-interpretation ${contextOnly ? "context" : needsInterpretation ? "needs" : "impact"}`}>
-                    <div className="signal-interpretation-head">
+                  </div>
+                  <details
+                    className={`signal-interpretation ${contextOnly ? "context" : needsInterpretation ? "needs" : "impact"}`}
+                    open={effectiveStatus === "PENDING" || undefined}
+                  >
+                    <summary className="signal-interpretation-head">
                       <b>{contextOnly
                         ? "Context only"
                         : needsInterpretation
@@ -5812,7 +5867,8 @@ function SignalsTab({
                               ? "Processed role evidence"
                               : "Proposed model adjustment"}</b>
                       <span>{claimClass.replace(/_/g, " ")}</span>
-                    </div>
+                    </summary>
+                    <div className="signal-interpretation-content">
                     <p>{interpretation?.rationale || (contextOnly ? "No projection impact." : "Structured role adjustment proposed from this evidence.")}</p>
                     {modelImpact === "ROLE" && appliedToCurrentRole && (
                       <div className="signal-impact-preview">
@@ -5840,7 +5896,8 @@ function SignalsTab({
                     )}
                     {contextOnly && <small>This records creator context but cannot change player minutes or projections.</small>}
                     {needsInterpretation && <small>Choose an interpretation before this evidence can affect the model.</small>}
-                  </div>
+                    </div>
+                  </details>
                   {editingSignalId === signal.id && (
                     <div className="signal-impact-editor">
                       <b>Choose or adjust the impact</b>
@@ -5860,12 +5917,13 @@ function SignalsTab({
                     </div>
                   )}
                   <div className="signal-footer">
-                    <span className="signal-confidence">
-                      Source confidence {Math.round(signal.confidence * 100)}%
-                      {` · trust ${Math.round(sourceTrust.trustWeight * 100)}%${sourceTrust.curated ? " curated" : ""}`}
-                      {interpretation ? ` · interpretation confidence ${Math.round(interpretation.confidence * 100)}%` : ""}
+                    <span className="signal-confidence" title="Signal confidence and trust">
+                      Source {Math.round(signal.confidence * 100)}%
+                      {` · Trust ${Math.round(sourceTrust.trustWeight * 100)}%${sourceTrust.curated ? " curated" : ""}`}
+                      {interpretation ? ` · Interpretation ${Math.round(interpretation.confidence * 100)}%` : ""}
                       {signal.gameweek ? ` · GW${signal.gameweek}` : ""}
                     </span>
+                    <div className="signal-footer-actions">
                     {sanitizeExternalUrl(signal.sourceUrl) && (
                       <a
                         href={sanitizeExternalUrl(signal.sourceUrl)!}
@@ -5876,6 +5934,16 @@ function SignalsTab({
                         Source ↗
                       </a>
                     )}
+                    {!stagedStatus && effectiveStatus === "VERIFIED" && (
+                      <button
+                        className="signal-inline-action"
+                        disabled={applyingBatch}
+                        onClick={() => handleReview(signal, "REJECTED")}
+                      >
+                        {modelImpact === "ROLE" ? "Remove adjustment" : "Remove context"}
+                      </button>
+                    )}
+                    </div>
                   </div>
                 </div>
 
@@ -5904,17 +5972,6 @@ function SignalsTab({
                       onClick={() => handleReview(signal, "REJECTED")}
                     >
                       Reject
-                    </button>
-                  </div>
-                )}
-                {!stagedStatus && effectiveStatus === "VERIFIED" && (
-                  <div className="signal-actions">
-                    <button
-                      className="ghost-btn"
-                      disabled={applyingBatch}
-                      onClick={() => handleReview(signal, "REJECTED")}
-                    >
-                      {modelImpact === "ROLE" ? "Remove adjustment" : "Remove context"}
                     </button>
                   </div>
                 )}
