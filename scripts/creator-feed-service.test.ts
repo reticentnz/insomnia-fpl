@@ -2,7 +2,7 @@ import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
-import { addCreatorSource, getCreatorVideoDetail, listCreatorSources, normalizeYoutubeSource, parseYoutubeFeed, processCreatorQueue, transcriptForPrompt } from './creator-feed-service.mjs'
+import { addCreatorSource, getCreatorVideoDetail, listCreatorSources, normalizeYoutubeSource, parseYoutubeFeed, processCreatorQueue, retryCreatorVideo, transcriptForPrompt } from './creator-feed-service.mjs'
 import { migrateDatabase } from './db-migrate.mjs'
 import { closeDb, getDb } from './db.mjs'
 
@@ -51,5 +51,19 @@ describe('native YouTube creator feeds', () => {
       extractionProvider: 'fixture', claimCount: 1,
     })
     expect(await getCreatorVideoDetail(db, 'missing')).toBeNull()
+  })
+
+  it('allows failed and delayed videos to be retried immediately', async () => {
+    const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'creator-retry-'))
+    directories.push(directory)
+    const database = path.join(directory, 'feed.sqlite')
+    await migrateDatabase(database)
+    const db = getDb(database)
+    const xml = `<feed xmlns:yt="http://www.youtube.com/xml/schemas/2015"><title>Test Creator</title><entry><yt:videoId>retryABC123</yt:videoId><title>Retry me</title><published>2026-08-13T10:00:00Z</published></entry></feed>`
+    await addCreatorSource(db, { channelId: 'UC1234567890123456789012' }, async () => new Response(xml))
+    await db.query(`UPDATE "CreatorVideo" SET "status"='RETRY',"next_attempt_at"='2099-01-01T00:00:00Z',"last_error"='Old provider error' WHERE "id"=$1`, ['retryABC123'])
+    await retryCreatorVideo(db, 'retryABC123')
+    expect(await getCreatorVideoDetail(db, 'retryABC123')).toMatchObject({ status: 'DISCOVERED', error: null })
+    await expect(retryCreatorVideo(db, 'retryABC123')).rejects.toThrow(/cannot be retried/)
   })
 })

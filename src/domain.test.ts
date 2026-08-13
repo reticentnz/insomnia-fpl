@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest'
 import { bestXI, bestXIForGameweek, buildDraftImprovementPlan, buildLegalDefaultSquad, buildLegalRemainingSquad, computeDraftFingerprint, computeDraftPlayerFingerprint, draftSquadScore, evaluateModeTransition, findTransferRoutesToTarget, getSquad, groupLegalChangeBundles, horizonProjection, initialSquadBank, isInitialDraftPeriod, isLegalTransfer, isPlayerInjured, isPlayerFlagged, optimizeInitialSquad, players, resolvePlanningMode, resolveSquadSaveTarget, transferDecision, transfers, validateInitialSquad, validateSquad, CLUB_FIXTURES, getPlayerUpcomingFixtures, gameweekProjection, INITIAL_SQUAD_BUDGET, TRANSFER_GAIN_THRESHOLDS, calculateChipImpact, generateSquadExportText, getPlayerFixtureTicker, getDifferentialsAndEnablers, getCaptaincyBreakdown, calculateRivalEO, getTeamColor, getPlayerShirtColor } from './domain'
 
 import { createToolContext, getBestTransfers, simulateTransfers } from './intelligence'
+import { reviewDecision } from './decision-review'
 import { allocateBonusPoints, scorePlayerMatch } from './model'
 import { evaluateCalibration } from './backtest'
 import { buildExplanationContext, resolvePlayerMention, resolveMultiplePlayerMentions } from './integrations'
@@ -272,6 +273,28 @@ describe('Recommendation context and transfer sequencing', () => {
     const ranked = ctx.rankedPlayers as Array<{position: string; name: string}>
     expect(ranked.length).toBe(5)
     expect(ranked.every(p => p.position === 'MID')).toBe(true)
+  })
+  it('honours a price cap in position-ranking questions', () => {
+    const squad=getSquad()
+    const context=buildExplanationContext({modelVersion:'test',horizon:5,squad,catalog:players,captain:null,transfers:transfers(5,1.2,1,squad,players),decision:transferDecision(5,1.2,1,squad,players),bank:1.2,freeTransfers:1}, 'Find me a midfielder under £7.0m.') as Record<string, unknown>
+    expect(context.intent).toBe('position_ranking')
+    expect(context.maxPrice).toBe(7)
+    expect((context.rankedPlayers as Array<{price:number}>).every(player => player.price <= 7)).toBe(true)
+  })
+})
+
+describe('Ask suggestion handlers', () => {
+  it('answers captain, roll, and weakest-player prompts with their dedicated analysis', async () => {
+    const ctx=createToolContext()
+    const captain=await reviewDecision('Who should I captain?', 5, ctx)
+    expect(captain.arbiter.mainArgument).toContain('Captain ')
+    expect(captain.toolTrace).toContain('getCaptainCandidates')
+
+    const roll=await reviewDecision('Should I roll my transfer?', 5, ctx)
+    expect(roll.arbiter.mainArgument).toMatch(/Roll the transfer|Do not roll/)
+
+    const weakest=await reviewDecision('Who is my weakest player?', 5, ctx)
+    expect(weakest.arbiter.mainArgument).toMatch(/most upgradeable squad slot|No owned player/)
   })
 })
 

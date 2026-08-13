@@ -50,7 +50,7 @@ import { HttpRequestError, MAX_JSON_BODY_BYTES, readJsonBody, sanitizeError } fr
 import { createPlayerSignal, deletePlayerSignal, listPlayerSignals, revisePlayerSignalInterpretation, updatePlayerSignalStatuses } from '../src/server/signal-service.ts'
 import { latestSuccessfulFeedRun } from './feed-run.mjs'
 import { nextIngestSchedule, parseIngestIntervalHours } from '../src/server/ingest-scheduler.ts'
-import { addCreatorSource, deleteCreatorSource, getCreatorVideoDetail, listCreatorSources, pollCreatorSources, processCreatorQueue, setCreatorSourceEnabled, transcriptForPrompt } from './creator-feed-service.mjs'
+import { addCreatorSource, deleteCreatorSource, getCreatorVideoDetail, listCreatorSources, pollCreatorSources, processCreatorQueue, retryCreatorVideo, setCreatorSourceEnabled, transcriptForPrompt } from './creator-feed-service.mjs'
 
 let systemStatus = {
   status: 'initializing',
@@ -890,7 +890,12 @@ async function refreshNativeCreatorFeeds(){
   const poll=await pollCreatorSources(db)
   const queue=await processCreatorQueue(db,{limit:Number(process.env.CREATOR_INGEST_BATCH_SIZE)||2,extractClaims:async({video,transcript})=>{
     const llm=await callLLMProvider(creatorExtractionPrompt(video,transcript),{rawJson:true,maxOutputTokens:4000})
-    if(!llm?.answer)throw new Error('No LLM provider is configured or reachable')
+    if(!llm?.answer){
+      const configured=loadAiSettings(),provider=String(configured.provider||'gemini').toLowerCase()
+      const environmentKey=provider==='openai'?process.env.OPENAI_API_KEY:provider==='anthropic'?process.env.ANTHROPIC_API_KEY:provider==='deepseek'?process.env.DEEPSEEK_API_KEY:process.env.GEMINI_API_KEY
+      if(!configured.apiKey&&!environmentKey)throw new Error(`No ${provider} API key is available to background creator processing. Re-save the key in AI configuration.`)
+      throw new Error(`The configured ${provider} provider returned no usable response for creator extraction.`)
+    }
     const extracted=parseCreatorExtraction(llm.answer)
     const payload={schemaVersion:1,source:{platform:'YOUTUBE',externalId:video.id,creator:video.source_name,title:video.title,url:video.url,publishedAt:video.published_at},claims:extracted.claims}
     return {provider:llm.provider,payload,ingest:processCreatorPayload}
@@ -1589,7 +1594,20 @@ function startServerOnAvailablePort(targetPort) {
       return
     }
 
-    const creatorVideoMatch=request.match(/^\/api\/creator-videos\/(.+)$/)
+    const creatorVideoRetryMatch=request.match(/^\/api\/creator-videos\/([^/]+)\/retry$/)
+    if(creatorVideoRetryMatch&&req.method==='POST'){
+      try{
+        await retryCreatorVideo(await getDb(),decodeURIComponent(creatorVideoRetryMatch[1]))
+        if(!startAdminOperation('creator-sync',refreshNativeCreatorFeeds))await scheduleAuxiliaryRefresh('creator')
+        sendJson(res,202,await listCreatorSources(await getDb()))
+      }catch(error){
+        const message=error instanceof Error?error.message:'Creator video could not be retried'
+        sendJson(res,message.endsWith('not found')?404:409,{error:message})
+      }
+      return
+    }
+
+    const creatorVideoMatch=request.match(/^\/api\/creator-videos\/([^/]+)$/)
     if(creatorVideoMatch&&req.method==='GET'){
       try{
         const video=await getCreatorVideoDetail(await getDb(),decodeURIComponent(creatorVideoMatch[1]))

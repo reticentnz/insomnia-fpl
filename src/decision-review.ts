@@ -1,4 +1,4 @@
-import { getBestLineup, getBestTransfers, getRecentMinutes, getUpgradeOpportunities, type Evidence, type Horizon, type ToolContext } from './intelligence.ts'
+import { getBestLineup, getBestTransfers, getCaptainCandidates, getRecentMinutes, getUpgradeOpportunities, type Evidence, type Horizon, type ToolContext } from './intelligence.ts'
 import { horizonProjection, type Transfer } from './domain.ts'
 import { resolveMultiplePlayerMentions } from './integrations.ts'
 
@@ -23,6 +23,11 @@ export async function reviewDecision(question:string,horizon:Horizon,ctx:ToolCon
   const mentioned=resolveMultiplePlayerMentions(question,ctx.players)
   const isComparisonQuery=/\b(vs|versus|or|compare|better|between|prefer|against)\b/i.test(question)
   const isLineupQuery=/starting|lineup|xi|team|starters/i.test(question)
+  const isWeakestQuery=/\b(weakest|worst|most expendable)\b/i.test(question)
+  const isRollQuery=/\broll\b.*\btransfer|\btransfer\b.*\broll\b/i.test(question)
+  const isCaptainQuery=/\b(captain|captaincy|armband|vice captain)\b/i.test(question)
+  const captainCandidates=isCaptainQuery ? getCaptainCandidates(ctx.currentGameweek||1,ctx) : null
+  if(captainCandidates) toolTrace.push(captainCandidates.tool)
   const lineupNames=lineup.data.lineup.map(p=>`${p.name} (${p.position})`).join(', ')
 
   let quantArgs: string[] = []
@@ -30,7 +35,42 @@ export async function reviewDecision(question:string,horizon:Horizon,ctx:ToolCon
   let mainArgumentOverride: string | null = null
   let counterweightOverride: string | null = null
 
-  if (mentioned.length >= 2 || (mentioned.length === 1 && isComparisonQuery)) {
+  if (isCaptainQuery && captainCandidates) {
+    const [first, second] = captainCandidates.data.candidates
+    recommendation = 'KEEP'
+    mainArgumentOverride = first
+      ? `Captain ${first.player.name} (${first.player.club}) this gameweek; the model projects ${first.projectedContribution.value.toFixed(1)} captain points.`
+      : 'No eligible captain candidate is available from the current Starting XI.'
+    counterweightOverride = second
+      ? `${second.player.name} is the nearest alternative at ${second.projectedContribution.value.toFixed(1)} projected captain points.`
+      : 'Recheck once team news changes.'
+    quantArgs = captainCandidates.data.candidates.slice(0, 3).map((candidate, index) =>
+      `${index + 1}. ${candidate.player.name}: ${candidate.projectedContribution.value.toFixed(1)} projected captain points for this gameweek.`
+    )
+  } else if (isWeakestQuery) {
+    const weakest = upgrades.data.opportunities.slice().sort((a,b) => b.gain.value - a.gain.value)[0]
+    if (weakest?.replacement) {
+      recommendation = weakest.gain.value >= 1 ? 'SELL' : 'KEEP'
+      mainArgumentOverride = `${weakest.out.name} is your most upgradeable squad slot: ${weakest.replacement.name} improves the projection by ${weakest.gain.value.toFixed(1)} points over ${horizon} GWs.`
+      counterweightOverride = `Keep ${weakest.out.name} if you prefer to save the transfer; the upgrade must still clear the model's action threshold.`
+      quantArgs = [mainArgumentOverride]
+    } else {
+      recommendation = 'KEEP'
+      mainArgumentOverride = 'No owned player has a legal upgrade that clears the model threshold.'
+      counterweightOverride = 'Reassess when fixtures, availability or your budget change.'
+      quantArgs = [mainArgumentOverride]
+    }
+  } else if (isRollQuery) {
+    const shouldRoll = transfers.data.roll.value
+    recommendation = shouldRoll ? 'ROLL' : 'BUY'
+    mainArgumentOverride = shouldRoll
+      ? 'Roll the transfer: no legal move currently clears the model’s marginal-gain threshold.'
+      : best ? `Do not roll: ${best.out.name} → ${best.in.name} is the best legal move, with a ${best.net.toFixed(1)}-point net gain over ${horizon} GWs.` : 'Roll the transfer: no legal move is available.'
+    counterweightOverride = shouldRoll
+      ? 'Recheck before the deadline for injury, minutes or price changes.'
+      : 'Only make the move if the expected-minutes and fixture assumptions remain intact.'
+    quantArgs = [mainArgumentOverride]
+  } else if (mentioned.length >= 2 || (mentioned.length === 1 && isComparisonQuery)) {
     const p1 = mentioned[0]
     const p2 = mentioned[1] || ctx.players.find(p => p.id !== p1.id && p.position === p1.position) || ctx.players[0]
     const p1Xpts = horizonProjection(p1, horizon)

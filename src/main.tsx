@@ -105,6 +105,7 @@ import {
   type AdminStatus,
   fetchCreatorSources,
   fetchCreatorVideoDetail,
+  retryCreatorVideo,
   addCreatorSource,
   setCreatorSourceEnabled,
   removeCreatorSource,
@@ -5083,6 +5084,7 @@ function SignalsTab({
   const [creatorVideoDetails, setCreatorVideoDetails] = useState<Record<string, CreatorVideoDetail>>({});
   const [creatorVideoDetailLoading, setCreatorVideoDetailLoading] = useState<string | null>(null);
   const [creatorVideoDetailError, setCreatorVideoDetailError] = useState<Record<string, string>>({});
+  const [creatorVideoRetrying, setCreatorVideoRetrying] = useState<string | null>(null);
   const [claimSelections, setClaimSelections] = useState<Record<string, number>>({});
   const [claimReviewingId, setClaimReviewingId] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
@@ -5179,6 +5181,24 @@ function SignalsTab({
       setCreatorVideoDetailError((current) => ({ ...current, [id]: reason instanceof Error ? reason.message : "Video details unavailable" }));
     } finally {
       setCreatorVideoDetailLoading((current) => current === id ? null : current);
+    }
+  }
+
+  async function handleRetryCreatorVideo(id: string) {
+    setCreatorVideoRetrying(id);
+    setCreatorVideoDetailError((current) => ({ ...current, [id]: "" }));
+    try {
+      setCreatorFeeds(await retryCreatorVideo(id));
+      setCreatorVideoDetails((current) => {
+        const next = { ...current };
+        delete next[id];
+        return next;
+      });
+      setExpandedCreatorVideoId(null);
+    } catch (reason) {
+      setCreatorVideoDetailError((current) => ({ ...current, [id]: reason instanceof Error ? reason.message : "Could not retry video" }));
+    } finally {
+      setCreatorVideoRetrying(null);
     }
   }
 
@@ -5615,6 +5635,11 @@ function SignalsTab({
                     <a href={detail.url} target="_blank" rel="noreferrer">Watch on YouTube ↗</a>
                   </div>
                   {detail.error && <div className="creator-video-error"><b>Processing message</b><span>{detail.error}</span></div>}
+                  {(detail.status === "RETRY" || detail.status === "FAILED") && <div>
+                    <button type="button" className="ghost-btn" disabled={creatorVideoRetrying === video.id} onClick={() => void handleRetryCreatorVideo(video.id)}>
+                      {creatorVideoRetrying === video.id ? "Retrying…" : "Retry now"}
+                    </button>
+                  </div>}
                   {detail.transcript.length ? <details open>
                     <summary>Raw transcript ({detail.transcript.length} segments)</summary>
                     <pre className="creator-transcript">{detail.transcript.map((segment) => `[${Math.floor(segment.start / 60)}:${String(Math.round(segment.start % 60)).padStart(2, "0")}] ${segment.text}`).join("\n")}</pre>
@@ -8456,6 +8481,8 @@ function AiKeyModal({
   const [keyInput, setKeyInput] = useState(apiKey);
   const [provInput, setProvInput] = useState(provider);
   const [autoDetected, setAutoDetected] = useState<string | null>(null);
+  const [saving, setSaving] = useState(false);
+  const [saveError, setSaveError] = useState<string | null>(null);
 
   const handleKeyChange = (val: string) => {
     setKeyInput(val);
@@ -8479,29 +8506,45 @@ function AiKeyModal({
     }
   };
 
-  const save = () => {
+  const save = async () => {
     const cleanKey = keyInput.trim();
-    setApiKey(cleanKey);
-    setProvider(provInput);
-    saveServerAiConfig(provInput, cleanKey);
-    if (fplAccount) {
-      const nextAcc = { ...fplAccount, aiProvider: provInput, apiKey: cleanKey };
-      if (setFplAccount) setFplAccount(nextAcc);
-      saveUserProfile(nextAcc, selectedIds);
+    setSaving(true);
+    setSaveError(null);
+    try {
+      await saveServerAiConfig(provInput, cleanKey);
+      setApiKey(cleanKey);
+      setProvider(provInput);
+      if (fplAccount) {
+        const nextAcc = { ...fplAccount, aiProvider: provInput, apiKey: cleanKey };
+        if (setFplAccount) setFplAccount(nextAcc);
+        await saveUserProfile(nextAcc, selectedIds);
+      }
+      onClose();
+    } catch (reason) {
+      setSaveError(reason instanceof Error ? reason.message : "Could not save AI configuration");
+    } finally {
+      setSaving(false);
     }
-    onClose();
   };
-  const clear = () => {
-    setApiKey("");
-    saveServerAiConfig(provInput, "");
-    if (fplAccount) {
-      const nextAcc = { ...fplAccount, apiKey: "" };
-      if (setFplAccount) setFplAccount(nextAcc);
-      saveUserProfile(nextAcc, selectedIds);
+  const clear = async () => {
+    setSaving(true);
+    setSaveError(null);
+    try {
+      await saveServerAiConfig(provInput, "");
+      setApiKey("");
+      if (fplAccount) {
+        const nextAcc = { ...fplAccount, apiKey: "" };
+        if (setFplAccount) setFplAccount(nextAcc);
+        await saveUserProfile(nextAcc, selectedIds);
+      }
+      setKeyInput("");
+      setAutoDetected(null);
+      onClose();
+    } catch (reason) {
+      setSaveError(reason instanceof Error ? reason.message : "Could not remove AI configuration");
+    } finally {
+      setSaving(false);
     }
-    setKeyInput("");
-    setAutoDetected(null);
-    onClose();
   };
   return (
     <div className="modal-backdrop">
@@ -8583,22 +8626,24 @@ function AiKeyModal({
           <p className="import-note">
             <Shield size={14} /> Keys are saved in your app configuration and used to fetch grounded AI insights.
           </p>
+          {saveError && <div className="admin-error" role="alert">{saveError}</div>}
         </div>
         <div className="modal-foot">
           {apiKey && (
             <button
               className="ghost-btn"
               style={{ color: "var(--accent-rose)" }}
-              onClick={clear}
+              disabled={saving}
+              onClick={() => void clear()}
             >
               Remove key
             </button>
           )}
-          <button className="ghost-btn" onClick={onClose}>
+          <button className="ghost-btn" disabled={saving} onClick={onClose}>
             Cancel
           </button>
-          <button className="dark-btn" onClick={save}>
-            Save key
+          <button className="dark-btn" disabled={saving || !keyInput.trim()} onClick={() => void save()}>
+            {saving ? "Saving…" : "Save key"}
           </button>
         </div>
       </div>

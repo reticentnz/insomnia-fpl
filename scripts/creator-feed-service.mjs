@@ -76,6 +76,15 @@ export async function getCreatorVideoDetail(db, id) {
   }
 }
 
+export async function retryCreatorVideo(db, id) {
+  const result = await db.query(`UPDATE "CreatorVideo" SET "status"='DISCOVERED',"next_attempt_at"=NULL,"last_error"=NULL,"updated_at"=$2 WHERE "id"=$1 AND "status" IN ('RETRY','FAILED')`, [id, new Date().toISOString()])
+  if (!result.changes) {
+    const existing = await db.query(`SELECT "status" FROM "CreatorVideo" WHERE "id"=$1`, [id])
+    if (!existing.rows.length) throw new Error('Creator video not found')
+    throw new Error(`Creator video cannot be retried while its status is ${existing.rows[0].status}`)
+  }
+}
+
 export async function addCreatorSource(db, input, fetchImpl = fetch) {
   const normalized = normalizeYoutubeSource(input.url || input.channelId)
   const response = await fetchImpl(normalized.feedUrl, { headers: { 'user-agent': 'insomnia-fpl/0.1' }, signal: AbortSignal.timeout(15_000) })

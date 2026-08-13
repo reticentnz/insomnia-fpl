@@ -242,10 +242,16 @@ export function buildExplanationContext(args:ExplanationContext,question='') {
   else if (/\b(defenders?|defs?|backs?)\b/.test(normalized)) posTarget = 'DEF'
   else if (/\b(goalkeepers?|keepers?|gk|gkp)\b/.test(normalized)) posTarget = 'GKP'
 
+  // Keep the original string for decimal prices: normalization splits "£7.0m"
+  // into separate tokens, which cannot be used as a budget value.
+  const priceMatch = question.match(/\b(?:under|below|less than|max(?:imum)?(?: price)?|up to)\s*(?:£\s*)?(\d+(?:\.\d+)?)\s*m?\b/i)
+  const maxPrice = priceMatch ? Number(priceMatch[1]) : null
+
   if ((posTarget || (wantsRanking && !wantsTransfer)) && !primaryMentioned) {
     const countMatch = normalized.match(/\b(top|best)\s+(\d{1,2})\b/)
     const limit = countMatch ? Math.min(10, Math.max(3, parseInt(countMatch[2], 10))) : 5
-    const pool = posTarget ? catalog.filter(p => p.position === posTarget) : catalog
+    const pool = (posTarget ? catalog.filter(p => p.position === posTarget) : catalog)
+      .filter(p => maxPrice === null || p.price <= maxPrice)
     const ranked = pool
       .slice()
       .sort((a, b) => horizonProjection(b, args.horizon) - horizonProjection(a, args.horizon))
@@ -259,14 +265,15 @@ export function buildExplanationContext(args:ExplanationContext,question='') {
       ...base,
       intent: 'position_ranking',
       positionTarget: posTarget || 'ALL',
-      rankingSummary: `Top ${ranked.length} ${posTarget || 'overall'} players by xPts: ${summaryText}`,
+      rankingSummary: `Top ${ranked.length} ${posTarget || 'overall'} players by xPts${maxPrice === null ? '' : ` at £${maxPrice.toFixed(1)}m or less`}: ${summaryText}`,
       rankedPlayers: ranked.map(p => ({
         ...compactPlayer(p, args.horizon),
         owned: args.squad.some(s => s.id === p.id),
         expectedMinutes: p.expectedMinutes ?? 90,
         status: p.status || 'AVAILABLE',
         upcomingFixtures: (p.upcomingFixtures || []).slice(0, args.horizon).map(f => `${f.opponent} (${f.venue})`)
-      }))
+      })),
+      ...(maxPrice === null ? {} : { maxPrice })
     }
   }
 
@@ -1129,6 +1136,10 @@ export async function fetchCreatorVideoDetail(id: string): Promise<CreatorVideoD
   return data.video
 }
 
+export async function retryCreatorVideo(id: string): Promise<CreatorFeedState> {
+  return creatorFeedRequest(`/api/creator-videos/${encodeURIComponent(id)}/retry`, { method: 'POST' })
+}
+
 export function addCreatorSource(channelIdOrUrl: string, name = ''): Promise<CreatorFeedState> {
   return creatorFeedRequest('/api/creator-sources', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ url: channelIdOrUrl, name: name || undefined }) })
 }
@@ -1174,15 +1185,12 @@ export async function fetchServerAiConfig(): Promise<ServerAiConfig> {
   }
 }
 
-export async function saveServerAiConfig(provider: string, apiKey: string): Promise<boolean> {
-  try {
-    const res = await fetch('/api/ai-config', {
-      method: 'POST',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ provider, apiKey }),
-    })
-    return res.ok
-  } catch {
-    return false
-  }
+export async function saveServerAiConfig(provider: string, apiKey: string): Promise<void> {
+  const res = await fetch('/api/ai-config', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ provider, apiKey }),
+  })
+  const data = await res.json().catch(() => null)
+  if (!res.ok) throw new Error(apiErrorMessage(data, `Could not save AI configuration: HTTP ${res.status}`))
 }
