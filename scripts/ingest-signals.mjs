@@ -330,7 +330,7 @@ function matchFixture(event, fixtures) {
 }
 
 export async function ingestUnderlyingRows(db, { season, rows, observedAt = new Date().toISOString(), source = UNDERLYING_SOURCE, feedDetails = {} }) {
-  const runId = await startFeedRun(db, { source: 'UNDERLYING', startedAt: observedAt, sourceUpdatedAt: observedAt, payloadHash: hashPayload(rows), requestCount: feedDetails.requestCount || 1 })
+  const runId = await startFeedRun(db, { source: 'UNDERLYING', startedAt: observedAt, sourceUpdatedAt: observedAt, payloadHash: hashPayload(rows), requestCount: feedDetails.requestCount || 1, metadata: { provider: 'Understat' } })
   try {
     const players = await currentSeasonPlayers(db, season)
     let inserted = 0; let unmatched = 0
@@ -351,7 +351,7 @@ export async function ingestUnderlyingRows(db, { season, rows, observedAt = new 
 }
 
 export async function ingestMarketEvents(db, { season, events, capturedAt = new Date().toISOString(), source = MARKET_SOURCE, feedDetails = {} }) {
-  const runId = await startFeedRun(db, { source: 'MARKET', startedAt: capturedAt, sourceUpdatedAt: capturedAt, payloadHash: hashPayload(events), requestCount: feedDetails.requestCount || 1 })
+  const runId = await startFeedRun(db, { source: 'MARKET', startedAt: capturedAt, sourceUpdatedAt: capturedAt, payloadHash: hashPayload(events), requestCount: feedDetails.requestCount || 1, metadata: { provider: 'The Odds API' } })
   try {
     const fixtures = await currentSeasonFixtures(db, season)
     let inserted = 0; let unmatched = 0

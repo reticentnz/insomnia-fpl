@@ -48,7 +48,7 @@ import { CatalogueCache, catalogueCacheKey, catalogueRequestKey } from '../src/s
 import { ConcurrencyLimiter, TtlCache } from '../src/server/upstream-control.ts'
 import { HttpRequestError, MAX_JSON_BODY_BYTES, readJsonBody, sanitizeError } from '../src/server/http-security.mjs'
 import { createPlayerSignal, deletePlayerSignal, listPlayerSignals, revisePlayerSignalInterpretation, updatePlayerSignalStatuses } from '../src/server/signal-service.ts'
-import { latestSuccessfulFeedRun } from './feed-run.mjs'
+import { failFeedRun, latestSuccessfulFeedRun, startFeedRun, succeedFeedRun } from './feed-run.mjs'
 import { nextIngestSchedule, parseIngestIntervalHours } from '../src/server/ingest-scheduler.ts'
 import { addCreatorSource, deleteCreatorSource, getCreatorVideoDetail, listCreatorSources, pollCreatorSources, processCreatorQueue, retryCreatorVideo, setCreatorSourceEnabled, transcriptForPrompt } from './creator-feed-service.mjs'
 import { addRssSource, deleteRssSource, listRssSources, pollRssSources, processRssQueue, setRssSourceEnabled } from './rss-feed-service.mjs'
@@ -907,6 +907,8 @@ ${transcriptForPrompt(transcript.segments)}`
 
 async function refreshNativeCreatorFeeds(){
   const db=await getDb()
+  const runId=await startFeedRun(db,{source:'CREATOR',metadata:{provider:'YouTube RSS',label:'YouTube creator feeds'}})
+  try {
   const poll=await pollCreatorSources(db)
   const queue=await processCreatorQueue(db,{limit:Number(process.env.CREATOR_INGEST_BATCH_SIZE)||2,extractClaims:async({video,transcript})=>{
     const llm=await callLLMProvider(creatorExtractionPrompt(video,transcript),{rawJson:true,maxOutputTokens:4000})
@@ -921,7 +923,9 @@ async function refreshNativeCreatorFeeds(){
     const payload={schemaVersion:1,source:{platform:'YOUTUBE',externalId:video.id,creator:video.source_name,title:video.title,url:video.url,publishedAt:video.published_at},claims:extracted.claims}
     return {provider:llm.provider,payload,ingest:processCreatorPayload}
   }})
+  await succeedFeedRun(db,runId,{insertedCount:poll.discovered,updatedCount:queue.processed,unmatchedCount:queue.unavailable+queue.failed,metadata:{sourcesPolled:poll.sources,signalsExtracted:queue.claims}})
   return `Polled ${poll.sources} creator source${poll.sources===1?'':'s'}; processed ${queue.processed} video${queue.processed===1?'':'s'}; extracted ${queue.claims} signal${queue.claims===1?'':'s'}.`
+  } catch (error) { await failFeedRun(db,runId,error); throw error }
 }
 
 
@@ -1235,6 +1239,8 @@ ${item.content_text}`
 
 async function refreshRssFeeds() {
   const db = await getDb()
+  const runId = await startFeedRun(db, { source: 'RESEARCH', metadata: { provider: 'RSS/Atom', label: 'RSS/Atom feeds' } })
+  try {
   const poll = await pollRssSources(db)
   const queue = await processRssQueue(db, { limit: Number(process.env.RSS_INGEST_BATCH_SIZE) || 3, extractClaims: async ({ item }) => {
     const llm = await callLLMProvider(rssExtractionPrompt(item), { rawJson: true, maxOutputTokens: 3000 })
@@ -1244,7 +1250,9 @@ async function refreshRssFeeds() {
     const payload = { schemaVersion: 1, source: { platform: 'RSS', externalId: item.id, creator: item.source_name, title: item.title, url: item.url || item.feed_url, publishedAt: item.published_at, signalSourceType: 'LLM_RESEARCH' }, claims: extracted.claims }
     return { provider: llm.provider, payload, ingest: processCreatorPayload }
   } })
+  await succeedFeedRun(db, runId, { insertedCount: poll.discovered, updatedCount: queue.processed, unmatchedCount: queue.insufficient + queue.failed, metadata: { sourcesPolled: poll.sources, signalsExtracted: queue.claims } })
   return `Polled ${poll.sources} RSS source${poll.sources === 1 ? '' : 's'}; processed ${queue.processed} item${queue.processed === 1 ? '' : 's'}; extracted ${queue.claims} pending signal${queue.claims === 1 ? '' : 's'}.`
+  } catch (error) { await failFeedRun(db, runId, error); throw error }
 }
 
 function normalizedAiUsage(provider, model, usage={}, webSearchCalls=0){

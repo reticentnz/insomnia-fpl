@@ -102,6 +102,7 @@ import {
   type TeamMarketSnapshot,
   fetchAdminStatus,
   runAdminOperation,
+  type AdminFeedRun,
   type AdminStatus,
   fetchCreatorSources,
   fetchCreatorVideoDetail,
@@ -452,6 +453,27 @@ const adminActionDetails = [
   { id: "relink-player-teams", icon: "⤢", title: "Relink players to clubs", description: "Refresh official player-to-club observations, then re-import the linked manager squad." },
 ];
 
+const feedSourceLabel: Record<string, string> = {
+  OFFICIAL_FPL: "Official FPL API",
+  UNDERLYING: "Understat",
+  MARKET: "The Odds API",
+  CREATOR: "YouTube creator feeds",
+  RESEARCH: "RSS/Atom feeds",
+};
+
+function feedRunChanges(run: AdminFeedRun) {
+  return run.source === "CREATOR" || run.source === "RESEARCH"
+    ? `${run.insertedCount} discovered · ${run.updatedCount} processed`
+    : `${run.insertedCount} added · ${run.updatedCount} updated`;
+}
+
+function feedRunOutcome(run: AdminFeedRun) {
+  if (run.source === "CREATOR" || run.source === "RESEARCH") {
+    return run.unmatchedCount ? `${run.unmatchedCount} need attention` : "Complete";
+  }
+  return run.unmatchedCount ? `${run.unmatchedCount} unresolved` : "All linked";
+}
+
 function AdminView({ system, forecast, horizon }: { system: SystemStatus | null; forecast: ForecastSummary | null; horizon: number }) {
   const [status, setStatus] = useState<AdminStatus | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -528,9 +550,9 @@ function AdminView({ system, forecast, horizon }: { system: SystemStatus | null;
     <section className="admin-feed-card">
       <div className="admin-section-heading"><div><small>INGESTION AUDIT</small><h2>Recent feed runs</h2></div><button className="ghost-btn" onClick={() => void load()}>Refresh</button></div>
       <div className="admin-feed-table" role="table">
-        <div className="admin-feed-row admin-feed-header" role="row"><span>Source</span><span>Status</span><span>Started</span><span>Changes</span><span>Links</span></div>
+        <div className="admin-feed-row admin-feed-header" role="row"><span>Source</span><span>Status</span><span>Started</span><span>Changes</span><span>Outcome</span></div>
         {status?.feedRuns.length ? status.feedRuns.map(run => <div className="admin-feed-row" role="row" key={run.id} title={run.error || run.id}>
-          <b>{run.source.replaceAll("_", " ")}</b><span className={`feed-status feed-${run.status.toLowerCase()}`}>{run.status}</span><span>{formatOperationalTime(run.startedAt)}</span><span>{run.insertedCount} added · {run.updatedCount} updated</span><span>{run.unmatchedCount ? `${run.unmatchedCount} unresolved` : "All linked"}{run.usedCache ? " · cache" : ""}</span>
+          <b>{feedSourceLabel[run.source] || run.source.replaceAll("_", " ")}</b><span className={`feed-status feed-${run.status.toLowerCase()}`}>{run.status}</span><span>{formatOperationalTime(run.startedAt)}</span><span>{feedRunChanges(run)}</span><span>{feedRunOutcome(run)}{run.usedCache ? " · cache" : ""}</span>
         </div>) : <p className="admin-empty">No feed runs recorded yet.</p>}
       </div>
     </section>

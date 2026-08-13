@@ -11,6 +11,7 @@ describe('RSS feed service', () => {
   it('allows public http(s) feeds and rejects local targets', () => {
     expect(normalizeRssSource('https://publisher.example/rss.xml#latest')).toBe('https://publisher.example/rss.xml')
     expect(() => normalizeRssSource('http://127.0.0.1/feed.xml')).toThrow('public hostname')
+    expect(() => normalizeRssSource('http://[::1]/feed.xml')).toThrow('public hostname')
   })
 
   it('uses a stable item identifier so an unchanged headline is deduplicated by its feed GUID', () => {

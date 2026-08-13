@@ -40,11 +40,19 @@ export function parseRssFeed(xml) {
   return { sourceName: sourceName.slice(0, 160), entries }
 }
 
-async function fetchFeed(url, fetchImpl, validators = {}) {
+async function fetchFeed(url, fetchImpl, validators = {}, redirects = 0) {
   const headers = { accept: 'application/rss+xml, application/atom+xml, application/xml, text/xml;q=0.9', 'user-agent': 'insomnia-fpl/0.1' }
   if (validators.etag) headers['if-none-match'] = validators.etag
   if (validators.lastModified) headers['if-modified-since'] = validators.lastModified
-  const response = await fetchImpl(url, { headers, redirect: 'error', signal: AbortSignal.timeout(15_000) })
+  const response = await fetchImpl(url, { headers, redirect: 'manual', signal: AbortSignal.timeout(15_000) })
+  if (response.status >= 300 && response.status < 400) {
+    if (redirects >= 3) throw new Error('RSS feed redirected too many times')
+    const location = response.headers.get('location')
+    if (!location) throw new Error(`RSS feed returned HTTP ${response.status} without a redirect location`)
+    let redirected
+    try { redirected = normalizeRssSource(new URL(location, url).toString()) } catch { throw new Error('RSS feed redirected to an invalid or non-public URL') }
+    return fetchFeed(redirected, fetchImpl, validators, redirects + 1)
+  }
   if (response.status === 304) return { unchanged: true, etag: validators.etag || null, lastModified: validators.lastModified || null, payloadHash: validators.payloadHash || null }
   if (!response.ok) throw new Error(`RSS feed returned HTTP ${response.status}`)
   const length = Number(response.headers.get('content-length') || 0)
