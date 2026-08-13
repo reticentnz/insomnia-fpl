@@ -47,6 +47,7 @@ function recommendationSetIdentityQuery() {
   return `SELECT "id" FROM "RecommendationSet"
     WHERE "plan_id"=$1 AND "forecast_run_id"=$2 AND "horizon"=$3 AND "max_transfers"=$4
       AND COALESCE("chip", '')=COALESCE($5, '') AND "uncertainty_penalty_rate"=$6 AND "input_hash"=$7
+      AND COALESCE("league_id", 0)=COALESCE($8, 0)
       AND "status" IN ('SUCCEEDED','INSUFFICIENT_DATA')
     ORDER BY datetime("created_at") DESC,"id" DESC LIMIT 1`
 }
@@ -79,7 +80,7 @@ export async function planSquad(db, planId, runPlayers) {
   return { squad, bankBeforeTenths: asNumber(rows.rows[0].bank_tenths), freeTransfers: Number(rows.rows[0].free_transfers) }
 }
 
-export async function createRecommendationSet(db, { planId, forecastRunId, horizon = 1, maxTransfers = 5, uncertaintyPenaltyRate = .15, chip = null, createdAt = new Date().toISOString() }) {
+export async function createRecommendationSet(db, { planId, forecastRunId, horizon = 1, maxTransfers = 5, uncertaintyPenaltyRate = .15, chip = null, league = null, createdAt = new Date().toISOString() }) {
   if (!Number.isInteger(horizon) || horizon < 1) throw new Error('horizon must be a positive integer')
   if (!Number.isInteger(maxTransfers) || maxTransfers < 0 || maxTransfers > 5) throw new Error('maxTransfers must be between 0 and 5')
   const run = forecastRunId
@@ -87,13 +88,25 @@ export async function createRecommendationSet(db, { planId, forecastRunId, horiz
     : await db.query(`SELECT * FROM "ForecastRun" WHERE "status"='SUCCEEDED' ORDER BY datetime("created_at") DESC,"id" DESC LIMIT 1`)
   const resolvedForecastRunId = run.rows[0]?.id
   if (!resolvedForecastRunId) throw new Error(`No succeeded forecast run is available`)
-  const cached = await db.query(recommendationSetIdentityQuery(), [planId, resolvedForecastRunId, horizon, maxTransfers, chip, uncertaintyPenaltyRate, run.rows[0].input_hash])
+  const leagueId = league?.leagueId ?? null
+  const cached = await db.query(recommendationSetIdentityQuery(), [planId, resolvedForecastRunId, horizon, maxTransfers, chip, uncertaintyPenaltyRate, run.rows[0].input_hash, leagueId])
   if (cached.rows[0]) return { ...(await getRecommendationSet(db, cached.rows[0].id)), cacheStatus: 'HIT' }
   const players = await forecastPlayers(db, resolvedForecastRunId, horizon)
   const fixtureForecasts = chip ? await forecastPlayers(db, resolvedForecastRunId, horizon, { aggregate: false }) : null
   const plan = await planSquad(db, planId, players)
   const id = randomUUID()
   const common = { squad: plan.squad, candidates: players.map(row => ({ id: row.playerId, fplId: row.fplId, club: String(row.teamId), position: row.position, active: row.active, purchasePriceTenths: row.purchasePriceTenths, sellingPriceTenths: row.purchasePriceTenths })), forecasts: players, bankBeforeTenths: plan.bankBeforeTenths, freeTransfers: plan.freeTransfers, uncertaintyPenaltyRate, maxTransfers }
+  if (league?.coverageByFplId && (league.coverageByFplId instanceof Map ? league.coverageByFplId.size : Object.keys(league.coverageByFplId || {}).length)) {
+    const fplToInternal = new Map()
+    for (const row of players) if (row.fplId != null) fplToInternal.set(Number(row.fplId), String(row.playerId))
+    const covRaw = league.coverageByFplId instanceof Map ? league.coverageByFplId : new Map(Object.entries(league.coverageByFplId || {}).map(([k, v]) => [Number(k), Number(v)]))
+    const coverageByPlayerId = new Map()
+    for (const [fplId, fraction] of covRaw) {
+      const internalId = fplToInternal.get(Number(fplId))
+      if (internalId) coverageByPlayerId.set(internalId, Number(fraction))
+    }
+    common.coverageByPlayerId = coverageByPlayerId
+  }
   let drafts
   let status = 'SUCCEEDED'
   if (chip) {
@@ -105,14 +118,14 @@ export async function createRecommendationSet(db, { planId, forecastRunId, horiz
   } else if (plan.bankBeforeTenths === null) { drafts = []; status = 'INSUFFICIENT_DATA' } else drafts = boundedTransferSearch(common)
   await db.query('BEGIN IMMEDIATE')
   try {
-    await db.query(`INSERT INTO "RecommendationSet" ("id","plan_id","forecast_run_id","horizon","max_transfers","chip","uncertainty_penalty_rate","created_at","status","primary_candidate_id","input_hash") VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,NULL,$10)`, [id, planId, resolvedForecastRunId, horizon, maxTransfers, chip, uncertaintyPenaltyRate, createdAt, status, run.rows[0].input_hash])
-    if (!drafts.length) drafts = [{ moves: [], affordabilityStatus: 'AFFORDABILITY_UNKNOWN', bankAfterTenths: null, hitCost: 0, rawGain: 0, uncertaintyPenalty: 0, netExpectedGain: 0, probabilityBeatsRoll: null, expectedTeamPoints: 0, p10Points: null, p50Points: null, p90Points: null, action: 'INSUFFICIENT_DATA' }]
+    await db.query(`INSERT INTO "RecommendationSet" ("id","plan_id","forecast_run_id","horizon","max_transfers","chip","uncertainty_penalty_rate","created_at","status","primary_candidate_id","input_hash","league_id","league_name") VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,NULL,$10,$11,$12)`, [id, planId, resolvedForecastRunId, horizon, maxTransfers, chip, uncertaintyPenaltyRate, createdAt, status, run.rows[0].input_hash, leagueId, league?.leagueName ?? null])
+    if (!drafts.length) drafts = [{ moves: [], affordabilityStatus: 'AFFORDABILITY_UNKNOWN', bankAfterTenths: null, hitCost: 0, rawGain: 0, uncertaintyPenalty: 0, netExpectedGain: 0, probabilityBeatsRoll: null, expectedTeamPoints: 0, p10Points: null, p50Points: null, p90Points: null, action: 'INSUFFICIENT_DATA', leagueDifferential: null }]
     const roll = drafts.find(draft => draft.moves.length === 0)
     const primary = drafts.find(draft => draft.moves.length > 0 && draft.affordabilityStatus === 'EXACT' && draft.netExpectedGain > 0 && draft.probabilityBeatsRoll >= .6) || roll || drafts[0]
     const persisted = []
     for (const [index, draft] of drafts.entries()) {
       const candidateId = randomUUID(), action = draft.action || (draft.moves.length ? 'TRANSFER' : 'ROLL')
-      await db.query(`INSERT INTO "RecommendationCandidate" ("id","recommendation_set_id","rank","action","moves_json","raw_gain","hit_cost","uncertainty_penalty","net_expected_gain","probability_beats_roll","bank_after_tenths","affordability_status","expected_team_points","p10_points","p50_points","p90_points") VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16)`, [candidateId, id, index + 1, action, canonicalJson({ moves: draft.moves.map(move => ({ outId: String(move.outId), inId: String(move.incoming.id) })), chip: draft.chip || null, reason: draft.chipReason || null, squadIds: draft.chipSquadIds || null }), draft.rawGain, draft.hitCost, draft.uncertaintyPenalty, draft.netExpectedGain, draft.probabilityBeatsRoll, draft.bankAfterTenths, draft.affordabilityStatus, draft.expectedTeamPoints, draft.p10Points, draft.p50Points, draft.p90Points])
+      await db.query(`INSERT INTO "RecommendationCandidate" ("id","recommendation_set_id","rank","action","moves_json","raw_gain","hit_cost","uncertainty_penalty","net_expected_gain","probability_beats_roll","bank_after_tenths","affordability_status","expected_team_points","p10_points","p50_points","p90_points","league_differential") VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17)`, [candidateId, id, index + 1, action, canonicalJson({ moves: draft.moves.map(move => ({ outId: String(move.outId), inId: String(move.incoming.id) })), chip: draft.chip || null, reason: draft.chipReason || null, squadIds: draft.chipSquadIds || null }), draft.rawGain, draft.hitCost, draft.uncertaintyPenalty, draft.netExpectedGain, draft.probabilityBeatsRoll, draft.bankAfterTenths, draft.affordabilityStatus, draft.expectedTeamPoints, draft.p10Points, draft.p50Points, draft.p90Points, draft.leagueDifferential == null ? null : Number(draft.leagueDifferential)])
       persisted.push({ id: candidateId, ...draft, action, rank: index + 1, apiMoves: draft.moves.map(move => ({ outId: plan.squad.find(player => String(player.id) === String(move.outId))?.fplId, inId: move.incoming.fplId })) })
     }
     const selected = persisted.find(row => row.moves === primary.moves) || persisted[0]
@@ -145,6 +158,7 @@ export async function getRecommendationSet(db, id) {
     status: set.rows[0].status,
     primaryCandidateId: set.rows[0].primary_candidate_id,
     inputHash: set.rows[0].input_hash,
+    league: set.rows[0].league_id == null ? null : { leagueId: Number(set.rows[0].league_id), leagueName: set.rows[0].league_name || null },
     candidates: parsedCandidates.map(({ row, detail }) => ({
       id: row.id,
       rank: Number(row.rank),
@@ -161,6 +175,7 @@ export async function getRecommendationSet(db, id) {
       p10Points: asNumber(row.p10_points),
       p50Points: asNumber(row.p50_points),
       p90Points: asNumber(row.p90_points),
+      leagueDifferential: asNumber(row.league_differential),
       chip: detail.chip || undefined,
       chipReason: detail.reason || undefined,
       chipSquadIds: detail.squadIds || undefined,

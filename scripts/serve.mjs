@@ -339,6 +339,136 @@ const catalogueCache = new CatalogueCache({
 const leagueCache = new TtlCache(5 * 60 * 1000)
 const leagueUpstream = new ConcurrencyLimiter(5)
 
+// Fetches a classic league's standings, rival picks/history and effective
+// ownership, backed by the short-lived in-process cache shared by the Leagues
+// UI and the recommendation engine. Uses only the first standings page, so EO
+// is a sampled measure; fragile fetches degrade to an empty result rather than
+// blocking a recommendation.
+async function loadLeagueDetailsWithEO(leagueId, requestedGameweek) {
+  const gameweek = String(requestedGameweek ?? '')
+  const leagueKey = `${leagueId}:${gameweek}`
+  const cachedLeague = leagueCache.get(leagueKey)
+  if (cachedLeague) return cachedLeague
+
+  const standingsRes = await leagueUpstream.run(() => fetch(`https://fantasy.premierleague.com/api/leagues-classic/${leagueId}/standings/?page_new_entries=1&page_standings=1`, {
+    headers: { 'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7)' }
+  }))
+  if (!standingsRes.ok) {
+    throw new Error(`FPL league fetch failed: HTTP ${standingsRes.status}`)
+  }
+  const standingsData = await standingsRes.json()
+  let results = standingsData.standings?.results || []
+  let isPreSeason = false
+
+  if (results.length === 0 && Array.isArray(standingsData.new_entries?.results) && standingsData.new_entries.results.length > 0) {
+    isPreSeason = true
+    results = standingsData.new_entries.results.map((item, idx) => ({
+      id: item.id || idx + 1,
+      event_total: 0,
+      player_name: `${item.player_first_name || ''} ${item.player_last_name || ''}`.trim() || item.entry_name || 'Manager',
+      rank: idx + 1,
+      last_rank: null,
+      rank_sort: idx + 1,
+      total: 0,
+      entry: item.entry,
+      entry_name: item.entry_name || `Team #${item.entry}`
+    }))
+  }
+
+  const topRivals = results.slice(0, 35)
+
+  const defaultGw = String(requestedGameweek || standingsData.league?.start_event || 1)
+
+  const enrichedRivals = await Promise.all(
+    topRivals.map(async (rival) => {
+      try {
+        const picksRes = await leagueUpstream.run(() => fetch(`https://fantasy.premierleague.com/api/entry/${rival.entry}/event/${defaultGw}/picks/`, {
+          headers: { 'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7)' }
+        }))
+        const historyRes = await leagueUpstream.run(() => fetch(`https://fantasy.premierleague.com/api/entry/${rival.entry}/history/`, {
+          headers: { 'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7)' }
+        }))
+
+        let picksData = null
+        let historyData = null
+        if (picksRes.ok) picksData = await picksRes.json()
+        if (historyRes.ok) historyData = await historyRes.json()
+
+        return {
+          ...rival,
+          activeChip: picksData?.active_chip || null,
+          eventTransfers: picksData?.entry_history?.event_transfers || 0,
+          eventTransfersCost: picksData?.entry_history?.event_transfers_cost || 0,
+          picks: picksData?.picks || [],
+          chipsUsed: historyData?.chips || []
+        }
+      } catch {
+        return {
+          ...rival,
+          activeChip: null,
+          eventTransfers: 0,
+          eventTransfersCost: 0,
+          picks: [],
+          chipsUsed: []
+        }
+      }
+    })
+  )
+
+  const playerStatsMap = new Map()
+  const totalAnalyzed = enrichedRivals.length || 1
+
+  for (const rival of enrichedRivals) {
+    for (const pick of rival.picks) {
+      const element = pick.element
+      const stat = playerStatsMap.get(element) || { element, ownersCount: 0, captainsCount: 0, tripleCaptainsCount: 0 }
+      stat.ownersCount += 1
+      if (pick.is_captain) {
+        stat.captainsCount += 1
+        if (pick.multiplier === 3) {
+          stat.tripleCaptainsCount += 1
+        }
+      }
+      playerStatsMap.set(element, stat)
+    }
+  }
+
+  const effectiveOwnership = Array.from(playerStatsMap.values()).map(stat => {
+    const ownershipPercent = (stat.ownersCount / totalAnalyzed) * 100
+    const captaincyPercent = (stat.captainsCount / totalAnalyzed) * 100
+    const eoPercent = ((stat.ownersCount + stat.captainsCount + stat.tripleCaptainsCount) / totalAnalyzed) * 100
+    return {
+      ...stat,
+      ownershipPercent: Number(ownershipPercent.toFixed(1)),
+      captaincyPercent: Number(captaincyPercent.toFixed(1)),
+      effectiveOwnership: Number(eoPercent.toFixed(1))
+    }
+  }).sort((a, b) => b.effectiveOwnership - a.effectiveOwnership)
+
+  const response = {
+      league: standingsData.league,
+      standings: enrichedRivals,
+      totalAnalyzed,
+      sampledManagerCount: enrichedRivals.length,
+      totalManagerCount: Number(standingsData.standings?.total_results || results.length),
+      pagination: { policy: 'FIRST_PAGE_SAMPLE', fetchedPages: 1, complete: false },
+      isPreSeason: Boolean(isPreSeason),
+      effectiveOwnership
+    }
+  leagueCache.set(leagueKey, response)
+  return response
+}
+
+// Maps a loaded league response to the compact coverage form used by the
+// recommendation engine: element(fplId) -> effectiveOwnership fraction.
+function leagueCoverageFromResponse(details) {
+  const coverageByFplId = new Map()
+  for (const stat of details.effectiveOwnership || []) {
+    coverageByFplId.set(Number(stat.element), Number((stat.effectiveOwnership / 100).toFixed(4)))
+  }
+  return { leagueId: Number(details.league?.id), leagueName: details.league?.name || null, coverageByFplId }
+}
+
 function loadAiSettings() {
   try {
     if (fs.existsSync(AI_SETTINGS_PATH)) {
@@ -1539,14 +1669,29 @@ function startServerOnAvailablePort(targetPort) {
     if (planRecommendationMatch && req.method === 'POST') {
       try {
         const body = await readRequestBody(req)
-        const recommendation = await createRecommendationSet(await getDb(), {
+        const db = await getDb()
+        let league = null
+        try {
+          const state = await getUserState(db)
+          if (state.preferences.defaultLeagueId != null) {
+            const details = await loadLeagueDetailsWithEO(state.preferences.defaultLeagueId, body.gameweek)
+            if (details && details.effectiveOwnership?.length) league = leagueCoverageFromResponse(details)
+          }
+        } catch (leagueError) {
+          league = null
+        }
+        const recommendation = await createRecommendationSet(db, {
           planId: decodeURIComponent(planRecommendationMatch[1]),
           forecastRunId: body.forecastRunId,
           horizon: body.horizon ?? 1,
           maxTransfers: body.maxTransfers ?? 5,
           uncertaintyPenaltyRate: body.uncertaintyPenaltyRate ?? .15,
           chip: body.chip ?? null,
+          league,
         })
+        if (recommendation.league && league?.coverageByFplId?.size) {
+          recommendation.league.coverageByFplId = Object.fromEntries(league.coverageByFplId)
+        }
         sendJson(res, 201, { schemaVersion: 1, ...recommendation })
       } catch (error) {
         sendJson(res, 400, { schemaVersion: 1, error: error instanceof Error ? error.message : 'Recommendation could not be generated' })
@@ -1602,120 +1747,9 @@ function startServerOnAvailablePort(targetPort) {
       }
 
       const requestedGameweek = urlParams.get('gameweek') || ''
-      const leagueKey = `${leagueId}:${requestedGameweek}`
-      const cachedLeague = leagueCache.get(leagueKey)
-      if (cachedLeague) {
-        sendJson(res, 200, cachedLeague)
-        return
-      }
 
       try {
-        const standingsRes = await leagueUpstream.run(() => fetch(`https://fantasy.premierleague.com/api/leagues-classic/${leagueId}/standings/?page_new_entries=1&page_standings=1`, {
-          headers: { 'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7)' }
-        }))
-        if (!standingsRes.ok) {
-          throw new Error(`FPL league fetch failed: HTTP ${standingsRes.status}`)
-        }
-        const standingsData = await standingsRes.json()
-        let results = standingsData.standings?.results || []
-        let isPreSeason = false
-
-        if (results.length === 0 && Array.isArray(standingsData.new_entries?.results) && standingsData.new_entries.results.length > 0) {
-          isPreSeason = true
-          results = standingsData.new_entries.results.map((item, idx) => ({
-            id: item.id || idx + 1,
-            event_total: 0,
-            player_name: `${item.player_first_name || ''} ${item.player_last_name || ''}`.trim() || item.entry_name || 'Manager',
-            rank: idx + 1,
-            last_rank: null,
-            rank_sort: idx + 1,
-            total: 0,
-            entry: item.entry,
-            entry_name: item.entry_name || `Team #${item.entry}`
-          }))
-        }
-
-        const topRivals = results.slice(0, 35)
-
-        const defaultGw = urlParams.get('gameweek') || standingsData.league?.start_event || 1
-
-        const enrichedRivals = await Promise.all(
-          topRivals.map(async (rival) => {
-            try {
-              const picksRes = await leagueUpstream.run(() => fetch(`https://fantasy.premierleague.com/api/entry/${rival.entry}/event/${defaultGw}/picks/`, {
-                headers: { 'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7)' }
-              }))
-              const historyRes = await leagueUpstream.run(() => fetch(`https://fantasy.premierleague.com/api/entry/${rival.entry}/history/`, {
-                headers: { 'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7)' }
-              }))
-
-              let picksData = null
-              let historyData = null
-              if (picksRes.ok) picksData = await picksRes.json()
-              if (historyRes.ok) historyData = await historyRes.json()
-
-              return {
-                ...rival,
-                activeChip: picksData?.active_chip || null,
-                eventTransfers: picksData?.entry_history?.event_transfers || 0,
-                eventTransfersCost: picksData?.entry_history?.event_transfers_cost || 0,
-                picks: picksData?.picks || [],
-                chipsUsed: historyData?.chips || []
-              }
-            } catch {
-              return {
-                ...rival,
-                activeChip: null,
-                eventTransfers: 0,
-                eventTransfersCost: 0,
-                picks: [],
-                chipsUsed: []
-              }
-            }
-          })
-        )
-
-        const playerStatsMap = new Map()
-        const totalAnalyzed = enrichedRivals.length || 1
-
-        for (const rival of enrichedRivals) {
-          for (const pick of rival.picks) {
-            const element = pick.element
-            const stat = playerStatsMap.get(element) || { element, ownersCount: 0, captainsCount: 0, tripleCaptainsCount: 0 }
-            stat.ownersCount += 1
-            if (pick.is_captain) {
-              stat.captainsCount += 1
-              if (pick.multiplier === 3) {
-                stat.tripleCaptainsCount += 1
-              }
-            }
-            playerStatsMap.set(element, stat)
-          }
-        }
-
-        const effectiveOwnership = Array.from(playerStatsMap.values()).map(stat => {
-          const ownershipPercent = (stat.ownersCount / totalAnalyzed) * 100
-          const captaincyPercent = (stat.captainsCount / totalAnalyzed) * 100
-          const eoPercent = ((stat.ownersCount + stat.captainsCount + stat.tripleCaptainsCount) / totalAnalyzed) * 100
-          return {
-            ...stat,
-            ownershipPercent: Number(ownershipPercent.toFixed(1)),
-            captaincyPercent: Number(captaincyPercent.toFixed(1)),
-            effectiveOwnership: Number(eoPercent.toFixed(1))
-          }
-        }).sort((a, b) => b.effectiveOwnership - a.effectiveOwnership)
-
-        const response = {
-            league: standingsData.league,
-            standings: enrichedRivals,
-            totalAnalyzed,
-            sampledManagerCount: enrichedRivals.length,
-            totalManagerCount: Number(standingsData.standings?.total_results || results.length),
-            pagination: { policy: 'FIRST_PAGE_SAMPLE', fetchedPages: 1, complete: false },
-            isPreSeason: Boolean(isPreSeason),
-            effectiveOwnership
-          }
-        leagueCache.set(leagueKey, response)
+        const response = await loadLeagueDetailsWithEO(leagueId, requestedGameweek)
         sendJson(res, 200, response)
       } catch (err) {
         if (!res.headersSent) {

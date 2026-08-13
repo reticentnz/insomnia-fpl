@@ -7,6 +7,23 @@ export type RecommendationDraft = {
   moves: TransferMove[]; affordabilityStatus: 'EXACT' | 'AFFORDABILITY_UNKNOWN'; bankAfterTenths: number | null; hitCost: number
   rawGain: number; uncertaintyPenalty: number; netExpectedGain: number; probabilityBeatsRoll: number; expectedTeamPoints: number
   p10Points: number; p50Points: number; p90Points: number
+  leagueDifferential: number
+}
+
+/**
+ * Expected point differential a lineup produces against a league's effective
+ * ownership field. For each player the field's coverage fraction (ownership +
+ * captaincy claims, from EO) cancels out; a low-cov player you start moves you
+ * ahead, a heavily-covered template player you own drags you toward the pack.
+ * Captain adds the extra 2x relative to the field.
+ */
+export function squadLeagueDifferential(lineup: { starters: string[]; captainId: string | null }, forecasts: StoredForecast[], coverageByPlayerId?: Map<string | number, number>) {
+  const cov = coverageByPlayerId || new Map()
+  const mean = (id: string) => forecasts.filter(row => row.playerId === id).reduce((total, row) => total + row.meanPoints, 0)
+  let total = 0
+  for (const id of lineup.starters) total += mean(id) * (1 - (cov.get(id) ?? 0))
+  if (lineup.captainId) total += mean(lineup.captainId) * 1
+  return total
 }
 
 function pairedProbabilityBeatsRoll(baseline: ReturnType<typeof selectLineup>, proposed: ReturnType<typeof selectLineup>, forecasts: StoredForecast[], threshold: number) {
@@ -32,7 +49,7 @@ function pairedProbabilityBeatsRoll(baseline: ReturnType<typeof selectLineup>, p
   return wins / SIMULATION_COUNT
 }
 
-export function evaluateRecommendationDraft(args: { squad: OptimizerPlayer[]; candidateSquad: OptimizerPlayer[]; moves: TransferMove[]; forecasts: StoredForecast[]; bankBeforeTenths: number; freeTransfers: number; uncertaintyPenaltyRate?: number; calculateProbability?: boolean }): RecommendationDraft {
+export function evaluateRecommendationDraft(args: { squad: OptimizerPlayer[]; candidateSquad: OptimizerPlayer[]; moves: TransferMove[]; forecasts: StoredForecast[]; bankBeforeTenths: number; freeTransfers: number; uncertaintyPenaltyRate?: number; calculateProbability?: boolean; coverageByPlayerId?: Map<string | number, number> }): RecommendationDraft {
   const route = evaluateSimultaneousTransfers({ squad: args.squad, moves: args.moves, bankBeforeTenths: args.bankBeforeTenths, freeTransfers: args.freeTransfers })
   const baseline = selectLineup(args.forecasts.filter(row => args.squad.some(player => String(player.id) === row.playerId)))
   const proposed = selectLineup(args.forecasts.filter(row => args.candidateSquad.some(player => String(player.id) === row.playerId)))
@@ -40,8 +57,9 @@ export function evaluateRecommendationDraft(args: { squad: OptimizerPlayer[]; ca
   const uncertaintyPenalty = (args.uncertaintyPenaltyRate ?? .15) * args.forecasts.filter(row => changedIn.has(row.playerId)).reduce((total, row) => total + row.standardDeviation, 0)
   const rawGain = proposed.expectedPoints - baseline.expectedPoints
   const netExpectedGain = rawGain - route.hitCost - uncertaintyPenalty
+  const leagueDifferential = squadLeagueDifferential(proposed, args.forecasts, args.coverageByPlayerId) - squadLeagueDifferential(baseline, args.forecasts, args.coverageByPlayerId)
   const probabilityBeatsRoll = args.calculateProbability === false ? (netExpectedGain > 0 ? 1 : 0) : pairedProbabilityBeatsRoll(baseline, proposed, args.forecasts, route.hitCost + uncertaintyPenalty)
-  return { moves: args.moves, affordabilityStatus: route.status === 'AFFORDABILITY_UNKNOWN' ? 'AFFORDABILITY_UNKNOWN' : 'EXACT', bankAfterTenths: route.bankAfterTenths, hitCost: route.hitCost, rawGain, uncertaintyPenalty, netExpectedGain, probabilityBeatsRoll, expectedTeamPoints: proposed.expectedPoints, p10Points: proposed.p10Points, p50Points: proposed.p50Points, p90Points: proposed.p90Points }
+  return { moves: args.moves, affordabilityStatus: route.status === 'AFFORDABILITY_UNKNOWN' ? 'AFFORDABILITY_UNKNOWN' : 'EXACT', bankAfterTenths: route.bankAfterTenths, hitCost: route.hitCost, rawGain, uncertaintyPenalty, netExpectedGain, probabilityBeatsRoll, expectedTeamPoints: proposed.expectedPoints, p10Points: proposed.p10Points, p50Points: proposed.p50Points, p90Points: proposed.p90Points, leagueDifferential }
 }
 
 /** Exhaustive bounded search (0–5 transfers) over a deliberately supplied candidate pool. */

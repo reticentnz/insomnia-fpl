@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { boundedTransferSearch, evaluateRecommendationDraft, type OptimizerPlayer } from './optimizer.ts'
+import { boundedTransferSearch, evaluateRecommendationDraft, squadLeagueDifferential, type OptimizerPlayer } from './optimizer.ts'
 import { evaluateSimultaneousTransfers } from './transfers.ts'
 import type { StoredForecast } from './lineup.ts'
 
@@ -43,4 +43,35 @@ describe('bounded transfer recommendations', () => {
     expect(result[0].moves).toEqual([])
     for (const draft of result.slice(1)) expect(evaluateSimultaneousTransfers({ squad, moves: draft.moves, bankBeforeTenths: 0, freeTransfers: 1 }).legal).toBe(true)
   }, 20_000)
+})
+
+describe('league differential measurement', () => {
+  const lineup = { starters: ['a', 'b', 'c'], captainId: 'a' }
+  const rows: StoredForecast[] = [
+    { playerId: 'a', gameweekId: 'gw1', position: 'MID', meanPoints: 8, standardDeviation: 2, p10Points: 2, p50Points: 8, p90Points: 14, startProbability: .9, noShowProbability: .1 },
+    { playerId: 'b', gameweekId: 'gw1', position: 'FWD', meanPoints: 6, standardDeviation: 2, p10Points: 1, p50Points: 6, p90Points: 12, startProbability: .9, noShowProbability: .1 },
+    { playerId: 'c', gameweekId: 'gw1', position: 'DEF', meanPoints: 4, standardDeviation: 2, p10Points: 0, p50Points: 4, p90Points: 9, startProbability: .9, noShowProbability: .1 },
+    { playerId: 'd', gameweekId: 'gw1', position: 'MID', meanPoints: 5, standardDeviation: 2, p10Points: 1, p50Points: 5, p90Points: 10, startProbability: .9, noShowProbability: .1 },
+  ]
+
+  it('scores a low-coverage starter ahead of a heavily-covered template player', () => {
+    const coverage = new Map<string, number>([['a', .9], ['b', 1.2], ['c', .3]])
+    // a: 8*(1-.9) + 8 (captain 2x extra) = 8.8; b: 6*(1-1.2) = -1.2; c: 4*(1-.3) = 2.8
+    expect(squadLeagueDifferential(lineup, rows, coverage)).toBeCloseTo(8.8 + (-1.2) + 2.8, 9)
+  })
+
+  it('needs no coverage map and then treats every player as an uncovered pick', () => {
+    expect(squadLeagueDifferential(lineup, rows)).toBeCloseTo((8 + 6 + 4) + 8, 9)
+  })
+
+  it('replacing a template player with a sleeper of equal expected points raises net differential', () => {
+    // p7 is treated as a heavily-covered template pick while the replacement is uncovered.
+    const coverage = new Map<string, number>([...squad.map((player, index) => [String(player.id), index < 7 ? .5 : 1.2])])
+    const incoming = { ...squad[7], id: 'sleeper', club: 'sleeper', purchasePriceTenths: 50, sellingPriceTenths: 50 }
+    const allForecasts: StoredForecast[] = [...forecasts, { ...forecasts[7], playerId: 'sleeper', meanPoints: 20 }]
+    const roll = evaluateRecommendationDraft({ squad, candidateSquad: squad, moves: [], forecasts: allForecasts, bankBeforeTenths: 0, freeTransfers: 1, coverageByPlayerId: coverage })
+    const draft = evaluateRecommendationDraft({ squad, candidateSquad: [...squad.filter(player => player.id !== 'p7'), incoming], moves: [{ outId: 'p7', incoming }], forecasts: allForecasts, bankBeforeTenths: 0, freeTransfers: 1, coverageByPlayerId: coverage })
+    expect(draft.leagueDifferential).toBeGreaterThan(roll.leagueDifferential)
+    expect(draft.leagueDifferential).toBeGreaterThan(0)
+  })
 })

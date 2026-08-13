@@ -659,9 +659,12 @@ export async function fetchDecisionHistory(limit = 50): Promise<any[]> {
   return data.decisions || []
 }
 
+export type CanonicalRecommendationCandidate = { id: string; rank: number; action: string; apiMoves: Array<{ outId: number; inId: number }>; netExpectedGain: number; rawGain: number; hitCost: number; uncertaintyPenalty: number; probabilityBeatsRoll: number | null; affordabilityStatus: string; bankAfterTenths: number | null; p10Points: number | null; p50Points: number | null; p90Points: number | null; leagueDifferential?: number | null; chip?: string; chipReason?: string };
+
 export type CanonicalRecommendation = {
   id: string; planId: string; forecastRunId: string; horizon: number; status: string; primaryCandidateId: string; cacheStatus: 'HIT' | 'MISS';
-  candidates: Array<{ id: string; rank: number; action: string; apiMoves: Array<{ outId: number; inId: number }>; netExpectedGain: number; rawGain: number; hitCost: number; uncertaintyPenalty: number; probabilityBeatsRoll: number | null; affordabilityStatus: string; bankAfterTenths: number | null; p10Points: number | null; p50Points: number | null; p90Points: number | null; chip?: string; chipReason?: string }>;
+  league?: { leagueId: number; leagueName: string | null; coverageByFplId?: Record<string, number> } | null;
+  candidates: CanonicalRecommendationCandidate[];
 }
 
 export async function createPlanRecommendation(planId: string, options: { horizon: 1 | 3 | 5; maxTransfers?: number; chip?: 'TRIPLE_CAPTAIN' | 'BENCH_BOOST' | 'FREE_HIT' | 'WILDCARD' | null }): Promise<CanonicalRecommendation> {

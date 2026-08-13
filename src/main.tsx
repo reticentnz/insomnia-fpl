@@ -1872,6 +1872,8 @@ function App() {
               setTab("Transfers");
             }}
             forecastLoading={!forecastSummary || forecastSummary.horizon !== horizon}
+            leagueCoverage={canonicalRecommendation?.league?.coverageByFplId}
+            leagueName={canonicalRecommendation?.league?.leagueName}
           />
         ) : tab === "Leagues" ? (
           <LeaguesView
@@ -4333,6 +4335,8 @@ function MyTeamV2({
   setTab,
   onReplacePlayer,
   forecastLoading = false,
+  leagueCoverage,
+  leagueName,
 }: {
   squad: Player[];
   xi: Player[];
@@ -4370,6 +4374,8 @@ function MyTeamV2({
   setTab: (tab: string) => void;
   onReplacePlayer?: (p: Player) => void;
   forecastLoading?: boolean;
+  leagueCoverage?: Record<string, number>;
+  leagueName?: string | null;
 }) {
   const starters = new Set(xi.map((p) => p.id));
   const bench = benchOrder(horizon, squad, xi);
@@ -4620,6 +4626,12 @@ function MyTeamV2({
                     : "0"}{" "}
                   pts (2× multiplier)
                 </small>
+                {captain && leagueCoverage && leagueCoverage[String(captain.id)] != null && (
+                  <small className="captain-diff">
+                    Rival EO {Math.round(Number(leagueCoverage[String(captain.id)]))}%
+                    {leagueName ? ` in ${leagueName}` : ""} · captaining adds +{(horizonProjection(captain, horizon) * (2 - Number(leagueCoverage[String(captain.id)]) / 100)).toFixed(1)} differential vs field
+                  </small>
+                )}
               </div>
               <span>2×</span>
             </div>
@@ -6739,13 +6751,16 @@ function TransfersV2({
           {([['TRIPLE_CAPTAIN','TC'],['BENCH_BOOST','BB'],['FREE_HIT','FH'],['WILDCARD','WC']] as const).map(([chip,label]) => <button className="ghost-btn" disabled={canonicalLoading} onClick={() => onGenerateCanonical?.(chip)} key={chip}>{label} counterfactual</button>)}
         </div>
         {canonicalRecommendation && <>
-          <p className="muted">Forecast {canonicalRecommendation.forecastRunId.slice(0, 8)} · status {canonicalRecommendation.status} · {canonicalRecommendation.cacheStatus === 'HIT' ? 'reused stored result' : 'new result stored'} · ordering saved for reproducibility</p>
+          <p className="muted">Forecast {canonicalRecommendation.forecastRunId.slice(0, 8)} · status {canonicalRecommendation.status} · {canonicalRecommendation.cacheStatus === 'HIT' ? 'reused stored result' : 'new result stored'} · ordering saved for reproducibility{canonicalRecommendation.league?.leagueName ? ` · vs ${canonicalRecommendation.league.leagueName}` : ''}</p>
           {canonicalRecommendation.candidates.map(candidate => {
             const names = candidate.apiMoves?.map(move => `${catalog?.find(player => player.id === move.outId)?.name || `#${move.outId}`} → ${catalog?.find(player => player.id === move.inId)?.name || `#${move.inId}`}`) || [];
             const primary = candidate.id === canonicalRecommendation.primaryCandidateId;
             return <article className="review-card" key={candidate.id}>
               <div className="card-agent-header"><b>{primary ? 'PRIMARY · ' : ''}{candidate.action}</b><span className={`pill ${candidate.affordabilityStatus === 'EXACT' ? 'green' : 'amber'}`}>{candidate.affordabilityStatus}</span></div>
               <p>{names.length ? names.join(' · ') : candidate.action === 'CHIP' ? 'Optimised chip counterfactual' : 'Roll the transfer'} · net {Number(candidate.netExpectedGain).toFixed(2)} pts · hit {candidate.hitCost} · P(beats roll) {candidate.probabilityBeatsRoll == null ? '—' : `${Math.round(candidate.probabilityBeatsRoll * 100)}%`}</p>
+              {candidate.leagueDifferential != null && candidate.leagueDifferential !== 0 && (
+                <p className="muted">League differential vs field: <b className={candidate.leagueDifferential > 0 ? 'positive' : 'negative'}>{candidate.leagueDifferential > 0 ? '+' : ''}{Number(candidate.leagueDifferential).toFixed(2)}</b> pts{canonicalRecommendation.league?.leagueName ? ` over ${canonicalRecommendation.league.leagueName}` : ''}</p>
+              )}
               {candidate.p10Points != null && candidate.p90Points != null && <small>Outcome range under current assumptions: {Number(candidate.p10Points).toFixed(1)}–{Number(candidate.p90Points).toFixed(1)} pts (p10–p90)</small>}
               <div className="recommend-actions">
                 {(candidate.apiMoves?.length || candidate.action === 'CHIP') ? <button className="dark-btn" onClick={() => onApplyCanonical?.(candidate)}>{candidate.action === 'CHIP' ? 'Record chip plan' : 'Apply local plan'}</button> : null}
