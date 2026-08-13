@@ -866,10 +866,11 @@ const challengeSchema={
       }
     }},
     signals:{type:'array',maxItems:12,items:{type:'object',additionalProperties:false,
-      required:['playerId','playerName','kind','value','sourceType','sourceUrl','sourceTitle','evidenceSummary','confidence','validUntil'],
+      required:['playerId','playerName','kind','value','sourceType','sourceUrl','sourceTitle','evidenceSummary','confidence','validUntil','sourceDate'],
       properties:{
         playerId:{type:'integer'},playerName:{type:'string'},
         kind:{type:'string',enum:['START_PROBABILITY','DEPTH_CHART','INJURY','EXPECTED_ROLE','PENALTIES','SET_PIECES','PRESEASON_MINUTES']},
+        sourceDate:{type:['string','null']},
         value:{type:'object',additionalProperties:false,required:['startProbability','minutesIfStarting','substituteProbabilityWhenBenched','minutesIfSubstitute','depthRole','note'],properties:{
           startProbability:{type:['number','null'],minimum:0,maximum:1},minutesIfStarting:{type:['number','null'],minimum:0,maximum:90},
           substituteProbabilityWhenBenched:{type:['number','null'],minimum:0,maximum:1},minutesIfSubstitute:{type:['number','null'],minimum:0,maximum:45},
@@ -1058,7 +1059,8 @@ async function callGroundedSquadChallenge(players,gameweek,deadline,customConfig
     'You must return exactly one audits entry for every player in Priority audit. Do not spend searches proving routine low-risk starters are safe. For a budget goalkeeper, explicitly establish whether they are first choice, competition, or backup. For a recent transfer, explicitly establish their expected new-team role rather than carrying forward old-club minutes.',
     'Use outcome MATERIAL_RISK whenever the evidence implies a meaningful projection change, and include a matching signal for that player. NO_MATERIAL_RISK requires a supporting searched source. Use INSUFFICIENT_EVIDENCE only after searching; its sourceUrl may be an empty string.',
     'Keep the overall summary under 180 words and each audit or signal evidenceSummary under 80 words. Return only the requested JSON object—no preamble, no markdown, and no conversational explanation before or after it.',
-    'JSON shape is exactly: {"summary":string,"audits":[{"playerId":number,"playerName":string,"outcome":"MATERIAL_RISK"|"NO_MATERIAL_RISK"|"INSUFFICIENT_EVIDENCE","expectedRole":"FIRST_CHOICE"|"ROTATION"|"BACKUP"|"OUT"|"UNKNOWN","evidenceSummary":string,"sourceUrl":string}],"signals":[{"playerId":number,"playerName":string,"kind":"EXPECTED_ROLE"|"START_PROBABILITY"|"DEPTH_CHART"|"INJURY"|"PENALTIES"|"SET_PIECES"|"PRESEASON_MINUTES","value":{"startProbability":number|null,"minutesIfStarting":number|null,"substituteProbabilityWhenBenched":number|null,"minutesIfSubstitute":number|null,"depthRole":"FIRST_CHOICE"|"ROTATION"|"BACKUP"|"OUT"|null,"note":string|null},"sourceType":"OFFICIAL_CLUB"|"OFFICIAL_PL"|"JOURNALIST"|"PREDICTED_LINEUP","sourceUrl":string,"sourceTitle":string,"evidenceSummary":string,"confidence":number,"validUntil":string}]}. If there are no material risks, return an empty signals array. Every MATERIAL_RISK audit must have exactly one matching signal.',
+    'JSON shape is exactly: {"summary":string,"audits":[{"playerId":number,"playerName":string,"outcome":"MATERIAL_RISK"|"NO_MATERIAL_RISK"|"INSUFFICIENT_EVIDENCE","expectedRole":"FIRST_CHOICE"|"ROTATION"|"BACKUP"|"OUT"|"UNKNOWN","evidenceSummary":string,"sourceUrl":string}],"signals":[{"playerId":number,"playerName":string,"kind":"EXPECTED_ROLE"|"START_PROBABILITY"|"DEPTH_CHART"|"INJURY"|"PENALTIES"|"SET_PIECES"|"PRESEASON_MINUTES","value":{"startProbability":number|null,"minutesIfStarting":number|null,"substituteProbabilityWhenBenched":number|null,"minutesIfSubstitute":number|null,"depthRole":"FIRST_CHOICE"|"ROTATION"|"BACKUP"|"OUT"|null,"note":string|null},"sourceType":"OFFICIAL_CLUB"|"OFFICIAL_PL"|"JOURNALIST"|"PREDICTED_LINEUP","sourceUrl":string,"sourceTitle":string,"evidenceSummary":string,"confidence":number,"validUntil":string,"sourceDate":string|null}]}. If there are no material risks, return an empty signals array. Every MATERIAL_RISK audit must have exactly one matching signal.',
+    'For every signal set sourceDate to the publication date (ISO YYYY-MM-DD) of the supporting article. Never cite stale or outdated news: a lineup, injury, availability or preseason-minutes claim is only usable if its source was published within the last two weeks, otherwise return no signal for it. Only standing facts like penalty-taker or set-piece ownership may rely on older sources, and still date them. If you cannot determine the source publication date, then return no signal (sourceDate null will be rejected).',
     'The summary must accurately state what produced a signal. Never say assumptions were identified, addressed, or adjusted when signals is empty.',
     'Return no signal when the evidence is insufficient. validUntil must be an ISO timestamp no later than the relevant deadline for lineup/injury claims.',
     `Deadline: ${deadline||'unknown'}`,
@@ -1124,12 +1126,45 @@ async function callGroundedSquadChallenge(players,gameweek,deadline,customConfig
   const sourceBacked=source=>source&&(searchedSources.has(source)||(isDeepSeek&&webSearchCalls>0&&/^https:\/\//.test(source)))
   const allowedIds=new Set(players.map(player=>player.id))
   const evidenceExpiry=deadline&&Number.isFinite(new Date(deadline).getTime())?new Date(deadline).getTime():Date.now()+7*24*60*60*1000
+  // Recency gate: a time-sensitive claim (lineup, injury, availability,
+  // preseason minutes) is only usable from a recent source; standing facts
+  // (penalties, set pieces) tolerate older sources but are still dated.
+  const signalRecencyDays={EXPECTED_ROLE:14,START_PROBABILITY:14,DEPTH_CHART:14,INJURY:10,PRESEASON_MINUTES:14,PENALTIES:120,SET_PIECES:120}
+  const baselineById=new Map(players.map(player=>[player.id,player.roleProfile?.startProbability==null?null:Number(player.roleProfile.startProbability)]))
+  const baselineMinutesById=new Map(players.map(player=>[player.id,player.roleProfile?.minutesIfStarting==null?null:Number(player.roleProfile.minutesIfStarting)]))
   const proposedSignals=isDeepSeek?normalizeDeepSeekSignals(parsed,players,priorityAudit,deadline):Array.isArray(parsed.signals)?parsed.signals:[]
+  // softDroppedIds: players whose proposed signal was removed by the recency or
+  // material-impact gates (soft reasons). Their MATERIAL_RISK audits are demoted
+  // to NO_MATERIAL_RISK below so the whole challenge does not fail because a
+  // single stale or zero-delta finding was correctly filtered out.
+  const softDroppedIds=new Set()
   const signals=proposedSignals.filter(signal=>{
     if(!signal||typeof signal!=='object')return false
     const source=canonicalUrl(signal.sourceUrl)
-    return signal&&signal.value&&typeof signal.value==='object'&&allowedIds.has(signal.playerId)&&sourceBacked(source)&&Number.isFinite(new Date(signal.validUntil).getTime())
-  }).map(signal=>({...signal,sourceUrl:canonicalUrl(signal.sourceUrl),validUntil:new Date(Math.min(new Date(signal.validUntil).getTime(),evidenceExpiry)).toISOString(),value:Object.fromEntries(Object.entries(signal.value).filter(([,value])=>value!==null))}))
+    if(!(signal.value&&typeof signal.value==='object'&&allowedIds.has(signal.playerId)&&sourceBacked(source)&&Number.isFinite(new Date(signal.validUntil).getTime())))return false
+    // Recency gate: source publication date must exist and be recent enough.
+    const sourceDate=signal.sourceDate==null?NaN:Date.parse(String(signal.sourceDate))
+    // OpenAI is required to supply a dated source; DeepSeek cannot reliably
+    // expose publication dates, so for DeepSeek we only enforce recency when a
+    // date is present rather than dropping every search finding.
+    if(!Number.isFinite(sourceDate)){if(!isDeepSeek){softDroppedIds.add(signal.playerId);return false}}
+    else if(Date.now()-sourceDate>(signalRecencyDays[signal.kind]??14)*86400000){softDroppedIds.add(signal.playerId);return false}
+    // Material-impact gate: a signal that barely changes the player's start
+    // chance (beyond the model's existing estimate) and changes no role or
+    // minutes is non-material noise and should not trigger an approval prompt.
+    if(typeof signal.value.startProbability==='number'){
+      const depthChanged=!!signal.value.depthRole&&signal.value.depthRole!=='UNKNOWN'
+      const startBaseline=baselineById.get(signal.playerId)
+      const startDelta=Number.isFinite(startBaseline)?Math.abs(signal.value.startProbability-startBaseline):null
+      const minutes=signal.value.minutesIfStarting
+      const minutesBaseline=baselineMinutesById.get(signal.playerId)
+      const minutesChanged=Number.isFinite(minutes)&&Number.isFinite(minutesBaseline)&&Math.abs(minutes-minutesBaseline)>=8
+      // Unknown baseline is treated as potentially material to avoid silently dropping
+      // evidence; a null baseline (e.g. player without role data) keeps the signal.
+      if(startDelta!==null&&startDelta<0.05&&!depthChanged&&!minutesChanged){softDroppedIds.add(signal.playerId);return false}
+    }
+    return true
+  }).map(signal=>({...signal,sourceUrl:canonicalUrl(signal.sourceUrl),sourceDate:signal.sourceDate?new Date(signal.sourceDate).toISOString():null,validUntil:new Date(Math.min(new Date(signal.validUntil).getTime(),evidenceExpiry)).toISOString(),value:Object.fromEntries(Object.entries(signal.value).filter(([,value])=>value!==null))}))
   const requiredAuditIds=new Set(priorityAudit.map(player=>player.id))
   const seenAuditIds=new Set()
   const audits=(Array.isArray(parsed.audits)?parsed.audits:[]).filter(audit=>{
@@ -1139,7 +1174,13 @@ async function callGroundedSquadChallenge(players,gameweek,deadline,customConfig
     if(!sourceValid)return false
     seenAuditIds.add(audit.playerId)
     return true
-  }).map(audit=>({...audit,sourceUrl:canonicalUrl(audit.sourceUrl)}))
+  }).map(audit=>{
+    // A MATERIAL_RISK finding whose only signal was removed by the recency or
+    // material-impact gate is no longer a material risk: demote it so the
+    // challenge reports a consistent outcome instead of failing the whole run.
+    const demote=audit.outcome==='MATERIAL_RISK'&&softDroppedIds.has(audit.playerId)
+    return {...audit,sourceUrl:canonicalUrl(audit.sourceUrl),outcome:demote?'NO_MATERIAL_RISK':audit.outcome}
+  })
   const missingAuditNames=priorityAudit.filter(player=>!seenAuditIds.has(player.id)).map(player=>player.name)
   if(missingAuditNames.length)throw groundedOutputError(`Grounded research was incomplete and changed nothing. Missing source-validated audits for: ${missingAuditNames.join(', ')}`,data,parsed)
   const signalledIds=new Set(signals.map(signal=>signal.playerId))
@@ -1164,7 +1205,7 @@ async function persistChallengeSignals(challenge,currentGameweek){
       stored.push(existing)
       continue
     }
-    stored.push(await createPlayerSignal(db,{playerId:signal.playerId,gameweek:currentGameweek,kind:signal.kind,value:signal.value,sourceType:signal.sourceType,sourceUrl:signal.sourceUrl,evidenceSummary:signal.evidenceSummary,confidence:signal.confidence,observedAt,validUntil:validUntil.toISOString(),status:'PENDING',actorType:'RESEARCH'}))
+    stored.push(await createPlayerSignal(db,{playerId:signal.playerId,gameweek:currentGameweek,kind:signal.kind,value:signal.value,sourceType:signal.sourceType,sourceUrl:signal.sourceUrl,evidenceSummary:signal.evidenceSummary,confidence:signal.confidence,observedAt,validUntil:validUntil.toISOString(),status:'PENDING',actorType:'RESEARCH',sourceDate:signal.sourceDate||null}))
   }
   return {...challenge,signals:stored}
 }

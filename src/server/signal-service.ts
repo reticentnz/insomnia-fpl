@@ -45,6 +45,7 @@ export function signalApiRow(row: any) {
     kind: row.kind, value: interpretationValue, sourceType: row.source_type, sourceUrl: row.source_url,
     evidenceSummary: row.evidence_summary, confidence: Number(row.confidence), observedAt: row.observed_at,
     evidenceText: row.evidence_text || row.evidence_summary, claimClass, validUntil: row.valid_until, status: row.status,
+    sourceDate: row.source_date || null,
     interpretation: {
       id: row.interpretation_id || null,
       origin: row.interpretation_origin || (row.source_type === 'MANUAL_OVERRIDE' ? 'USER' : 'AUTO'),
@@ -81,7 +82,7 @@ async function audit(db: Database, signalId: string, fromStatus: SignalStatus | 
   await db.query(`INSERT INTO "PlayerSignalAudit" ("id","signal_id","from_status","to_status","reason","actor_type","created_at") VALUES ($1,$2,$3,$4,$5,$6,$7)`, [randomUUID(), signalId, fromStatus, toStatus, reason, actorType, createdAt])
 }
 
-export async function createPlayerSignal(db: Database, input: { id?: string; playerId: string | number; gameweek?: string | number | null; kind: string; value?: unknown; sourceType: string; sourceUrl?: string | null; evidenceSummary: string; evidenceText?: string | null; claimClass?: ClaimClass; interpretationRationale?: string; interpretationConfidence?: number; modelImpact?: ModelImpact; confidence: number; observedAt?: string; validUntil: string; status?: SignalStatus; actorType?: string }) {
+export async function createPlayerSignal(db: Database, input: { id?: string; playerId: string | number; gameweek?: string | number | null; kind: string; value?: unknown; sourceType: string; sourceUrl?: string | null; evidenceSummary: string; evidenceText?: string | null; claimClass?: ClaimClass; interpretationRationale?: string; interpretationConfidence?: number; modelImpact?: ModelImpact; confidence: number; observedAt?: string; validUntil: string; status?: SignalStatus; actorType?: string; sourceDate?: string | null }) {
   if (!input.kind || !input.evidenceSummary) throw new Error('kind and evidenceSummary are required')
   const confidence = Number(input.confidence)
   if (!Number.isFinite(confidence) || confidence < 0 || confidence > 1) throw new Error('confidence must be between 0 and 1')
@@ -98,7 +99,7 @@ export async function createPlayerSignal(db: Database, input: { id?: string; pla
   const claimClass = input.claimClass || defaultClaimClass(input.kind)
   const modelImpact: ModelImpact = input.modelImpact || (hasRoleValue(value) ? 'ROLE' : 'NONE')
   const interpretationConfidence = Number.isFinite(Number(input.interpretationConfidence)) ? Number(input.interpretationConfidence) : confidence
-  await db.query(`INSERT INTO "PlayerSignal" ("id","player_id","gameweek_id","kind","value_json","source_type","source_url","evidence_summary","evidence_text","claim_class","confidence","observed_at","valid_until","status","created_at","updated_at") VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$12,$12) ON CONFLICT ("id") DO NOTHING`, [id, player.id, gameweekId, input.kind, JSON.stringify(value), input.sourceType, input.sourceUrl || null, input.evidenceSummary, input.evidenceText || input.evidenceSummary, claimClass, confidence, observedAt, validUntil, status])
+  await db.query(`INSERT INTO "PlayerSignal" ("id","player_id","gameweek_id","kind","value_json","source_type","source_url","evidence_summary","evidence_text","claim_class","confidence","observed_at","valid_until","status","created_at","updated_at","source_date") VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$12,$12,$15) ON CONFLICT ("id") DO NOTHING`, [id, player.id, gameweekId, input.kind, JSON.stringify(value), input.sourceType, input.sourceUrl || null, input.evidenceSummary, input.evidenceText || input.evidenceSummary, claimClass, confidence, observedAt, validUntil, status, input.sourceDate || null])
   await db.query(`INSERT INTO "PlayerSignalInterpretation" ("id","signal_id","origin","claim_class","model_impact","value_json","rationale","confidence","status","created_at","updated_at") VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$10) ON CONFLICT ("id") DO NOTHING`, [`interpretation:${id}`, id, input.sourceType === 'MANUAL_OVERRIDE' ? 'USER' : 'AUTO', claimClass, modelImpact, JSON.stringify(value), input.interpretationRationale || (modelImpact === 'ROLE' ? 'Structured model adjustment inferred from the evidence.' : 'Context only; no projection adjustment proposed.'), interpretationConfidence, status === 'VERIFIED' ? 'APPROVED' : status === 'REJECTED' ? 'REJECTED' : status === 'EXPIRED' ? 'SUPERSEDED' : 'PROPOSED', observedAt])
   const selected = await db.query(`${selectSignals} WHERE signal."id"=$1`, [id])
   if (!selected.rows[0]) throw new Error(`Signal ${id} conflicts with an existing record`)
