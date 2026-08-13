@@ -93,6 +93,15 @@ Add YouTube channels from the **Signals** page using a channel ID, `/channel/UC�
 
 Add general RSS or Atom feeds from the **Signals** page as well. The app fetches only the configured feed URL and analyzes only the title, summary, or content included in each feed item. It never opens, scrapes, or attempts to bypass protection on the linked article. New items are retained with their supplied evidence and extracted claims always remain `PENDING` for review; items without enough feed-supplied text are marked `INSUFFICIENT_EVIDENCE`.
 
+### RSS feed flow
+
+1. Add a public RSS or Atom feed URL from **Signals → Sources**. Existing feed items are ignored so adding a source does not create a historical backlog.
+2. The scheduled poll runs every 30 minutes by default (`RSS_INGEST_INTERVAL_HOURS`); set it to `0` to disable polling. At most three queued items are processed per poll by default (`RSS_INGEST_BATCH_SIZE`).
+3. The app uses `ETag` and `Last-Modified` validators when the publisher supplies them. When it does not, it compares a SHA-256 hash of the feed body. An unchanged feed is not parsed again.
+4. Changed feeds are parsed, and only new item GUIDs/IDs are queued. Previously discovered items—including completed items—are never reprocessed.
+5. The LLM receives only the item title and feed-supplied summary/content. It must not open the article URL or infer facts outside that evidence.
+6. Short items are retained as `INSUFFICIENT_EVIDENCE`; transient extraction failures retry with exponential backoff. Matched claims are saved as `PENDING` signals and require review before affecting projections.
+
 The in-app **Admin** page exposes the official FPL sync, an odds-only sync, linked-manager-team refresh, and a player-to-club relink workflow. It also shows live operation state and recent `FeedRun` audit records. Set `ADMIN_TOKEN` to require a bearer token for admin commands; when it is unset, commands remain available for local/self-hosted use. The odds action requires `ODDS_API_KEY`.
 
 In Docker, the signal cache defaults to `/app/data/cache/signal-feeds`, which is inside the persistent writable volume. Override it with `SIGNAL_CACHE_DIR` if needed.
