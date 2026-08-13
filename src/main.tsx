@@ -5854,7 +5854,7 @@ function SignalsTab({
                   </div>
                   <details
                     className={`signal-interpretation ${contextOnly ? "context" : needsInterpretation ? "needs" : "impact"}`}
-                    open={effectiveStatus === "PENDING" || undefined}
+                    open={signal.status === "PENDING" ? true : undefined}
                   >
                     <summary className="signal-interpretation-head">
                       <b>{contextOnly
