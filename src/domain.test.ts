@@ -5,7 +5,7 @@ import { createToolContext, getBestTransfers, simulateTransfers } from './intell
 import { allocateBonusPoints, scorePlayerMatch } from './model'
 import { evaluateCalibration } from './backtest'
 import { buildExplanationContext, resolvePlayerMention, resolveMultiplePlayerMentions } from './integrations'
-import { expectedRoleMinutes, resolvePlayerRole, sanitizeExternalUrl, type PlayerRoleProfile, type PlayerSignal } from './player-signals'
+import { expectedRoleMinutes, isSignalAppliedToRole, resolvePlayerRole, sanitizeExternalUrl, type PlayerRoleProfile, type PlayerSignal } from './player-signals'
 
 describe('planning mode and save routing', () => {
   it('proves Draft Mode routes saves to USER_PREFERENCES and never calls PLANS_API', async () => {
@@ -55,6 +55,13 @@ describe('player evidence signals',()=>{
     expect(resolved.confidence).toBe('HIGH')
     expect(expectedRoleMinutes(resolved)).toBeLessThan(12)
     expect(base.startProbability).toBe(.75)
+  })
+
+  it('recognizes applied signals across numeric and serialized IDs',()=>{
+    const applied={...base,derivedFromSignalIds:[1,'signal-2']}
+    expect(isSignalAppliedToRole(applied,'1')).toBe(true)
+    expect(isSignalAppliedToRole(applied,'signal-2')).toBe(true)
+    expect(isSignalAppliedToRole(applied,3)).toBe(false)
   })
 
   it('does not apply pending, expired, or wrong-gameweek research',()=>{

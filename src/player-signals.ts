@@ -139,6 +139,15 @@ export function expectedRoleMinutes(profile: PlayerRoleProfile) {
   );
 }
 
+export function isSignalAppliedToRole(
+  profile: PlayerRoleProfile | undefined,
+  signalId: string | number,
+) {
+  return Boolean(
+    profile?.derivedFromSignalIds.some((id) => String(id) === String(signalId)),
+  );
+}
+
 function confidenceLabel(confidence: number): RoleConfidence {
   return confidence >= 0.8 ? "HIGH" : confidence >= 0.55 ? "MEDIUM" : "LOW";
 }

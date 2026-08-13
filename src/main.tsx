@@ -116,7 +116,7 @@ import {
   buildDraftImprovementPlanAsync,
   optimizeInitialSquadAsync,
 } from "./optimizer-worker-client";
-import { expectedRoleMinutes, resolvePlayerRole, type PlayerSignal, sanitizeExternalUrl } from "./player-signals";
+import { expectedRoleMinutes, isSignalAppliedToRole, resolvePlayerRole, type PlayerSignal, sanitizeExternalUrl } from "./player-signals";
 import { classifySignalSource } from "./signal-sources.ts";
 import { createToolContext } from "./intelligence";
 import { reviewDecision, type DecisionReview } from "./decision-review";
@@ -5334,7 +5334,7 @@ function SignalsTab({
     const afterRole = resolvePlayerRole(beforeRole, [candidate], { gameweek: currentGameweek });
     const beforePoints = gameweekProjection({ ...player, roleProfile: beforeRole }, currentGameweek);
     const afterPoints = gameweekProjection({ ...player, roleProfile: afterRole }, currentGameweek);
-    return { beforeMinutes: expectedRoleMinutes(beforeRole), afterMinutes: expectedRoleMinutes(afterRole), deltaPoints: afterPoints - beforePoints };
+    return { beforeRole, afterRole, beforeMinutes: expectedRoleMinutes(beforeRole), afterMinutes: expectedRoleMinutes(afterRole), deltaPoints: afterPoints - beforePoints };
   }
 
   async function handleResolveClaim(claim: CreatorClaim) {
@@ -5734,10 +5734,19 @@ function SignalsTab({
             const contextOnly = modelImpact === "NONE" && !needsInterpretation;
             const rawProb = interpretation?.value?.startProbability ?? signal.value?.startProbability;
             const normProb = typeof rawProb === "number" ? (rawProb > 1 ? rawProb / 100 : rawProb) : null;
-            const proposedProb = normProb !== null ? Math.round(normProb * 100) : null;
             const currentProb = Math.round((player?.roleProfile?.startProbability ?? 1) * 100);
-            const proposedMinutes = normProb === null ? null : Math.round(normProb * Number(interpretation?.value?.minutesIfStarting ?? signal.value?.minutesIfStarting ?? (player?.position === "GK" ? 90 : 84)));
-            const impact = modelImpact === "ROLE" ? projectedSignalImpact(player, signal) : null;
+            const appliedToCurrentRole = signal.status === "VERIFIED" && isSignalAppliedToRole(player?.roleProfile, signal.id);
+            const processedWithoutImpact = signal.status === "VERIFIED" && !appliedToCurrentRole;
+            // Verified signals are already represented in player.roleProfile. Applying
+            // one again would create a false current-to-current, zero-delta preview.
+            const impact = modelImpact === "ROLE" && signal.status !== "VERIFIED" ? projectedSignalImpact(player, signal) : null;
+            const proposedProb = impact
+              ? Math.round(impact.afterRole.startProbability * 100)
+              : normProb !== null ? Math.round(normProb * 100) : null;
+            const proposedMinutes = impact
+              ? Math.round(impact.afterMinutes)
+              : normProb === null ? null : Math.round(normProb * Number(interpretation?.value?.minutesIfStarting ?? signal.value?.minutesIfStarting ?? (player?.position === "GK" ? 90 : 84)));
+            const appliedMinutes = player?.roleProfile ? Math.round(expectedRoleMinutes(player.roleProfile)) : null;
             const sourceTrust = classifySignalSource(signal.sourceType, signal.sourceUrl);
             const stagedStatus = stagedSignalReviews[signal.id];
             const effectiveStatus = stagedStatus || signal.status;
@@ -5793,11 +5802,35 @@ function SignalsTab({
                   <p className="signal-evidence">{signal.evidenceSummary}</p>
                   <div className={`signal-interpretation ${contextOnly ? "context" : needsInterpretation ? "needs" : "impact"}`}>
                     <div className="signal-interpretation-head">
-                      <b>{contextOnly ? "Context only" : needsInterpretation ? "Needs interpretation" : "Proposed model adjustment"}</b>
+                      <b>{contextOnly
+                        ? "Context only"
+                        : needsInterpretation
+                          ? "Needs interpretation"
+                          : appliedToCurrentRole
+                            ? "Applied model adjustment"
+                            : processedWithoutImpact
+                              ? "Processed role evidence"
+                              : "Proposed model adjustment"}</b>
                       <span>{claimClass.replace(/_/g, " ")}</span>
                     </div>
                     <p>{interpretation?.rationale || (contextOnly ? "No projection impact." : "Structured role adjustment proposed from this evidence.")}</p>
-                    {modelImpact === "ROLE" && proposedProb !== null && (
+                    {modelImpact === "ROLE" && appliedToCurrentRole && (
+                      <div className="signal-impact-preview">
+                        <span>Applied start chance <b>{currentProb}%</b></span>
+                        {appliedMinutes !== null && <span>Current expected minutes <b>{appliedMinutes}</b></span>}
+                        <span>Active in the current model</span>
+                        <span>{interpretation?.origin === "USER" ? "User-adjusted" : "Auto-interpreted"}</span>
+                      </div>
+                    )}
+                    {modelImpact === "ROLE" && processedWithoutImpact && proposedProb !== null && (
+                      <div className="signal-impact-preview">
+                        <span>Interpreted start chance <b>{proposedProb}%</b></span>
+                        <span>No current model change</span>
+                        <span>Not active for this gameweek or superseded by stronger evidence</span>
+                        <span>{interpretation?.origin === "USER" ? "User-adjusted" : "Auto-interpreted"}</span>
+                      </div>
+                    )}
+                    {modelImpact === "ROLE" && signal.status !== "VERIFIED" && proposedProb !== null && (
                       <div className="signal-impact-preview">
                         <span>Start chance <b>{currentProb}% → {proposedProb}%</b></span>
                         {proposedMinutes !== null && <span>Proposed expected minutes <b>{proposedMinutes}</b></span>}
