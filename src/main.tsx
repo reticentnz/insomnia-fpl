@@ -4256,17 +4256,29 @@ function EvidencePanel({
           <p className="evidence-summary">{result.summary}</p>
           {result.provenanceWarning && <p className="evidence-warning">{result.provenanceWarning}</p>}
 
-          {result.usage && (
-            <div className="research-usage">
-              <span><b>{result.usage.totalTokens.toLocaleString()}</b> total tokens</span>
-              <span>{result.usage.inputTokens.toLocaleString()} input</span>
-              <span>{result.usage.outputTokens.toLocaleString()} output</span>
-              <span>{result.usage.webSearchCalls} web search{result.usage.webSearchCalls === 1 ? "" : "es"}</span>
-              <span>
-                {result.usage.estimatedCostUsd == null
-                  ? "Cost unavailable for custom model"
-                  : `Estimated cost $${result.usage.estimatedCostUsd.toFixed(4)} USD`}
-              </span>
+          {(result.usage || result.rejectedSignalCount) && (
+            <div className="research-run-details">
+              {result.usage && (
+                <div className="research-usage" aria-label="Research usage">
+                  <span><b>{result.usage.totalTokens.toLocaleString()}</b> total tokens</span>
+                  <span>{result.usage.inputTokens.toLocaleString()} input</span>
+                  <span>{result.usage.outputTokens.toLocaleString()} output</span>
+                  <span>{result.usage.webSearchCalls} web search{result.usage.webSearchCalls === 1 ? "" : "es"}</span>
+                  <span>
+                    {result.usage.estimatedCostUsd == null
+                      ? "Cost unavailable for custom model"
+                      : `Estimated cost $${result.usage.estimatedCostUsd.toFixed(4)} USD`}
+                  </span>
+                </div>
+              )}
+
+              {!!result.rejectedSignalCount && (
+                <p className="research-discarded-claims">
+                  {result.rejectedSignalCount} proposed claim
+                  {result.rejectedSignalCount === 1 ? " was" : "s were"} discarded
+                  because the cited URL could not be verified against research sources.
+                </p>
+              )}
             </div>
           )}
 
@@ -4303,14 +4315,6 @@ function EvidencePanel({
                 )}
               </div>
             </div>
-          )}
-
-          {!!result.rejectedSignalCount && (
-            <p className="muted">
-              {result.rejectedSignalCount} proposed claim
-              {result.rejectedSignalCount === 1 ? " was" : "s were"} discarded
-              because the cited URL could not be verified against research sources.
-            </p>
           )}
 
           {!!result.audits?.length && (
@@ -4445,8 +4449,10 @@ function EvidencePanel({
           )}
 
           {!result.signals.length && (
-            <p className="muted" style={{ marginTop: "12px" }}>
-              There is nothing to approve, so this run cannot change any player projection.
+            <p className="muted no-pending-approvals">
+              No source-backed projection changes are awaiting approval. “BASELINE · ROTATION”
+              is an existing model assessment; its Transfer and Set Start % controls are optional
+              manual actions, not research recommendations.
             </p>
           )}
 
