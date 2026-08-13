@@ -50,7 +50,7 @@ describe('canonical HTTP API smoke', () => {
     })
     const admin = await fetch(`${baseUrl}/api/admin/status`).then(response => response.json())
     expect(admin).toMatchObject({ authenticationRequired: true, season: '2026/27', oddsConfigured: false, unresolved: { players: 0, fixtures: 0 } })
-    expect(admin.operations).toHaveLength(6)
+    expect(admin.operations).toHaveLength(7)
     expect(admin.operations).toEqual(expect.arrayContaining([expect.objectContaining({ id: 'signals-sync' })]))
     expect(admin.feedRuns[0]).toMatchObject({ source: 'OFFICIAL_FPL', status: 'SUCCEEDED' })
     const unauthorizedAdminWrite = await fetch(`${baseUrl}/api/admin/actions/not-real`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: '{}' })

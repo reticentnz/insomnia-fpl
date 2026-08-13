@@ -51,6 +51,7 @@ import { createPlayerSignal, deletePlayerSignal, listPlayerSignals, revisePlayer
 import { latestSuccessfulFeedRun } from './feed-run.mjs'
 import { nextIngestSchedule, parseIngestIntervalHours } from '../src/server/ingest-scheduler.ts'
 import { addCreatorSource, deleteCreatorSource, getCreatorVideoDetail, listCreatorSources, pollCreatorSources, processCreatorQueue, retryCreatorVideo, setCreatorSourceEnabled, transcriptForPrompt } from './creator-feed-service.mjs'
+import { addRssSource, deleteRssSource, listRssSources, pollRssSources, processRssQueue, setRssSourceEnabled } from './rss-feed-service.mjs'
 import { callDeepSeekCompletion } from './deepseek-client.mjs'
 
 let systemStatus = {
@@ -71,6 +72,7 @@ let systemStatus = {
     market: { enabled: true, available: false, intervalHours: 6, lastRefreshedAt: null, nextRefreshAt: null },
     manager: { enabled: true, available: false, intervalHours: 12, lastRefreshedAt: null, nextRefreshAt: null },
     creator: { enabled: true, available: true, intervalHours: 0.5, lastRefreshedAt: null, nextRefreshAt: null },
+    rss: { enabled: true, available: true, intervalHours: 0.5, lastRefreshedAt: null, nextRefreshAt: null },
   },
 }
 
@@ -88,7 +90,7 @@ const scheduledAuxiliaryTimers = new Map()
 const INGEST_RETRY_DELAY_MS = 15 * 60 * 1000
 const MAX_TIMER_DELAY_MS = 2_147_483_647
 
-const adminOperations = Object.fromEntries(['fpl-sync', 'signals-sync', 'odds-sync', 'team-refresh', 'creator-sync', 'relink-player-teams'].map(id => [id, {
+const adminOperations = Object.fromEntries(['fpl-sync', 'signals-sync', 'odds-sync', 'team-refresh', 'creator-sync', 'rss-sync', 'relink-player-teams'].map(id => [id, {
   id, status: 'IDLE', startedAt: null, finishedAt: null, message: null, error: null,
 }]))
 
@@ -155,6 +157,8 @@ function configureScheduledIngestion() {
   systemStatus.scheduledRefreshes.manager.enabled = systemStatus.scheduledRefreshes.manager.intervalHours > 0
   systemStatus.scheduledRefreshes.creator.intervalHours = parseIngestIntervalHours(process.env.CREATOR_INGEST_INTERVAL_HOURS, .5)
   systemStatus.scheduledRefreshes.creator.enabled = systemStatus.scheduledRefreshes.creator.intervalHours > 0
+  systemStatus.scheduledRefreshes.rss.intervalHours = parseIngestIntervalHours(process.env.RSS_INGEST_INTERVAL_HOURS, .5)
+  systemStatus.scheduledRefreshes.rss.enabled = systemStatus.scheduledRefreshes.rss.intervalHours > 0
   if (hours <= 0) {
     console.log('⏱️ Periodic FPL ingestion is disabled (FPL_INGEST_INTERVAL_HOURS=0).')
     systemStatus.nextIngestAt = null
@@ -215,6 +219,11 @@ function auxiliaryRefreshDefinition(id) {
     },
     work: refreshNativeCreatorFeeds,
   }
+  if (id === 'rss') return {
+    operationId: 'rss-sync', source: null, label: 'RSS feeds',
+    lastCompleted: async () => (await (await getDb()).query(`SELECT MAX(COALESCE("processed_at","updated_at")) AS completed_at FROM "RssItem"`)).rows[0]?.completed_at || null,
+    work: refreshRssFeeds,
+  }
   if (id === 'underlying') return {
     operationId: 'signals-sync',
     source: 'UNDERLYING',
@@ -248,8 +257,9 @@ async function scheduleAuxiliaryRefresh(id, { notBefore = 0 } = {}) {
 
   const definition = auxiliaryRefreshDefinition(id)
   let completedAt = null
-  if (id === 'creator') {
-    const sources = await (await getDb()).query(`SELECT COUNT(*) AS count FROM "CreatorSource" WHERE "enabled"=1`)
+  if (id === 'creator' || id === 'rss') {
+    const table = id === 'creator' ? 'CreatorSource' : 'RssSource'
+    const sources = await (await getDb()).query(`SELECT COUNT(*) AS count FROM "${table}" WHERE "enabled"=1`)
     if (!Number(sources.rows[0]?.count || 0)) {
       Object.assign(state, { available: false, lastRefreshedAt: null, nextRefreshAt: null })
       return
@@ -291,7 +301,7 @@ async function scheduleAuxiliaryRefresh(id, { notBefore = 0 } = {}) {
 }
 
 async function scheduleAuxiliaryRefreshes({ retryOperationId = null } = {}) {
-  await Promise.all(['underlying', 'market', 'manager', 'creator'].map(id => {
+  await Promise.all(['underlying', 'market', 'manager', 'creator', 'rss'].map(id => {
     const definition = auxiliaryRefreshDefinition(id)
     const notBefore = definition.operationId === retryOperationId ? Date.now() + INGEST_RETRY_DELAY_MS : 0
     return scheduleAuxiliaryRefresh(id, { notBefore })
@@ -816,7 +826,7 @@ async function createSignalForCreatorClaim(db,claimRow,source,gameweek){
   const draft=signalDraftFromClaim({...claimRow,...signalValue,numericClaims:parseJson(claimRow.numericClaims,[]),relatedMentions:parseJson(claimRow.relatedMentions,[])},Number(claimRow.resolvedPlayerId),source)
   const confidence=Math.max(0,Math.min(1,Number(draft.confidence)||.65))
   const contextOnly=draft.modelImpact==='NONE'&&draft.claimClass!=='UNKNOWN'
-  const status=contextOnly||shouldAutoApprove('YOUTUBE_TRANSCRIPT',confidence,loadSignalConfig())?'VERIFIED':'PENDING'
+  const status=source.platform==='RSS' ? 'PENDING' : contextOnly||shouldAutoApprove('YOUTUBE_TRANSCRIPT',confidence,loadSignalConfig())?'VERIFIED':'PENDING'
   const observedAt=new Date().toISOString()
   const id=`creator:${String(claimRow.externalClaimId||claimRow.id).slice(0,220)}`
   const existing=await listPlayerSignals(db,{playerId:draft.playerId,limit:500})
@@ -1207,6 +1217,34 @@ function researchUsage(model,usage={},webSearchCalls=0,provider='openai'){
   const searchCharge=provider==='deepseek'?0:webSearchCalls*.01
   const estimatedCostUsd=rates?((inputTokens-cachedInputTokens)*rates.input+cachedInputTokens*rates.cached+outputTokens*rates.output)/1_000_000+searchCharge:null
   return {inputTokens,cachedInputTokens,outputTokens,totalTokens:Number(usage.total_tokens)||inputTokens+outputTokens,webSearchCalls,estimatedCostUsd:estimatedCostUsd===null?null:+estimatedCostUsd.toFixed(4)}
+}
+
+function rssExtractionPrompt(item) {
+  return `Extract only FPL-relevant, player-specific claims from this RSS or Atom item. The supplied feed content is the complete evidence: do not open, fetch, or infer anything from the linked article.
+Return JSON with one property, "claims", containing at most 20 objects. Each object must contain: rawPlayerName, clubHint (string or null), positionHint (GK/DEF/MID/FWD or null), category (ROLE, ROTATION, INJURY, SET_PIECES, PENALTIES, PRESEASON, TACTICS, VALUE, STATS, TRANSFER, FPL_SELECTION, or OTHER), sentiment (POSITIVE, NEGATIVE, MIXED, or NEUTRAL), summary, evidenceText, timestampSeconds (null), timeHorizon (GW<number>, SHORT_TERM, MEDIUM_TERM, SEASON, or UNKNOWN), and confidence (0 to 1).
+Optional fields are depthRole (FIRST_CHOICE, ROTATION, BACKUP, OUT), startProbability, minutesIfStarting, substituteProbabilityWhenBenched, minutesIfSubstitute, numericClaims, and relatedMentions. Never infer numeric probabilities or minutes. Exclude claims not directly supported by the supplied feed content. Do not add facts from general knowledge.
+
+Feed: ${item.source_name}
+Title: ${item.title}
+Published: ${item.published_at || 'unknown'}
+Item URL (for attribution only; do not open): ${item.url || 'none'}
+
+Feed-supplied content:
+${item.content_text}`
+}
+
+async function refreshRssFeeds() {
+  const db = await getDb()
+  const poll = await pollRssSources(db)
+  const queue = await processRssQueue(db, { limit: Number(process.env.RSS_INGEST_BATCH_SIZE) || 3, extractClaims: async ({ item }) => {
+    const llm = await callLLMProvider(rssExtractionPrompt(item), { rawJson: true, maxOutputTokens: 3000 })
+    await recordAiUsage({ feature: 'RSS_EXTRACTION', result: llm })
+    if (!llm?.answer) throw new Error('Configured LLM provider returned no usable response for RSS extraction')
+    const extracted = parseCreatorExtraction(llm.answer)
+    const payload = { schemaVersion: 1, source: { platform: 'RSS', externalId: item.id, creator: item.source_name, title: item.title, url: item.url || item.feed_url, publishedAt: item.published_at, signalSourceType: 'LLM_RESEARCH' }, claims: extracted.claims }
+    return { provider: llm.provider, payload, ingest: processCreatorPayload }
+  } })
+  return `Polled ${poll.sources} RSS source${poll.sources === 1 ? '' : 's'}; processed ${queue.processed} item${queue.processed === 1 ? '' : 's'}; extracted ${queue.claims} pending signal${queue.claims === 1 ? '' : 's'}.`
 }
 
 function normalizedAiUsage(provider, model, usage={}, webSearchCalls=0){
@@ -1636,6 +1674,20 @@ function startServerOnAvailablePort(targetPort) {
       return
     }
 
+    if (request === '/api/rss-sources' && req.method === 'GET') {
+      try { sendJson(res, 200, await listRssSources(await getDb())) }
+      catch (error) { sendJson(res, 500, { error: error instanceof Error ? error.message : 'RSS sources unavailable' }) }
+      return
+    }
+    if (request === '/api/rss-sources' && req.method === 'POST') {
+      try {
+        const payload = await readRequestBody(req), id = await addRssSource(await getDb(), payload)
+        if (!startAdminOperation('rss-sync', refreshRssFeeds)) await scheduleAuxiliaryRefresh('rss')
+        sendJson(res, 201, { id, ...(await listRssSources(await getDb())) })
+      } catch (error) { sendJson(res, 400, { error: error instanceof Error ? error.message : 'Could not add RSS source' }) }
+      return
+    }
+
     const creatorVideoMatch=request.match(/^\/api\/creator-videos\/([^/]+)$/)
     if(creatorVideoMatch&&req.method==='GET'){
       try{
@@ -1655,6 +1707,18 @@ function startServerOnAvailablePort(targetPort) {
     if(creatorSourceMatch&&req.method==='DELETE'){
       try{await deleteCreatorSource(await getDb(),decodeURIComponent(creatorSourceMatch[1]));await scheduleAuxiliaryRefresh('creator');sendJson(res,200,await listCreatorSources(await getDb()))}
       catch(error){sendJson(res,400,{error:error instanceof Error?error.message:'Could not delete creator source'})}
+      return
+    }
+
+    const rssSourceMatch=request.match(/^\/api\/rss-sources\/(.+)$/)
+    if(rssSourceMatch&&req.method==='PATCH'){
+      try{const payload=await readRequestBody(req);await setRssSourceEnabled(await getDb(),decodeURIComponent(rssSourceMatch[1]),Boolean(payload.enabled));await scheduleAuxiliaryRefresh('rss');sendJson(res,200,await listRssSources(await getDb()))}
+      catch(error){sendJson(res,400,{error:error instanceof Error?error.message:'Could not update RSS source'})}
+      return
+    }
+    if(rssSourceMatch&&req.method==='DELETE'){
+      try{await deleteRssSource(await getDb(),decodeURIComponent(rssSourceMatch[1]));await scheduleAuxiliaryRefresh('rss');sendJson(res,200,await listRssSources(await getDb()))}
+      catch(error){sendJson(res,400,{error:error instanceof Error?error.message:'Could not delete RSS source'})}
       return
     }
 
@@ -1690,6 +1754,8 @@ function startServerOnAvailablePort(targetPort) {
         work = refreshLinkedManagerTeam
       } else if (action === 'creator-sync') {
         work = refreshNativeCreatorFeeds
+      } else if (action === 'rss-sync') {
+        work = refreshRssFeeds
       } else {
         work = async () => {
           systemStatus.isIngesting = true

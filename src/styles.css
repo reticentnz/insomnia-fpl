@@ -5262,6 +5262,9 @@ h2 {
 }
 
 .creator-feed-card { border: 1px solid rgba(239,68,68,.24); background: linear-gradient(135deg,rgba(127,29,29,.12),rgba(15,23,42,.72)); border-radius: 16px; padding: 18px; display: grid; gap: 14px; }
+.rss-feed-card { border-color: rgba(56,189,248,.28); background: linear-gradient(135deg,rgba(12,74,110,.16),rgba(15,23,42,.72)); }
+.rss-item-link { color:#60a5fa; font-size:12px; text-decoration:none; white-space:nowrap; }
+.rss-item-error { color:#fca5a5; }
 .creator-feed-heading { display:flex; align-items:flex-start; justify-content:space-between; gap:16px; }
 .creator-feed-heading h2 { margin:3px 0 4px; }
 .creator-feed-heading p { margin:0; color:#94a3b8; max-width:760px; font-size:13px; line-height:1.5; }

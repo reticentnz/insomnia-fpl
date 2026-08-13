@@ -111,6 +111,11 @@ import {
   removeCreatorSource,
   type CreatorFeedState,
   type CreatorVideoDetail,
+  fetchRssSources,
+  addRssSource,
+  setRssSourceEnabled,
+  removeRssSource,
+  type RssFeedState,
   type ManualPlayerSignalInput,
 } from "./integrations";
 import {
@@ -5101,6 +5106,10 @@ function SignalsTab({
   const [creatorVideoDetailLoading, setCreatorVideoDetailLoading] = useState<string | null>(null);
   const [creatorVideoDetailError, setCreatorVideoDetailError] = useState<Record<string, string>>({});
   const [creatorVideoRetrying, setCreatorVideoRetrying] = useState<string | null>(null);
+  const [rssFeeds, setRssFeeds] = useState<RssFeedState>({ sources: [], items: [] });
+  const [rssSourceInput, setRssSourceInput] = useState("");
+  const [rssSourceBusy, setRssSourceBusy] = useState(false);
+  const [rssSourceError, setRssSourceError] = useState<string | null>(null);
   const [claimSelections, setClaimSelections] = useState<Record<string, number>>({});
   const [claimReviewingId, setClaimReviewingId] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
@@ -5147,19 +5156,49 @@ function SignalsTab({
   const loadCreatorFeeds = useCallback(() => {
     fetchCreatorSources().then(setCreatorFeeds).catch((reason) => setCreatorSourceError(reason instanceof Error ? reason.message : "Creator feeds unavailable"));
   }, []);
+  const loadRssFeeds = useCallback(() => {
+    fetchRssSources().then(setRssFeeds).catch((reason) => setRssSourceError(reason instanceof Error ? reason.message : "RSS feeds unavailable"));
+  }, []);
 
   useEffect(() => {
     loadSignals();
     loadCreatorClaims();
     loadCreatorFeeds();
+    loadRssFeeds();
     fetchTeamMarketSnapshots().then(setMarketSnapshots).catch(() => {});
     fetchSignalConfig().then(setSignalConfig).catch(() => {});
-  }, [loadSignals, loadCreatorClaims, loadCreatorFeeds]);
+  }, [loadSignals, loadCreatorClaims, loadCreatorFeeds, loadRssFeeds]);
 
   useEffect(() => {
     const timer = window.setInterval(loadCreatorFeeds, 15_000);
     return () => window.clearInterval(timer);
   }, [loadCreatorFeeds]);
+
+  useEffect(() => {
+    const timer = window.setInterval(loadRssFeeds, 15_000);
+    return () => window.clearInterval(timer);
+  }, [loadRssFeeds]);
+
+  async function handleAddRssSource() {
+    if (!rssSourceInput.trim()) return;
+    setRssSourceBusy(true); setRssSourceError(null);
+    try { setRssFeeds(await addRssSource(rssSourceInput.trim())); setRssSourceInput(""); }
+    catch (reason) { setRssSourceError(reason instanceof Error ? reason.message : "Could not add RSS feed"); }
+    finally { setRssSourceBusy(false); }
+  }
+  async function handleToggleRssSource(id: string, enabled: boolean) {
+    setRssSourceBusy(true); setRssSourceError(null);
+    try { setRssFeeds(await setRssSourceEnabled(id, enabled)); }
+    catch (reason) { setRssSourceError(reason instanceof Error ? reason.message : "Could not update RSS feed"); }
+    finally { setRssSourceBusy(false); }
+  }
+  async function handleRemoveRssSource(id: string) {
+    if (!window.confirm("Remove this RSS source and its item history? Existing player signals will be kept.")) return;
+    setRssSourceBusy(true); setRssSourceError(null);
+    try { setRssFeeds(await removeRssSource(id)); }
+    catch (reason) { setRssSourceError(reason instanceof Error ? reason.message : "Could not remove RSS feed"); }
+    finally { setRssSourceBusy(false); }
+  }
 
   async function handleAddCreatorSource() {
     if (!creatorSourceInput.trim()) return;
@@ -5603,6 +5642,31 @@ function SignalsTab({
       </>}
 
       {workspaceView === "SOURCES" && <>
+      <section className="creator-feed-card rss-feed-card">
+        <div className="creator-feed-heading">
+          <div><span className="eyebrow">RSS-ONLY INTELLIGENCE</span><h2>RSS feeds</h2><p>Only the text supplied by RSS or Atom is analyzed. Linked articles are never opened, scraped, or sent to the LLM. All extracted signals remain pending review.</p></div>
+          <button className="ghost-btn" onClick={loadRssFeeds}>Refresh status</button>
+        </div>
+        <div className="creator-source-form">
+          <input value={rssSourceInput} onChange={(event) => setRssSourceInput(event.target.value)} onKeyDown={(event) => { if (event.key === "Enter") void handleAddRssSource(); }} placeholder="https://publisher.example/feed.xml" />
+          <button className="dark-btn" disabled={rssSourceBusy || !rssSourceInput.trim()} onClick={() => void handleAddRssSource()}>{rssSourceBusy ? "Working…" : "Add RSS feed"}</button>
+        </div>
+        {rssSourceError && <div className="admin-error" role="alert">{rssSourceError}</div>}
+        <div className="creator-source-list">
+          {rssFeeds.sources.map((source) => <article key={source.id} className="creator-source-row">
+            <div><b>{source.name}</b><small>{source.feedUrl} · {source.lastPolledAt ? `polled ${relativeTime(source.lastPolledAt)}` : "waiting for first poll"}</small>{source.lastError && <span>{source.lastError}</span>}</div>
+            <button className="ghost-btn" disabled={rssSourceBusy} onClick={() => void handleToggleRssSource(source.id, !source.enabled)}>{source.enabled ? "Pause" : "Enable"}</button>
+            <button className="ghost-btn danger" disabled={rssSourceBusy} onClick={() => void handleRemoveRssSource(source.id)}>Remove</button>
+          </article>)}
+          {!rssFeeds.sources.length && <p className="creator-feed-empty">No RSS feeds followed yet. Existing items are ignored when a feed is added; only later items are queued.</p>}
+        </div>
+        {!!rssFeeds.items.length && <>
+          <div className="creator-video-summary" aria-label="RSS item processing summary">
+            <span><b>{rssFeeds.items.length}</b> items</span><span><b>{rssFeeds.items.filter((item) => item.status === "COMPLETE").length}</b> complete</span><span><b>{rssFeeds.items.filter((item) => item.status === "INSUFFICIENT_EVIDENCE").length}</b> insufficient evidence</span><span><b>{rssFeeds.items.filter((item) => item.status === "FAILED").length}</b> failed</span>
+          </div>
+          <div className="creator-video-list">{rssFeeds.items.map((item) => <article key={item.id} className="creator-video-entry"><div className="creator-video-row"><span><b>{item.title}</b><small>{item.sourceName} · {item.publishedAt ? relativeTime(item.publishedAt) : "publish date unknown"}</small>{item.error && <small className="rss-item-error">{item.error}</small>}</span><span className={`creator-video-status status-${item.status.toLowerCase()}`}>{item.status.replaceAll("_", " ")}{item.claimCount ? ` · ${item.claimCount} claims` : ""}</span>{item.url && <a className="rss-item-link" href={item.url} target="_blank" rel="noreferrer">Source ↗</a>}</div></article>)}</div>
+        </>}
+      </section>
       <section className="creator-feed-card">
         <div className="creator-feed-heading">
           <div><span className="eyebrow">YOUTUBE INTELLIGENCE</span><h2>Creator feeds</h2><p>New videos are discovered through RSS. Available captions are fetched locally and converted into reviewable FPL signals by your configured LLM.</p></div>

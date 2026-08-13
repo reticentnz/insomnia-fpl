@@ -91,6 +91,8 @@ The production server schedules every pull-based source by default: official FPL
 
 Add YouTube channels from the **Signals** page using a channel ID, `/channel/UC…` URL, or canonical RSS feed URL. The app records the time each channel is added and only queues videos published after that point, preventing historical uploads from creating an ingestion backlog. It discovers those future uploads through YouTube RSS, retrieves available English manual or generated captions with `youtube-transcript-api`, and asks the configured LLM provider to extract structured FPL claims. Captions-unavailable videos are retained as `NO_TRANSCRIPT`; transient failures retry with exponential backoff.
 
+Add general RSS or Atom feeds from the **Signals** page as well. The app fetches only the configured feed URL and analyzes only the title, summary, or content included in each feed item. It never opens, scrapes, or attempts to bypass protection on the linked article. New items are retained with their supplied evidence and extracted claims always remain `PENDING` for review; items without enough feed-supplied text are marked `INSUFFICIENT_EVIDENCE`.
+
 The in-app **Admin** page exposes the official FPL sync, an odds-only sync, linked-manager-team refresh, and a player-to-club relink workflow. It also shows live operation state and recent `FeedRun` audit records. Set `ADMIN_TOKEN` to require a bearer token for admin commands; when it is unset, commands remain available for local/self-hosted use. The odds action requires `ODDS_API_KEY`.
 
 In Docker, the signal cache defaults to `/app/data/cache/signal-feeds`, which is inside the persistent writable volume. Override it with `SIGNAL_CACHE_DIR` if needed.

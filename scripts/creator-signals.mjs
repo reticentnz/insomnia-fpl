@@ -158,7 +158,7 @@ export function signalDraftFromClaim(claim,playerId,source,defaultConfidence=.65
     ? `${source.url}${source.url.includes('?')?'&':'?'}t=${claim.timestampSeconds}s`
     : source.url||null
   return {
-    playerId,kind:categoryKinds[claim.category]||'VALUE_OPINION',value,sourceType:'YOUTUBE_TRANSCRIPT',sourceUrl:timestampUrl,
+    playerId,kind:categoryKinds[claim.category]||'VALUE_OPINION',value,sourceType:source.signalSourceType||'YOUTUBE_TRANSCRIPT',sourceUrl:timestampUrl,
     evidenceSummary:claim.summary,evidenceText:claim.evidenceText||claim.summary,claimClass:claimClasses[claim.category]||'UNKNOWN',modelImpact,
     interpretationRationale:modelImpact==='ROLE'?'Structured real-world role claim extracted from the source.':'Creator context only; no projection adjustment proposed.',
     confidence:claim.confidence??defaultConfidence,

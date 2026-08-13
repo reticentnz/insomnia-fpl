@@ -1159,6 +1159,20 @@ export function removeCreatorSource(id: string): Promise<CreatorFeedState> {
   return creatorFeedRequest(`/api/creator-sources/${encodeURIComponent(id)}`, { method: 'DELETE' })
 }
 
+export type RssSource = { id: string; name: string; feedUrl: string; enabled: boolean; lastPolledAt: string | null; lastError: string | null };
+export type RssItem = { id: string; sourceId: string; sourceName: string; title: string; url: string | null; publishedAt: string | null; status: 'DISCOVERED' | 'PROCESSING' | 'COMPLETE' | 'INSUFFICIENT_EVIDENCE' | 'RETRY' | 'FAILED'; attempts: number; claimCount: number; error: string | null; processedAt: string | null };
+export type RssFeedState = { sources: RssSource[]; items: RssItem[] };
+
+async function rssFeedRequest(url: string, init?: RequestInit): Promise<RssFeedState> {
+  const response = await fetch(url, init), data = await response.json().catch(() => null)
+  if (!response.ok) throw new Error(data?.error?.message || data?.error || `RSS feed request failed: HTTP ${response.status}`)
+  return data
+}
+export function fetchRssSources(): Promise<RssFeedState> { return rssFeedRequest('/api/rss-sources') }
+export function addRssSource(url: string, name = ''): Promise<RssFeedState> { return rssFeedRequest('/api/rss-sources', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ url, name: name || undefined }) }) }
+export function setRssSourceEnabled(id: string, enabled: boolean): Promise<RssFeedState> { return rssFeedRequest(`/api/rss-sources/${encodeURIComponent(id)}`, { method: 'PATCH', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ enabled }) }) }
+export function removeRssSource(id: string): Promise<RssFeedState> { return rssFeedRequest(`/api/rss-sources/${encodeURIComponent(id)}`, { method: 'DELETE' }) }
+
 export async function fetchAdminStatus(): Promise<AdminStatus> {
   const response = await fetch('/api/admin/status')
   const data = await response.json()
