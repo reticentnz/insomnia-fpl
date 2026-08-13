@@ -3237,6 +3237,21 @@ h2 {
   animation: fadeIn 0.2s ease;
 }
 
+.swap-toast-banner.toast-info {
+  background: linear-gradient(135deg, rgba(59, 130, 246, 0.22), rgba(37, 99, 235, 0.3));
+  border-color: #60a5fa;
+}
+
+.swap-toast-banner.toast-warning {
+  background: linear-gradient(135deg, rgba(245, 158, 11, 0.22), rgba(217, 119, 6, 0.32));
+  border-color: #fbbf24;
+}
+
+.swap-toast-banner.toast-error {
+  background: linear-gradient(135deg, rgba(239, 68, 68, 0.24), rgba(185, 28, 28, 0.34));
+  border-color: #f87171;
+}
+
 .global-swap-toast {
   position: fixed;
   right: 24px;

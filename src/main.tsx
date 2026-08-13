@@ -169,7 +169,74 @@ function momentumBadge(player: Player): TransferMomentum {
   return { tone: "sell", label: `${owned.toFixed(0)}% · ${outK.toFixed(0)}k out`, detail: "falling · sell before drop" };
 }
 type ManagerSettings = { bank: number; freeTransfers: number };
-type ToastState = { message: string; undo?: boolean } | null;
+type ToastTone = "success" | "info" | "warning" | "error";
+type ToastState = {
+  message: string;
+  undo?: boolean;
+  tone?: ToastTone;
+  durationMs?: number;
+  persistent?: boolean;
+} | null;
+
+const TOAST_DURATION_MS: Record<ToastTone, number> = {
+  success: 4_000,
+  info: 4_500,
+  warning: 7_000,
+  error: 10_000,
+};
+
+function ToastNotification({
+  toast,
+  onDismiss,
+  onUndo,
+}: {
+  toast: NonNullable<ToastState>;
+  onDismiss: () => void;
+  onUndo: () => void;
+}) {
+  const tone = toast.tone ?? "info";
+  const duration = toast.durationMs ?? (toast.undo ? 8_000 : TOAST_DURATION_MS[tone]);
+  const timerRef = useRef<number | null>(null);
+  const remainingRef = useRef(duration);
+  const startedAtRef = useRef(0);
+
+  const pauseTimer = useCallback(() => {
+    if (timerRef.current == null) return;
+    window.clearTimeout(timerRef.current);
+    timerRef.current = null;
+    remainingRef.current = Math.max(0, remainingRef.current - (Date.now() - startedAtRef.current));
+  }, []);
+
+  const startTimer = useCallback(() => {
+    if (toast.persistent || timerRef.current != null) return;
+    startedAtRef.current = Date.now();
+    timerRef.current = window.setTimeout(onDismiss, remainingRef.current);
+  }, [onDismiss, toast.persistent]);
+
+  useEffect(() => {
+    remainingRef.current = duration;
+    startTimer();
+    return pauseTimer;
+  }, [duration, pauseTimer, startTimer, toast]);
+
+  return (
+    <div
+      className={`swap-toast-banner global-swap-toast toast-${tone}`}
+      role={tone === "error" || tone === "warning" ? "alert" : "status"}
+      aria-live={tone === "error" ? "assertive" : "polite"}
+      onMouseEnter={pauseTimer}
+      onMouseLeave={startTimer}
+      onFocus={pauseTimer}
+      onBlur={(event) => {
+        if (!event.currentTarget.contains(event.relatedTarget)) startTimer();
+      }}
+    >
+      <span>{toast.message}</span>
+      {toast.undo && <button onClick={onUndo}>Undo</button>}
+      <button aria-label="Dismiss notification" onClick={onDismiss}>×</button>
+    </div>
+  );
+}
 let activeManagerSettings: ManagerSettings = { bank: 1.2, freeTransfers: 1 };
 let activeDraftMode = false;
 let activeLockedIds: number[] = [];
@@ -442,6 +509,7 @@ function App() {
   const [teamInput, setTeamInput] = useState("");
   const [teamMessage, setTeamMessage] = useState("");
   const [toast, setToast] = useState<ToastState>(null);
+  const dismissToast = useCallback(() => setToast(null), []);
   const [previousSquad, setPreviousSquad] = useState<number[] | null>(null);
   const [pendingTransfer, setPendingTransfer] = useState<Transfer | null>(null);
   const [comparison, setComparison] = useState<Transfer | null>(null);
@@ -523,7 +591,7 @@ function App() {
     if (!recalculating && systemStatus?.recomputeError) {
       setRecomputeReadyAt(null);
       setRecomputeRequest(null);
-      setToast({ message: `Forecast rebuild failed: ${systemStatus.recomputeError}` });
+      setToast({ message: `Forecast rebuild failed: ${systemStatus.recomputeError}`, tone: "error" });
       return;
     }
     // Safety cap: the server's own isRecalculating flag keeps the indicator
@@ -536,7 +604,7 @@ function App() {
   // inside the resolution effect above would let its cleanup cancel the auto-hide.
   useEffect(() => {
     if (recomputeReadyAt == null) return;
-    const timer = window.setTimeout(() => setRecomputeReadyAt(null), 8000);
+    const timer = window.setTimeout(() => setRecomputeReadyAt(null), TOAST_DURATION_MS.success);
     return () => window.clearTimeout(timer);
   }, [recomputeReadyAt]);
   const catalog = useMemo(() => {
@@ -644,6 +712,7 @@ function App() {
               error instanceof Error
                 ? error.message
                 : "Squad optimisation failed",
+            tone: "error",
           });
         }
       })
@@ -763,6 +832,7 @@ function App() {
                     error instanceof Error
                       ? error.message
                       : "Squad optimisation failed",
+                  tone: "error",
                 });
                 return;
               }
@@ -1098,7 +1168,7 @@ function App() {
       if (issues.length) {
         setSelectedIds(priorIds);
         setLockedIds(priorLocks);
-        setToast({ message: issues[0].detail });
+        setToast({ message: issues[0].detail, tone: "warning" });
         return;
       }
       const revision = computeDraftFingerprint(ids, validLocks);
@@ -1115,13 +1185,13 @@ function App() {
         setStoredDraftIds(ids);
         setStoredDraftLocks(validLocks);
         setHadSavedSquad(true);
-        setToast({ message: "GW1 draft saved — nothing was submitted to FPL." });
+        setToast({ message: "GW1 draft saved — nothing was submitted to FPL.", tone: "success" });
         setEditing(false);
       } else {
         setSelectedIds(ids);
         setLockedIds(validLocks);
         setEditing(true);
-        setToast({ message: "Draft could not be persisted" });
+        setToast({ message: "Draft could not be persisted", tone: "error" });
       }
       return;
     }
@@ -1135,7 +1205,7 @@ function App() {
             setSelectedIds(priorIds);
             setLockedIds(priorLocks);
             const errMsg = typeof result?.error === 'string' ? result.error : (result?.error as any)?.message || "The plan could not be saved because its economics or squad structure is invalid.";
-            setToast({ message: errMsg });
+            setToast({ message: errMsg, tone: "error" });
             return;
           }
           if (result.planId) {
@@ -1147,25 +1217,25 @@ function App() {
         .catch((error) => {
           setSelectedIds(priorIds);
           setLockedIds(priorLocks);
-          setToast({ message: error instanceof Error ? error.message : "Failed to save squad plan." });
+          setToast({ message: error instanceof Error ? error.message : "Failed to save squad plan.", tone: "error" });
         });
     }
     setEditing(false);
   };
   const generateCanonicalRecommendation = async (chip: 'TRIPLE_CAPTAIN' | 'BENCH_BOOST' | 'FREE_HIT' | 'WILDCARD' | null = null) => {
-    if (!activePlanId) { setToast({ message: 'Import and confirm an official squad before generating a stored recommendation.' }); return; }
+    if (!activePlanId) { setToast({ message: 'Import and confirm an official squad before generating a stored recommendation.', tone: "warning" }); return; }
     setCanonicalRecommendationLoading(true);
     try {
       setCanonicalRecommendation(await createPlanRecommendation(activePlanId, { horizon: horizon as 1 | 3 | 5, chip }));
     } catch (error) {
-      setToast({ message: error instanceof Error ? error.message : 'Recommendation could not be generated.' });
+      setToast({ message: error instanceof Error ? error.message : 'Recommendation could not be generated.', tone: "error" });
     } finally { setCanonicalRecommendationLoading(false); }
   };
   const applyCanonicalCandidate = async (candidate: CanonicalRecommendation['candidates'][number]) => {
     if (!canonicalRecommendation || !activePlanId) return;
     if (candidate.action === 'CHIP') {
       await recordRecommendationDecision({ recommendationSetId: canonicalRecommendation.id, candidateId: candidate.id, decision: 'ACCEPTED', selectedPlanId: activePlanId, reason: 'Chip plan accepted for manual execution in official FPL' });
-      setToast({ message: 'Chip decision recorded. Activate the chip manually in official FPL.' });
+      setToast({ message: 'Chip decision recorded. Activate the chip manually in official FPL.', tone: "success" });
       return;
     }
     if (!fplAccount || !candidate.apiMoves?.length) return;
@@ -1173,16 +1243,16 @@ function App() {
     const nextIds = selectedIds.map(id => replacements.get(id) ?? id);
     const nextLocks = lockedIds.filter(id => !replacements.has(id));
     const result = await saveUserProfile(fplAccount, nextIds, activePlanId, nextLocks);
-    if (!result.ok || !result.planId) { setToast({ message: result.error || 'The recommended plan could not be saved.' }); return; }
+    if (!result.ok || !result.planId) { setToast({ message: result.error || 'The recommended plan could not be saved.', tone: "error" }); return; }
     setPreviousSquad(selectedIds); setSelectedIds(nextIds); setLockedIds(nextLocks); setActivePlanId(result.planId); setActivePlanParentId(result.parentPlanId || null);
     if (result.bankTenths != null) setManager(current => ({ ...current, bank: result.bankTenths! / 10, freeTransfers: result.freeTransfers ?? current.freeTransfers }));
     await recordRecommendationDecision({ recommendationSetId: canonicalRecommendation.id, candidateId: candidate.id, decision: 'ACCEPTED', selectedPlanId: result.planId, reason: 'Applied from the stored recommendation surface' });
-    setToast({ message: `Stored ${candidate.apiMoves.length}-move plan applied locally; your official FPL team was not changed.`, undo: true });
+    setToast({ message: `Stored ${candidate.apiMoves.length}-move plan applied locally; your official FPL team was not changed.`, undo: true, tone: "success" });
   };
   const dismissCanonicalCandidate = async (candidate: CanonicalRecommendation['candidates'][number], decision: 'REJECTED' | 'IGNORED') => {
     if (!canonicalRecommendation) return;
     await recordRecommendationDecision({ recommendationSetId: canonicalRecommendation.id, candidateId: candidate.id, decision, reason: 'Recorded from the recommendation surface' });
-    setToast({ message: `${decision === 'REJECTED' ? 'Rejected' : 'Ignored'} recommendation recorded in Review.` });
+    setToast({ message: `${decision === 'REJECTED' ? 'Rejected' : 'Ignored'} recommendation recorded in Review.`, tone: "success" });
   };
   const requestTransfer = (outId: number, inId: number) => {
     const out = squad.find((p) => p.id === outId);
@@ -1195,6 +1265,7 @@ function App() {
       setToast({
         message:
           "That change is not legal with your current budget and squad rules.",
+        tone: "warning",
       });
       return;
     }
@@ -1235,6 +1306,7 @@ function App() {
     setToast({
       message: `Plan updated: ${pendingTransfer.out.name} → ${pendingTransfer.in.name}. Your official FPL team was not changed.`,
       undo: true,
+      tone: "success",
     });
   };
   const applyDraftPlan = () => {
@@ -1247,6 +1319,7 @@ function App() {
     setToast({
       message: `GW1 draft re-optimised: ${draftPlan.changes.length} change${draftPlan.changes.length === 1 ? "" : "s"} for +${draftPlan.gain} projected points.`,
       undo: true,
+      tone: "success",
     });
   };
   const applyDraftBundle = (bundle: DraftChangeBundle) => {
@@ -1258,6 +1331,7 @@ function App() {
     setToast({
       message: `Bundle applied: ${bundle.label} (+${bundle.netGain} pts).`,
       undo: true,
+      tone: "success",
     });
   };
   activeApplyDraftPlan = applyDraftPlan;
@@ -1319,14 +1393,14 @@ function App() {
         setActivePlanParentId(plan.parentPlanId || null);
         if (plan.bankTenths != null) setManager((current) => ({ ...current, bank: Number(plan.bankTenths) / 10, freeTransfers: Number(plan.freeTransfers) }));
         setPreviousSquad(null);
-        setToast({ message: "Exact parent plan restored." });
+        setToast({ message: "Exact parent plan restored.", tone: "success" });
         return;
       }
     }
     if (previousSquad) {
       saveSquad(previousSquad);
       setPreviousSquad(null);
-      setToast({ message: "Planned squad restored." });
+      setToast({ message: "Planned squad restored.", tone: "success" });
     }
   };
   const saveManager = (next: ManagerSettings) => {
@@ -1359,11 +1433,13 @@ function App() {
       setToast({
         message:
           "A new live-data starter squad is ready. Review it before using any recommendation.",
+        tone: "success",
       });
     } catch (error) {
       setToast({
         message:
           error instanceof Error ? error.message : "Squad optimisation failed",
+        tone: "error",
       });
     } finally {
       setRepairingLiveSquad(false);
@@ -1467,6 +1543,7 @@ function App() {
       if (staleReviewCount) parts.push(`${staleReviewCount} stale review${staleReviewCount === 1 ? "" : "s"} removed`);
       setToast({
         message: `${parts.join(", ")} · Projections refreshed.`,
+        tone: "success",
       });
     } catch (error) {
       setChallengeError(
@@ -1488,6 +1565,7 @@ function App() {
       setCapturedAt(data.capturedAt || null);
       setToast({
         message: `Updated start probability to ${Math.round(startProbability * 100)}% and recalculated projections.`,
+        tone: "success",
       });
     } catch (error) {
       setChallengeError(
@@ -1552,6 +1630,7 @@ function App() {
 
       setToast({
         message: res.notice || `FPL Account Synced: ${res.account.teamName} (${res.account.totalPoints} pts, GW${res.account.currentGameweek}: ${res.account.gameweekPoints} pts)`,
+        tone: "success",
       });
       setImportModalOpen(false);
       setTeamInput("");
@@ -1568,7 +1647,7 @@ function App() {
 
   const unlinkAccount = async () => {
     if (!(await deleteUserProfile())) {
-      setToast({ message: "The FPL account could not be unlinked." });
+      setToast({ message: "The FPL account could not be unlinked.", tone: "error" });
       return;
     }
     setFplAccount(null);
@@ -1582,7 +1661,7 @@ function App() {
     setLockedIds([]);
     setHadSavedSquad(false);
     setImportModalOpen(false);
-    setToast({ message: "Season FPL account unlinked." });
+    setToast({ message: "Season FPL account unlinked.", tone: "success" });
   };
   useEffect(() => {
     let active = true;
@@ -1649,13 +1728,13 @@ function App() {
     setUserName(data.managerName);
     void saveUserPreferences({ userName: data.managerName, onboardingCompleted: true });
     setOnboardingModalOpen(false);
-    setToast({ message: `Welcome to Insomnia FPL, ${data.managerName}!` });
+    setToast({ message: `Welcome to Insomnia FPL, ${data.managerName}!`, tone: "success" });
   };
 
   const handleOnboardingSkip = () => {
     void saveUserPreferences({ onboardingCompleted: true });
     setOnboardingModalOpen(false);
-    setToast({ message: "Welcome! Exploring with demo squad." });
+    setToast({ message: "Welcome! Exploring with demo squad.", tone: "success" });
   };
 
   if (catalogMode === "loading") return <LoadingScreen />;
@@ -2003,18 +2082,7 @@ function App() {
           />
         ) : null}
       </main>
-      {toast && (
-        <div className="swap-toast-banner global-swap-toast" role="status">
-          <span>{toast.message}</span>
-          {toast.undo && <button onClick={undoTransfer}>Undo</button>}
-          <button
-            aria-label="Dismiss notification"
-            onClick={() => setToast(null)}
-          >
-            ×
-          </button>
-        </div>
-      )}
+      {toast && <ToastNotification toast={toast} onDismiss={dismissToast} onUndo={undoTransfer} />}
       {(recomputeRequest || systemStatus?.isRecalculating || recomputeReadyAt) && (
         <div className="recompute-toast" role="status" aria-live="polite">
           {recomputeReadyAt ? (
@@ -7627,7 +7695,6 @@ function ResolvedPlayerActions({
   onApplyTransfer: (outId: number, inId: number) => void;
 }) {
   const [swapTarget, setSwapTarget] = useState<Player | null>(null);
-  const [toastMsg, setToastMsg] = useState<string | null>(null);
 
   const squadIds = useMemo(() => new Set(squad.map((p) => p.id)), [squad]);
 
@@ -7674,8 +7741,6 @@ function ResolvedPlayerActions({
 
   return (
     <div className="resolved-actions-panel">
-      {toastMsg && <div className="swap-toast-banner">{toastMsg}</div>}
-
       {recTransfer &&
         squadIds.has(recTransfer.out.id) &&
         !squadIds.has(recTransfer.in.id) && (
