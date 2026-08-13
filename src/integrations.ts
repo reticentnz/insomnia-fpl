@@ -384,7 +384,9 @@ export interface LeagueDetailsResponse {
   totalAnalyzed: number;
   sampledManagerCount: number;
   totalManagerCount: number;
-  pagination: { policy: 'FIRST_PAGE_SAMPLE'; fetchedPages: number; complete: boolean };
+  pagination: { policy: 'FIRST_PAGE_SAMPLE' | 'AROUND_RANK'; fetchedPages: number; complete: boolean };
+  yourRank?: number | null;
+  sampledAroundYou?: boolean;
   isPreSeason?: boolean;
   effectiveOwnership: LeaguePlayerEO[];
 }
@@ -991,9 +993,11 @@ export async function dismissCreatorClaim(claimId:string){
   return data
 }
 
-export async function fetchLeagueDetails(leagueId: number, gameweek?: number): Promise<LeagueDetailsResponse> {
-  const url = gameweek ? `/api/fpl-league-details?leagueId=${leagueId}&gameweek=${gameweek}` : `/api/fpl-league-details?leagueId=${leagueId}`
-  const res = await fetch(url)
+export async function fetchLeagueDetails(leagueId: number, gameweek?: number, youEntry?: number): Promise<LeagueDetailsResponse> {
+  const params = new URLSearchParams({ leagueId: String(leagueId) })
+  if (gameweek) params.set('gameweek', String(gameweek))
+  if (youEntry) params.set('youEntry', String(youEntry))
+  const res = await fetch(`/api/fpl-league-details?${params.toString()}`)
   if (!res.ok) throw new Error(`League fetch failed: HTTP ${res.status}`)
   return await res.json()
 }

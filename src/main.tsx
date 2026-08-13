@@ -5588,7 +5588,7 @@ function LeaguesView({
     setLoading(true);
     setError(null);
     try {
-      const data = await fetchLeagueDetails(id, currentGameweek);
+      const data = await fetchLeagueDetails(id, currentGameweek, fplAccount?.teamId ?? undefined);
       setDetails(data);
     } catch (err) {
       setError((err as Error)?.message || "Failed to load league details.");
@@ -5596,7 +5596,7 @@ function LeaguesView({
     } finally {
       setLoading(false);
     }
-  }, [currentGameweek]);
+  }, [currentGameweek, fplAccount?.teamId]);
 
   useEffect(() => {
     if (activeLeagueId) {
@@ -5856,13 +5856,35 @@ function LeaguesView({
             </div>
           )}
 
+          {details.standings.length === 0 && (
+            <div className="patch-card" style={{ padding: "28px", textAlign: "center", marginBottom: "16px" }}>
+              <div style={{ fontSize: "28px", marginBottom: "12px" }}>🗂</div>
+              <h4 style={{ margin: "0 0 8px 0" }}>No rival data to show yet</h4>
+              {details.totalManagerCount > 0 ? (
+                <p className="muted-text" style={{ margin: "0 auto", maxWidth: "600px", fontSize: "14px" }}>
+                  This league has <b>{details.totalManagerCount.toLocaleString()} managers</b>, but FPL isn't exposing the standings subset this page needs right now.
+                  League-wide rankings, chip tracking, and Effective Ownership are only meaningful for smaller mini-leagues — your own private leagues are the ones worth watching here.
+                  Check back once Gameweek 1 kicks off and real standings become available.
+                </p>
+              ) : (
+                <p className="muted-text" style={{ margin: "0 auto", maxWidth: "600px", fontSize: "14px" }}>
+                  No managers have joined this league yet (or FPL hasn't opened its standings). Once there are public standings — typically after Gameweek 1 — rivals, chip usage, and Effective Ownership will appear here automatically.
+                </p>
+              )}
+            </div>
+          )}
+
           {/* Standings View */}
-          {subTab === "standings" && (
+          {subTab === "standings" && details.standings.length > 0 && (
             <div className="leagues-card">
               <div className="leagues-card-header">
                 <div>
                   <h3>{details.league.name}</h3>
-                  <span className="muted-text">Sampled {details.sampledManagerCount ?? details.totalAnalyzed} of {details.totalManagerCount ?? details.totalAnalyzed} managers</span>
+                  <span className="muted-text">
+                    {details.sampledAroundYou
+                      ? `Showing ${details.sampledManagerCount ?? details.totalAnalyzed} rivals around your rank (#${details.yourRank ?? "?"}) of ${(details.totalManagerCount ?? details.totalAnalyzed).toLocaleString()}`
+                      : `Showing top ${details.sampledManagerCount ?? details.totalAnalyzed} of ${(details.totalManagerCount ?? details.totalAnalyzed).toLocaleString()} managers`}
+                  </span>
                 </div>
                 <span className="badge-info">Gameweek {currentGameweek}</span>
               </div>
@@ -5939,7 +5961,7 @@ function LeaguesView({
           )}
 
           {/* Effective Ownership View */}
-          {subTab === "eo" && (
+          {subTab === "eo" && details.standings.length > 0 && (
             <div className="leagues-card">
               <div className="eo-banner">
                 <div>
@@ -6027,7 +6049,7 @@ function LeaguesView({
           )}
 
           {/* Chip Matrix View */}
-          {subTab === "chips" && (
+          {subTab === "chips" && details.standings.length > 0 && (
             <div className="leagues-card">
               <div className="leagues-card-header">
                 <div>

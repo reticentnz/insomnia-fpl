@@ -341,10 +341,17 @@ const leagueUpstream = new ConcurrencyLimiter(5)
 
 // Fetches a classic league's standings, rival picks/history and effective
 // ownership, backed by the short-lived in-process cache shared by the Leagues
-// UI and the recommendation engine. Uses only the first standings page, so EO
-// is a sampled measure; fragile fetches degrade to an empty result rather than
-// blocking a recommendation.
-async function loadLeagueDetailsWithEO(leagueId, requestedGameweek) {
+// UI and the recommendation engine. By default it samples the first standings
+// page (top leaders), so EO is a sampled measure. If youEntry is supplied it
+// walks forward through the standings to centre the sample on the manager's own
+// rank, so the analytics reflect the people you are actually competing with.
+// Fragile fetches degrade to an empty result rather than blocking a
+// recommendation.
+const STANDINGS_PAGE_SIZE = 50
+const STANDINGS_SAMPLE_WINDOW = 35
+const STANDINGS_MAX_WALK_PAGES = 20
+
+async function loadLeagueDetailsWithEO(leagueId, requestedGameweek, { youEntry, maxStandingsPages = STANDINGS_MAX_WALK_PAGES } = {}) {
   const gameweek = String(requestedGameweek ?? '')
   const leagueKey = `${leagueId}:${gameweek}`
   const cachedLeague = leagueCache.get(leagueKey)
@@ -375,7 +382,40 @@ async function loadLeagueDetailsWithEO(leagueId, requestedGameweek) {
     }))
   }
 
-  const topRivals = results.slice(0, 35)
+  // If the user's entry isn't on page 1 and the league has more standings pages,
+  // walk forward (bounded) until we find them so the sample can centre on the
+  // user's rank rather than always the current leaders.
+  const numYouEntry = youEntry == null ? null : Number(youEntry)
+  let youFoundIndex = numYouEntry == null ? -1 : results.findIndex(r => Number(r.entry) === numYouEntry)
+  let sampledAroundYou = numYouEntry != null && youFoundIndex !== -1
+  let fetchedPages = 1
+  if (numYouEntry != null && youFoundIndex === -1 && !isPreSeason && standingsData.standings?.has_next) {
+    for (let page = 2; page <= maxStandingsPages && youFoundIndex === -1; page++) {
+      const pageRes = await leagueUpstream.run(() => fetch(`https://fantasy.premierleague.com/api/leagues-classic/${leagueId}/standings/?page_new_entries=1&page_standings=${page}`, {
+        headers: { 'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7)' }
+      }))
+      fetchedPages += 1
+      if (!pageRes.ok) break
+      const pageData = await pageRes.json()
+      const rows = pageData.standings?.results || []
+      if (rows.length === 0) break
+      const offsetBefore = results.length
+      results = results.concat(rows)
+      const hit = rows.findIndex(r => Number(r.entry) === numYouEntry)
+      if (hit !== -1) youFoundIndex = offsetBefore + hit
+      if (!pageData.standings?.has_next) break
+    }
+  }
+
+  let topRivals
+  if (youFoundIndex !== -1) {
+    sampledAroundYou = true
+    let start = Math.max(0, youFoundIndex - Math.floor(STANDINGS_SAMPLE_WINDOW / 2))
+    start = Math.min(start, Math.max(0, results.length - STANDINGS_SAMPLE_WINDOW))
+    topRivals = results.slice(start, start + STANDINGS_SAMPLE_WINDOW)
+  } else {
+    topRivals = results.slice(0, STANDINGS_SAMPLE_WINDOW)
+  }
 
   const defaultGw = String(requestedGameweek || standingsData.league?.start_event || 1)
 
@@ -451,7 +491,13 @@ async function loadLeagueDetailsWithEO(leagueId, requestedGameweek) {
       totalAnalyzed,
       sampledManagerCount: enrichedRivals.length,
       totalManagerCount: Number(standingsData.standings?.total_results || results.length),
-      pagination: { policy: 'FIRST_PAGE_SAMPLE', fetchedPages: 1, complete: false },
+      pagination: {
+        policy: sampledAroundYou ? 'AROUND_RANK' : 'FIRST_PAGE_SAMPLE',
+        fetchedPages,
+        complete: false
+      },
+      yourRank: youFoundIndex !== -1 ? youFoundIndex + 1 : null,
+      sampledAroundYou: Boolean(sampledAroundYou),
       isPreSeason: Boolean(isPreSeason),
       effectiveOwnership
     }
@@ -1747,9 +1793,11 @@ function startServerOnAvailablePort(targetPort) {
       }
 
       const requestedGameweek = urlParams.get('gameweek') || ''
+      const youEntryParam = urlParams.get('youEntry')
+      const youEntry = youEntryParam && !isNaN(Number(youEntryParam)) ? Number(youEntryParam) : undefined
 
       try {
-        const response = await loadLeagueDetailsWithEO(leagueId, requestedGameweek)
+        const response = await loadLeagueDetailsWithEO(leagueId, requestedGameweek, { youEntry })
         sendJson(res, 200, response)
       } catch (err) {
         if (!res.headersSent) {
