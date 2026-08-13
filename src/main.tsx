@@ -5046,7 +5046,7 @@ function SignalsTab({
   const [claimReviewingId, setClaimReviewingId] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
   const [sourceFilter, setSourceFilter] = useState("");
-  const [statusFilter, setStatusFilter] = useState("");
+  const [statusFilter, setStatusFilter] = useState("PENDING");
   const [playerQuery, setPlayerQuery] = useState("");
   const [ingestOpen, setIngestOpen] = useState(false);
   const [ingestText, setIngestText] = useState("");
@@ -5056,6 +5056,8 @@ function SignalsTab({
   const [signalConfig, setSignalConfig] = useState<SignalSourceConfig>({ ...DEFAULT_SIGNAL_SOURCE_CONFIG });
   const [configSaving, setConfigSaving] = useState(false);
   const [trustOpen, setTrustOpen] = useState(false);
+  const [workspaceView, setWorkspaceView] = useState<"REVIEW" | "SOURCES" | "MARKET">("REVIEW");
+  const [filtersOpen, setFiltersOpen] = useState(false);
   const [laneFilter, setLaneFilter] = useState<"" | "ADJUSTMENTS" | "NEEDS" | "CONTEXT">("");
   const [editingSignalId, setEditingSignalId] = useState<string | number | null>(null);
   const [interpretationSaving, setInterpretationSaving] = useState(false);
@@ -5304,6 +5306,9 @@ function SignalsTab({
   }
 
   const pendingCount = signals.filter((s) => s.status === "PENDING").length;
+  const activeAdvancedFilterCount = Number(Boolean(sourceFilter))
+    + Number(Boolean(laneFilter))
+    + Number(statusFilter === "REJECTED" || statusFilter === "EXPIRED");
   const unresolvedClaims = creatorClaims.filter((claim) => claim.matchStatus === "UNRESOLVED" || claim.matchStatus === "AMBIGUOUS");
   const readiness = useMemo(() => {
     if (!squad.length) return null;
@@ -5356,13 +5361,31 @@ function SignalsTab({
           All intelligence flowing into the model — YouTube transcripts, scrapes, pundit tips, and
           AI research findings. Review pending signals to update player projections.
         </p>
-        {pendingCount > 0 && (
-          <span className="pill amber" style={{ fontSize: "13px" }}>
-            {pendingCount} pending review
-          </span>
-        )}
+        <div className="signals-page-actions">
+          {pendingCount > 0 && <span className="pill amber">{pendingCount} pending review</span>}
+          <button className="dark-btn" onClick={() => setIngestOpen(true)}>+ Add signal</button>
+        </div>
       </div>
 
+      <nav className="signals-workspace-nav" aria-label="Signals workspace">
+        {([
+          ["REVIEW", "Review", pendingCount],
+          ["SOURCES", "Sources", creatorFeeds.sources.length],
+          ["MARKET", "Market context", marketSnapshots.length],
+        ] as const).map(([value, label, count]) => (
+          <button
+            key={value}
+            className={workspaceView === value ? "active" : ""}
+            aria-current={workspaceView === value ? "page" : undefined}
+            onClick={() => setWorkspaceView(value)}
+          >
+            <span>{label}</span>
+            {count > 0 && <small>{count}</small>}
+          </button>
+        ))}
+      </nav>
+
+      {workspaceView === "REVIEW" && <>
       {readiness && (
         <section className={`signal-readiness signal-readiness-${readiness.label.toLowerCase()}`}>
           <div><span className="eyebrow">SQUAD SIGNAL READINESS</span><strong>{readiness.score}/100 · {readiness.label}</strong></div>
@@ -5395,8 +5418,9 @@ function SignalsTab({
           ))}
         </section>
       )}
+      </>}
 
-      <section className="market-context-panel">
+      {workspaceView === "MARKET" && <section className="market-context-panel">
         <div className="market-context-heading">
           <div>
             <span className="eyebrow">MARKET CONTEXT</span>
@@ -5437,50 +5461,16 @@ function SignalsTab({
         ) : (
           <p className="market-context-empty">No odds snapshots available. Run <code>npm run ingest:signals</code> with <code>ODDS_API_KEY</code> configured.</p>
         )}
-      </section>
+      </section>}
 
-      {/* Filter bar */}
+      {workspaceView === "REVIEW" && <>
       <div className="signals-filter-bar">
-        <div className="filter-chips">
-          <button
-            className={`filter-chip${!sourceFilter ? " active" : ""}`}
-            onClick={() => setSourceFilter("")}
-          >
-            All sources
-          </button>
-          {sourceTypes.map((t) => (
-            <button
-              key={t}
-              className={`filter-chip${sourceFilter === t ? " active" : ""}`}
-              onClick={() => setSourceFilter(sourceFilter === t ? "" : t)}
-            >
-              <span className={sourceBadgeClass(t)} />
-              {sourceLabel(t)}
-            </button>
-          ))}
-        </div>
-        <div className="filter-chips">
-          {(["", "PENDING", "VERIFIED", "REJECTED", "EXPIRED"] as const).map((s) => (
-            <button
-              key={s}
-              className={`filter-chip${statusFilter === s ? " active" : ""}`}
-              onClick={() => setStatusFilter(s)}
-            >
-              {s || "All statuses"}
-            </button>
-          ))}
-        </div>
-        <div className="filter-chips" aria-label="Signal interpretation lanes">
-          {([
-            ["", "All interpretations"],
-            ["ADJUSTMENTS", "Model adjustments"],
-            ["NEEDS", "Needs interpretation"],
-            ["CONTEXT", "Context only"],
-          ] as const).map(([value, label]) => (
+        <div className="signals-primary-filters" aria-label="Signal review status">
+          {([["PENDING", "Pending"], ["VERIFIED", "Approved"], ["", "All"]] as const).map(([value, label]) => (
             <button
               key={value}
-              className={`filter-chip${laneFilter === value ? " active" : ""}`}
-              onClick={() => setLaneFilter(value)}
+              className={`filter-chip${statusFilter === value ? " active" : ""}`}
+              onClick={() => setStatusFilter(value)}
             >
               {label}
             </button>
@@ -5495,7 +5485,27 @@ function SignalsTab({
             className="signals-search-input"
           />
         </div>
+        <button
+          className={`filter-chip signals-more-filter${filtersOpen || activeAdvancedFilterCount ? " active" : ""}`}
+          aria-expanded={filtersOpen}
+          onClick={() => setFiltersOpen((open) => !open)}
+        >
+          Filters{activeAdvancedFilterCount ? ` (${activeAdvancedFilterCount})` : ""}
+        </button>
       </div>
+
+      {filtersOpen && <div className="signals-filter-panel">
+        <div><b>Source</b><div className="filter-chips">
+          <button className={`filter-chip${!sourceFilter ? " active" : ""}`} onClick={() => setSourceFilter("")}>All sources</button>
+          {sourceTypes.map((type) => <button key={type} className={`filter-chip${sourceFilter === type ? " active" : ""}`} onClick={() => setSourceFilter(sourceFilter === type ? "" : type)}><span className={sourceBadgeClass(type)} />{sourceLabel(type)}</button>)}
+        </div></div>
+        <div><b>Interpretation</b><div className="filter-chips">
+          {([["", "All"], ["ADJUSTMENTS", "Model adjustments"], ["NEEDS", "Needs interpretation"], ["CONTEXT", "Context only"]] as const).map(([value, label]) => <button key={value} className={`filter-chip${laneFilter === value ? " active" : ""}`} onClick={() => setLaneFilter(value)}>{label}</button>)}
+        </div></div>
+        <div><b>History</b><div className="filter-chips">
+          {([['REJECTED', 'Rejected'], ['EXPIRED', 'Expired']] as const).map(([value, label]) => <button key={value} className={`filter-chip${statusFilter === value ? " active" : ""}`} onClick={() => setStatusFilter(statusFilter === value ? "" : value)}>{label}</button>)}
+        </div></div>
+      </div>}
 
       {playerFilterId != null && (
         <div className="signals-player-filter" role="status">
@@ -5504,7 +5514,9 @@ function SignalsTab({
         </div>
       )}
       {deleteSignalError && <div className="admin-error signal-delete-error" role="alert">{deleteSignalError}</div>}
+      </>}
 
+      {workspaceView === "SOURCES" && <>
       <section className="creator-feed-card">
         <div className="creator-feed-heading">
           <div><span className="eyebrow">YOUTUBE INTELLIGENCE</span><h2>Creator feeds</h2><p>New videos are discovered through RSS. Available captions are fetched locally and converted into reviewable FPL signals by your configured LLM.</p></div>
@@ -5523,8 +5535,16 @@ function SignalsTab({
           </article>)}
           {!creatorFeeds.sources.length && <p className="creator-feed-empty">No channels followed yet. Adding one queues its latest three videos.</p>}
         </div>
-        {!!creatorFeeds.videos.length && <div className="creator-video-list">
-          {creatorFeeds.videos.slice(0, 8).map((video) => {
+        {!!creatorFeeds.videos.length && <>
+          <div className="creator-video-summary" aria-label="Creator video processing summary">
+            <span><b>{creatorFeeds.videos.length}</b> videos</span>
+            <span><b>{creatorFeeds.videos.filter((video) => video.status === "COMPLETE").length}</b> complete</span>
+            <span><b>{creatorFeeds.videos.filter((video) => video.status === "NO_TRANSCRIPT").length}</b> no transcript</span>
+            <span><b>{creatorFeeds.videos.filter((video) => video.status === "DISCOVERED" || video.status === "PROCESSING" || video.status === "RETRY").length}</b> waiting</span>
+            <span><b>{creatorFeeds.videos.filter((video) => video.status === "FAILED").length}</b> failed</span>
+          </div>
+          <div className="creator-video-list">
+          {creatorFeeds.videos.map((video) => {
             const detail = creatorVideoDetails[video.id];
             const expanded = expandedCreatorVideoId === video.id;
             return <article key={video.id} className={`creator-video-entry${expanded ? " expanded" : ""}`}>
@@ -5557,7 +5577,8 @@ function SignalsTab({
               </div>}
             </article>;
           })}
-        </div>}
+          </div>
+        </>}
       </section>
 
       {/* Source trust settings */}
@@ -5638,18 +5659,16 @@ function SignalsTab({
           </div>
         )}
       </div>
+      </>}
 
-      {/* Quick-add panel */}
-      <div className="ingest-drawer">
-        <button
-          className={`ingest-toggle${ingestOpen ? " open" : ""}`}
-          onClick={() => setIngestOpen(!ingestOpen)}
-        >
-          <span>✏ Add signal manually</span>
-          <span className="ingest-toggle-chevron">{ingestOpen ? "▲" : "▼"}</span>
-        </button>
-        {ingestOpen && (
-          <div className="ingest-body">
+      {/* Quick-add overlay */}
+      {ingestOpen && <div className="signal-compose-backdrop" role="presentation" onMouseDown={() => setIngestOpen(false)}>
+        <aside className="signal-compose-drawer" role="dialog" aria-modal="true" aria-labelledby="signal-compose-title" onMouseDown={(event) => event.stopPropagation()}>
+          <div className="signal-compose-heading">
+            <div><span className="eyebrow">MANUAL INTELLIGENCE</span><h2 id="signal-compose-title">Add signal</h2></div>
+            <button className="ghost-btn" aria-label="Close add signal" onClick={() => setIngestOpen(false)}>Close</button>
+          </div>
+          <div className="ingest-body signal-compose-body">
             <p className="muted" style={{ fontSize: "13px", marginBottom: "10px" }}>
               Paste a quote, tweet, article excerpt, or note. Player names will be auto-resolved.
             </p>
@@ -5682,16 +5701,14 @@ function SignalsTab({
               >
                 {ingestLoading ? "Resolving…" : "Create signal"}
               </button>
-              <button className="ghost-btn" onClick={() => { setIngestText(""); setIngestUrl(""); setIngestResult(null); }}>
-                Clear
-              </button>
+              <button className="ghost-btn" onClick={() => setIngestOpen(false)}>Cancel</button>
             </div>
           </div>
-        )}
-      </div>
+        </aside>
+      </div>}
 
       {/* Feed */}
-      {loading ? (
+      {workspaceView === "REVIEW" && (loading ? (
         <div className="signal-feed-empty">
           <div className="loading-dot-row">
             <span /><span /><span />
@@ -5872,7 +5889,7 @@ function SignalsTab({
             );
           })}
         </div>
-      )}
+      ))}
     </div>
   );
 }
