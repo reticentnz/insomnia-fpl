@@ -1019,46 +1019,6 @@ export async function fetchLeagueDetails(leagueId: number, gameweek?: number, yo
   return await res.json()
 }
 
-export type SignalSourceEntry = {
-  autoApprove: boolean;
-  confidenceThreshold: number; // 0–1
-};
-
-export type SignalSourceConfig = Record<string, SignalSourceEntry>;
-
-export const DEFAULT_SIGNAL_SOURCE_CONFIG: SignalSourceConfig = {
-  OFFICIAL_FPL:       { autoApprove: true,  confidenceThreshold: 0.5 },
-  OFFICIAL_CLUB:      { autoApprove: true,  confidenceThreshold: 0.5 },
-  OFFICIAL_PL:        { autoApprove: true,  confidenceThreshold: 0.5 },
-  YOUTUBE_TRANSCRIPT: { autoApprove: false, confidenceThreshold: 0.6 },
-  JOURNALIST:         { autoApprove: false, confidenceThreshold: 0.6 },
-  LLM_RESEARCH:       { autoApprove: false, confidenceThreshold: 0.7 },
-  SCRAPE:             { autoApprove: false, confidenceThreshold: 0.6 },
-  PREDICTED_LINEUP:   { autoApprove: false, confidenceThreshold: 0.65 },
-  USER_FEEDBACK:      { autoApprove: false, confidenceThreshold: 0.4 },
-  MANUAL_OVERRIDE:    { autoApprove: true,  confidenceThreshold: 0.0 },
-};
-
-export async function fetchSignalConfig(): Promise<SignalSourceConfig> {
-  try {
-    const res = await fetch('/api/signal-config')
-    if (!res.ok) return { ...DEFAULT_SIGNAL_SOURCE_CONFIG }
-    return await res.json()
-  } catch {
-    return { ...DEFAULT_SIGNAL_SOURCE_CONFIG }
-  }
-}
-
-export async function saveSignalConfig(config: SignalSourceConfig): Promise<SignalSourceConfig> {
-  const res = await fetch('/api/signal-config', {
-    method: 'PUT',
-    headers: { 'content-type': 'application/json' },
-    body: JSON.stringify(config),
-  })
-  if (!res.ok) throw new Error('Could not save signal config')
-  return await res.json()
-}
-
 export type SystemStatus = {
   reachable?: boolean;
   status: 'initializing' | 'seeding' | 'ready' | 'error';

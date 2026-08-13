@@ -85,10 +85,6 @@ import {
   resolveCreatorClaim,
   dismissCreatorClaim,
   type CreatorClaim,
-  fetchSignalConfig,
-  saveSignalConfig,
-  type SignalSourceConfig,
-  DEFAULT_SIGNAL_SOURCE_CONFIG,
   fetchSystemStatus,
   triggerForecastRecompute,
   fetchLatestForecast,
@@ -5143,9 +5139,6 @@ function SignalsTab({
   const [ingestUrl, setIngestUrl] = useState("");
   const [ingestLoading, setIngestLoading] = useState(false);
   const [ingestResult, setIngestResult] = useState<string | null>(null);
-  const [signalConfig, setSignalConfig] = useState<SignalSourceConfig>({ ...DEFAULT_SIGNAL_SOURCE_CONFIG });
-  const [configSaving, setConfigSaving] = useState(false);
-  const [trustOpen, setTrustOpen] = useState(false);
   const [workspaceView, setWorkspaceView] = useState<"REVIEW" | "SOURCES" | "MARKET">("REVIEW");
   const [filtersOpen, setFiltersOpen] = useState(false);
   const [laneFilter, setLaneFilter] = useState<"" | "ADJUSTMENTS" | "NEEDS" | "CONTEXT">("");
@@ -5188,7 +5181,6 @@ function SignalsTab({
     loadCreatorFeeds();
     loadRssFeeds();
     fetchTeamMarketSnapshots().then(setMarketSnapshots).catch(() => {});
-    fetchSignalConfig().then(setSignalConfig).catch(() => {});
   }, [loadSignals, loadCreatorClaims, loadCreatorFeeds, loadRssFeeds]);
 
   useEffect(() => {
@@ -5277,15 +5269,6 @@ function SignalsTab({
     } finally {
       setCreatorVideoRetrying(null);
     }
-  }
-
-  async function handleSaveConfig(updated: SignalSourceConfig) {
-    setConfigSaving(true);
-    try {
-      const saved = await saveSignalConfig(updated);
-      setSignalConfig(saved);
-    } catch {}
-    finally { setConfigSaving(false); }
   }
 
   const sourceTypes = useMemo(() => {
@@ -5758,84 +5741,6 @@ function SignalsTab({
         </>}
       </section>
 
-      {/* Source trust settings */}
-      <div className="ingest-drawer">
-        <button
-          className={`ingest-toggle${trustOpen ? " open" : ""}`}
-          onClick={() => setTrustOpen(!trustOpen)}
-        >
-          <span>⚙ Source trust settings</span>
-          <span className="ingest-toggle-chevron">{trustOpen ? "▲" : "▼"}</span>
-        </button>
-        {trustOpen && (
-          <div className="ingest-body">
-            <p className="muted" style={{ fontSize: "13px", marginBottom: "12px" }}>
-              Auto-approve sources you trust to bypass manual review. Signals with confidence below the threshold stay PENDING.
-            </p>
-            <div className="trust-table">
-              <div className="trust-table-header">
-                <span>Source</span>
-                <span>Auto-approve</span>
-                <span>Min. confidence</span>
-              </div>
-              {Object.entries(signalConfig).map(([sourceType, entry]) => (
-                <div key={sourceType} className="trust-table-row">
-                  <span className="trust-source-label">
-                    <span className={`source-badge ${
-                      sourceType === "YOUTUBE_TRANSCRIPT" ? "youtube" :
-                      sourceType === "JOURNALIST" ? "journalist" :
-                      sourceType === "LLM_RESEARCH" ? "llm" :
-                      sourceType.startsWith("OFFICIAL") ? "official" :
-                      sourceType === "PREDICTED_LINEUP" ? "lineup" :
-                      sourceType === "SCRAPE" ? "scrape" : "manual"
-                    }`} style={{ width: 18, height: 18 }} />
-                    {sourceType.replace(/_/g, " ")}
-                  </span>
-                  <span>
-                    <label className="trust-toggle">
-                      <input
-                        type="checkbox"
-                        checked={entry.autoApprove}
-                        disabled={sourceType === "MANUAL_OVERRIDE"}
-                        onChange={(e) => {
-                          const updated = {
-                            ...signalConfig,
-                            [sourceType]: { ...entry, autoApprove: e.target.checked },
-                          };
-                          handleSaveConfig(updated);
-                        }}
-                      />
-                      <span className="trust-toggle-track" />
-                    </label>
-                  </span>
-                  <span className="trust-threshold-cell">
-                    <input
-                      type="range"
-                      min={0} max={100} step={5}
-                      value={Math.round(entry.confidenceThreshold * 100)}
-                      className="trust-threshold-slider"
-                      disabled={sourceType === "MANUAL_OVERRIDE"}
-                      onChange={(e) => {
-                        const updated = {
-                          ...signalConfig,
-                          [sourceType]: { ...entry, confidenceThreshold: Number(e.target.value) / 100 },
-                        };
-                        setSignalConfig(updated);
-                      }}
-                      onMouseUp={() => handleSaveConfig(signalConfig)}
-                      onTouchEnd={() => handleSaveConfig(signalConfig)}
-                    />
-                    <span className="trust-threshold-label">
-                      {Math.round(entry.confidenceThreshold * 100)}%
-                    </span>
-                  </span>
-                </div>
-              ))}
-            </div>
-            {configSaving && <p className="muted" style={{ fontSize: "12px", marginTop: "8px" }}>Saving…</p>}
-          </div>
-        )}
-      </div>
       </>}
 
       {/* Quick-add overlay */}

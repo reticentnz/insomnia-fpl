@@ -475,32 +475,6 @@ function appDataFile(filename) {
   const resolvedDatabasePath=path.isAbsolute(cleanDatabasePath)?cleanDatabasePath:path.resolve(cleanDatabasePath)
   return path.join(path.dirname(resolvedDatabasePath),filename)
 }
-const SIGNAL_CONFIG_PATH = process.env.SIGNAL_CONFIG_FILE || appDataFile('signal-config.json')
-const DEFAULT_SOURCE_CONFIG = {
-  OFFICIAL_FPL:      { autoApprove: true,  confidenceThreshold: 0.5 },
-  OFFICIAL_CLUB:     { autoApprove: true,  confidenceThreshold: 0.5 },
-  OFFICIAL_PL:       { autoApprove: true,  confidenceThreshold: 0.5 },
-  YOUTUBE_TRANSCRIPT:{ autoApprove: false, confidenceThreshold: 0.6 },
-  JOURNALIST:        { autoApprove: false, confidenceThreshold: 0.6 },
-  LLM_RESEARCH:      { autoApprove: false, confidenceThreshold: 0.7 },
-  SCRAPE:            { autoApprove: false, confidenceThreshold: 0.6 },
-  PREDICTED_LINEUP:  { autoApprove: false, confidenceThreshold: 0.65 },
-  USER_FEEDBACK:     { autoApprove: false, confidenceThreshold: 0.4 },
-  MANUAL_OVERRIDE:   { autoApprove: true,  confidenceThreshold: 0.0 },
-}
-function loadSignalConfig() {
-  try {
-    if (fs.existsSync(SIGNAL_CONFIG_PATH)) {
-      return { ...DEFAULT_SOURCE_CONFIG, ...JSON.parse(fs.readFileSync(SIGNAL_CONFIG_PATH, 'utf8')) }
-    }
-  } catch {}
-  return { ...DEFAULT_SOURCE_CONFIG }
-}
-function saveSignalConfig(config) {
-  fs.mkdirSync(path.dirname(SIGNAL_CONFIG_PATH),{recursive:true})
-  fs.writeFileSync(SIGNAL_CONFIG_PATH, JSON.stringify(config, null, 2))
-}
-
 const AI_SETTINGS_PATH = process.env.AI_SETTINGS_FILE || appDataFile('ai-settings.json')
 const catalogueCache = new CatalogueCache({
   ttlMs: Number(process.env.FPL_CATALOG_CACHE_TTL_MS || 60_000),
@@ -732,12 +706,6 @@ function saveAiSettings(settings) {
     throw new Error(`Could not save local AI configuration: ${sanitizeError(error)}`)
   }
 }
-function shouldAutoApprove(sourceType, confidence, config) {
-  const entry = (config || loadSignalConfig())[sourceType]
-  if (!entry) return false
-  return entry.autoApprove && confidence >= (entry.confidenceThreshold ?? 0)
-}
-
 function bearerToken(req){
   const match=String(req.headers.authorization||'').match(/^Bearer\s+(.+)$/i)
   return match?.[1]||''
@@ -830,8 +798,7 @@ async function createSignalForCreatorClaim(db,claimRow,source,gameweek){
   const signalValue=parseJson(claimRow.signalValue,{})
   const draft=signalDraftFromClaim({...claimRow,...signalValue,numericClaims:parseJson(claimRow.numericClaims,[]),relatedMentions:parseJson(claimRow.relatedMentions,[])},Number(claimRow.resolvedPlayerId),source)
   const confidence=Math.max(0,Math.min(1,Number(draft.confidence)||.65))
-  const contextOnly=draft.modelImpact==='NONE'&&draft.claimClass!=='UNKNOWN'
-  const status=source.platform==='RSS' ? 'PENDING' : contextOnly||shouldAutoApprove('YOUTUBE_TRANSCRIPT',confidence,loadSignalConfig())?'VERIFIED':'PENDING'
+  const status='PENDING'
   const observedAt=new Date().toISOString()
   const id=`creator:${String(claimRow.externalClaimId||claimRow.id).slice(0,220)}`
   const existing=await listPlayerSignals(db,{playerId:draft.playerId,limit:500})
@@ -2051,30 +2018,6 @@ function startServerOnAvailablePort(targetPort) {
         await db.query(`UPDATE "CreatorClaim" SET "match_status"='RESOLVED',"resolved_player_id"=$2,"signal_id"=$3,"updated_at"=$4 WHERE "id"=$1`,[id,player.id,String(result.signal.id),now])
         sendJson(res,200,{claimId:id,signal:result.signal,rememberedAlias:payload.rememberAlias!==false})
       }catch(error){sendJson(res,400,{error:error instanceof Error?error.message:'Could not resolve creator claim'})}
-      return
-    }
-
-    // Signal source trust config
-    if(request==='/api/signal-config'&&req.method==='GET'){
-      sendJson(res,200,loadSignalConfig())
-      return
-    }
-    if(request==='/api/signal-config'&&req.method==='PUT'){
-      try{
-        const payload=await readRequestBody(req)
-        const current=loadSignalConfig()
-        const updated={...current}
-        for(const [key,val] of Object.entries(payload)){
-          if(val&&typeof val==='object'){
-            updated[key]={...current[key],...val}
-            if(typeof updated[key].confidenceThreshold==='number'){
-              updated[key].confidenceThreshold=Math.max(0,Math.min(1,updated[key].confidenceThreshold))
-            }
-          }
-        }
-        saveSignalConfig(updated)
-        sendJson(res,200,updated)
-      }catch(error){sendJson(res,400,{error:error instanceof Error?error.message:'Could not save config'})}
       return
     }
 
