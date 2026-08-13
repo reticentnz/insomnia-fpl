@@ -177,6 +177,7 @@ export type DraftScore = {
 };
 export type InitialSquadOptions = {
   lockedPlayerIds?: number[];
+  excludedPlayerIds?: number[];
   horizon?: 1 | 3 | 5;
   budget?: number;
 };
@@ -1332,6 +1333,7 @@ export const getSquad = (ids: number[] = squadIds) =>
 export function buildLegalDefaultSquad(
   pool: Player[],
   maxBudget = 100.0,
+  excludedIds: number[] = [],
 ): Player[] {
   const req: Record<Position, number> = { GK: 2, DEF: 5, MID: 5, FWD: 3 };
   const squad: Player[] = [];
@@ -1345,7 +1347,9 @@ export function buildLegalDefaultSquad(
   };
 
   const sortedPool = [...pool]
-    .filter((p) => p.active !== false)
+    .filter(
+      (p) => p.active !== false && !excludedIds.includes(p.id),
+    )
     .sort((a, b) => b.projection - a.projection);
 
   for (const pos of ["GK", "DEF", "MID", "FWD"] as Position[]) {
@@ -1465,6 +1469,7 @@ export function buildLegalRemainingSquad(
   pool: Player[],
   horizon = 1,
   maxBudget = 100.0,
+  excludedIds: number[] = [],
 ): Player[] {
   const req: Record<Position, number> = { GK: 2, DEF: 5, MID: 5, FWD: 3 };
   const squad: Player[] = currentIds
@@ -1489,7 +1494,12 @@ export function buildLegalRemainingSquad(
     FWD: 4.5,
   };
   const sortedPool = [...pool]
-    .filter((p) => p.active !== false && !squad.some((s) => s.id === p.id))
+    .filter(
+      (p) =>
+        p.active !== false &&
+        !squad.some((s) => s.id === p.id) &&
+        !excludedIds.includes(p.id),
+    )
     .sort(
       (a, b) => horizonProjection(b, horizon) - horizonProjection(a, horizon),
     );
@@ -2222,8 +2232,11 @@ function optimizerCandidates(
   pool: Player[],
   lockedIds: Set<number>,
   horizon: number,
+  excludedIds: Set<number> = new Set(),
 ) {
-  const active = pool.filter((player) => player.active !== false);
+  const active = pool.filter(
+    (player) => player.active !== false && !excludedIds.has(player.id),
+  );
   const score = (player: Player) => horizonProjection(player, horizon);
   const selected = new Map<number, Player>();
   for (const position of ["GK", "DEF", "MID", "FWD"] as Position[]) {
@@ -2251,6 +2264,7 @@ export function optimizeInitialSquad(
 ): Player[] {
   const horizon = options.horizon ?? 5;
   const budget = options.budget ?? INITIAL_SQUAD_BUDGET;
+  const excludedIds = new Set(options.excludedPlayerIds || []);
   const uniqueLocked = [...new Set(options.lockedPlayerIds || [])]
     .map((id) => pool.find((player) => player.id === id))
     .filter(Boolean) as Player[];
@@ -2288,7 +2302,8 @@ export function optimizeInitialSquad(
         (player) =>
           player.active !== false &&
           player.position === position &&
-          !lockedIds.has(player.id),
+          !lockedIds.has(player.id) &&
+          !excludedIds.has(player.id),
       )
       .sort(
         (a, b) =>
@@ -2307,7 +2322,12 @@ export function optimizeInitialSquad(
     }
   }
   if (validateInitialSquad(squad, budget).length) return [];
-  const candidates = optimizerCandidates(pool, lockedIds, horizon);
+  const candidates = optimizerCandidates(
+    pool,
+    lockedIds,
+    horizon,
+    excludedIds,
+  );
   const scoreCache = new Map<number, number>(
     candidates
       .concat(squad)

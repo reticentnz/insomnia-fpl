@@ -2030,6 +2030,12 @@ h2 {
   border-color: rgba(0, 255, 135, 0.4);
 }
 
+.editor-player.excluded {
+  opacity: 0.6;
+  background: rgba(239, 68, 68, 0.08);
+  border-color: rgba(239, 68, 68, 0.35);
+}
+
 .editor-player .player-info {
   display: flex;
   flex-direction: column;
@@ -2078,6 +2084,11 @@ h2 {
 .editor-player.picked .check {
   background: var(--accent-emerald);
   color: #04120a;
+}
+
+.editor-player.excluded .check {
+  background: rgba(239, 68, 68, 0.9);
+  color: #fff;
 }
 
 .danger-ghost {

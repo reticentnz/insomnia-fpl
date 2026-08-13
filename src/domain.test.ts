@@ -372,6 +372,21 @@ describe('GW1 locked-core squad optimisation',()=>{
     expect(validateInitialSquad(optimized)).toHaveLength(0)
   })
 
+  it('never includes excluded players when auto-filling',()=>{
+    const excludedId=players.find(player=>player.name==='Salah')!.id
+    const optimized=optimizeInitialSquad(players,{horizon:5,excludedPlayerIds:[excludedId]})
+    expect(optimized).toHaveLength(15)
+    expect(optimized.some(player=>player.id===excludedId)).toBe(false)
+    expect(validateInitialSquad(optimized)).toHaveLength(0)
+  })
+
+  it('honours exclusions when filling the remaining spots of an existing squad',()=>{
+    const excludedId=players.find(player=>player.name==='Haaland')!.id
+    const fill=buildLegalRemainingSquad([],players,5,100,[excludedId])
+    expect(fill.some(player=>player.id===excludedId)).toBe(false)
+    expect(fill).toHaveLength(15)
+  })
+
   it('beats greedy autocomplete using the lineup-aware objective',()=>{
     const greedy=buildLegalDefaultSquad(players,100)
     const optimized=optimizeInitialSquad(players,{horizon:5})

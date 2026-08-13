@@ -2898,6 +2898,7 @@ function SquadEditor({
       ? []
       : initialLockedIds.filter((id) => selectedIds.includes(id)),
   );
+  const [excludedIds, setExcludedIds] = useState<number[]>([]);
   const [q, setQ] = useState("");
   const [posFilter, setPosFilter] = useState<string>("All");
   const [sortBy, setSortBy] = useState<
@@ -2987,6 +2988,11 @@ function SquadEditor({
     if (ids.includes(id)) {
       setIds((x) => x.filter((i) => i !== id));
       setEditorLockedIds((x) => x.filter((i) => i !== id));
+      setExcludedIds((x) => (x.includes(id) ? x : [...x, id]));
+      return;
+    }
+    if (excludedIds.includes(id)) {
+      setExcludedIds((x) => x.filter((i) => i !== id));
       return;
     }
     if (ids.length >= 15) {
@@ -2994,16 +3000,19 @@ function SquadEditor({
       return;
     }
     setIds((x) => [...x, id]);
+    setExcludedIds((x) => x.filter((i) => i !== id));
   };
   const replacePlayer = (outId: number) => {
     if (!pendingIncoming) return;
     setIds((x) => x.map((id) => (id === outId ? pendingIncoming.id : id)));
     setEditorLockedIds((x) => x.filter((id) => id !== outId));
+    setExcludedIds((x) => x.filter((id) => id !== pendingIncoming.id));
     setPendingIncoming(null);
   };
   const clearSquad = () => {
     setIds([]);
     setEditorLockedIds([]);
+    setExcludedIds([]);
   };
   const toggleLock = (id: number) =>
     setEditorLockedIds((current) =>
@@ -3016,10 +3025,11 @@ function SquadEditor({
       (draftMode
         ? optimizeInitialSquad(catalog, {
             lockedPlayerIds: editorLockedIds,
+            excludedPlayerIds: excludedIds,
             horizon: horizon as 1 | 3 | 5,
             budget: INITIAL_SQUAD_BUDGET,
           })
-        : buildLegalDefaultSquad(catalog, 100 + bank)
+        : buildLegalDefaultSquad(catalog, 100 + bank, excludedIds)
       ).map((p) => p.id),
     );
   const autoFillRemaining = () => {
@@ -3029,10 +3039,17 @@ function SquadEditor({
       (draftMode
         ? optimizeInitialSquad(catalog, {
             lockedPlayerIds: preserve,
+            excludedPlayerIds: excludedIds,
             horizon: horizon as 1 | 3 | 5,
             budget: INITIAL_SQUAD_BUDGET,
           })
-        : buildLegalRemainingSquad(ids, catalog, horizon, 100 + bank)
+        : buildLegalRemainingSquad(
+            ids,
+            catalog,
+            horizon,
+            100 + bank,
+            excludedIds,
+          )
       ).map((p) => p.id),
     );
   };
@@ -3066,7 +3083,9 @@ function SquadEditor({
             </h2>
             <p className="muted">
               Choose a player at 15/15 to start a direct replacement, or remove
-              players to rebuild several positions.
+              players to rebuild several positions. Click a player again to
+              exclude them from the auto-fill optimiser, and a third time to
+              clear.
             </p>
           </div>
           <button
@@ -3255,10 +3274,18 @@ function SquadEditor({
             <div className="editor-grid">
               {filtered.map((p) => {
                 const isPicked = ids.includes(p.id);
+                const isExcluded = excludedIds.includes(p.id);
                 const proj = horizonProjection(p, horizon);
                 return (
                   <button
-                    className={"editor-player " + (isPicked ? "picked" : "")}
+                    className={
+                      "editor-player " +
+                      (isPicked
+                        ? "picked"
+                        : isExcluded
+                          ? "excluded"
+                          : "")
+                    }
                     onClick={() => toggle(p.id)}
                     key={p.id}
                   >
@@ -3269,13 +3296,16 @@ function SquadEditor({
                       <b>{p.name}</b>
                       <small>
                         {p.club} · £{p.price.toFixed(1)}m
+                        {isExcluded && " · excluded"}
                       </small>
                     </div>
                     <div className="player-proj">
                       <strong>
                         {proj.toFixed(1)} <small>pts</small>
                       </strong>
-                      <span className="check">{isPicked ? "✓" : "+"}</span>
+                      <span className="check">
+                        {isPicked ? "✓" : isExcluded ? "✕" : "+"}
+                      </span>
                     </div>
                   </button>
                 );
