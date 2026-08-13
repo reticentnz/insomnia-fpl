@@ -100,9 +100,17 @@ body {
 .feed-failed { color: #fda4af; background: rgba(244,63,94,.12); }
 .feed-partial { color: var(--accent-gold); background: rgba(251,191,36,.12); }
 .admin-empty { padding: 24px 10px; color: var(--text-muted); font-size: 12px; }
+.ai-usage-note { color: var(--text-dim); font-size: 11px; }
+.ai-usage-summary { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px; }
+.ai-usage-summary > div, .ai-usage-breakdown > div { padding: 12px; border: 1px solid var(--border-subtle); border-radius: var(--radius-sm); background: rgba(15, 23, 42, .25); }
+.ai-usage-summary b, .ai-usage-breakdown b { display: block; font-family: var(--font-heading); color: var(--text-main); }
+.ai-usage-summary b { font-size: 18px; }
+.ai-usage-summary span, .ai-usage-breakdown span { display: block; margin-top: 4px; color: var(--text-muted); font-size: 11px; }
+.ai-usage-breakdown { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 10px; margin-top: 12px; }
 
 @media (max-width: 1000px) {
   .admin-summary-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .ai-usage-summary, .ai-usage-breakdown { grid-template-columns: 1fr; }
   .admin-feed-row { grid-template-columns: 1fr .8fr 1fr; }
   .admin-feed-row > :nth-child(4), .admin-feed-row > :nth-child(5) { display: none; }
 }

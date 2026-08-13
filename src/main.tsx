@@ -140,7 +140,6 @@ const glyph = (symbol: string) => (props: GlyphProps) => (
 );
 const ArrowRight = glyph("→"),
   Bot = glyph("✦"),
-  ChevronDown = glyph("⌄"),
   Gauge = glyph("◒"),
   ListFilter = glyph("☷"),
   Radio = glyph("◉"),
@@ -478,6 +477,11 @@ function AdminView({ system, forecast, horizon }: { system: SystemStatus | null;
       <div className="admin-metric"><small>Linked team</small><b>{status?.manager?.teamName || "Not linked"}</b><span>{status?.manager ? `${status.manager.playerCount} players · #${status.manager.teamId}` : "Connect a team from My Team"}</span></div>
       <div className="admin-metric"><small>Unresolved links</small><b>{(status?.unresolved.players || 0) + (status?.unresolved.fixtures || 0)}</b><span>{status?.unresolved.players || 0} players · {status?.unresolved.fixtures || 0} fixtures</span></div>
       <div className="admin-metric"><small>Odds provider</small><b>{status?.oddsConfigured ? "Configured" : "Not configured"}</b><span>{status?.oddsConfigured ? "Ready to sync" : "Set ODDS_API_KEY"}</span></div>
+    </section>
+    <section className="admin-feed-card ai-usage-card">
+      <div className="admin-section-heading"><div><small>AI USAGE</small><h2>Token and cost ledger</h2></div><span className="ai-usage-note">New requests only</span></div>
+      <div className="ai-usage-summary"><div><b>{(status?.aiUsage.totalTokens || 0).toLocaleString()}</b><span>total tokens</span></div><div><b>{status?.aiUsage.estimatedCostUsd == null ? "—" : `$${status.aiUsage.estimatedCostUsd.toFixed(4)}`}</b><span>estimated API cost (USD)</span></div><div><b>{status?.aiUsage.requestCount || 0}</b><span>tracked requests</span></div></div>
+      {status?.aiUsage.byFeature.length ? <div className="ai-usage-breakdown">{status.aiUsage.byFeature.map(item => <div key={item.feature}><b>{item.feature.replaceAll("_", " ")}</b><span>{item.requestCount} request{item.requestCount === 1 ? "" : "s"} · {item.totalTokens.toLocaleString()} tokens{item.estimatedCostUsd ? ` · $${item.estimatedCostUsd.toFixed(4)}` : ""}</span></div>)}</div> : <p className="admin-empty">No AI requests recorded yet. Usage begins after this update.</p>}
     </section>
     {status?.authenticationRequired && <section className="admin-token-card">
       <div><b>Admin authentication</b><p>Enter the server's admin token to run operations. It stays in this browser tab.</p></div>
@@ -2024,10 +2028,6 @@ function App() {
               draftMode={draftMode}
               derivedBank={effectiveBank}
               onSettings={() => setSettingsOpen(true)}
-              onImport={() => {
-                setTeamMessage("");
-                setImportModalOpen(true);
-              }}
               onEdit={() => {
                 setInitialClear(false);
                 setEditing(true);
@@ -2376,7 +2376,6 @@ function PlanControls({
   draftMode = activeDraftMode,
   derivedBank = activeManagerSettings.bank,
   onSettings,
-  onImport,
   onEdit,
   onExport,
 }: {
@@ -2386,7 +2385,6 @@ function PlanControls({
   draftMode?: boolean;
   derivedBank?: number;
   onSettings: () => void;
-  onImport: () => void;
   onEdit: () => void;
   onExport?: () => void;
 }) {
@@ -2459,9 +2457,6 @@ function PlanControls({
         )}
       </div>
       <div className="plan-actions">
-        <button className="ghost-btn" onClick={onImport}>
-          Import squad <ChevronDown size={14} />
-        </button>
         <button className="ghost-btn" onClick={onEdit}>
           Edit planned squad
         </button>

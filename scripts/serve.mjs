@@ -762,14 +762,18 @@ async function refreshSystemPlayerCount(message) {
 
 async function adminStatusSnapshot() {
   const db = await getDb()
-  const [runs, unresolved, manager] = await Promise.all([
+  const [runs, unresolved, manager, aiUsage, aiUsageByFeature, recentAiUsage] = await Promise.all([
     db.query(`SELECT "id","source","status","started_at","finished_at","inserted_count","updated_count","unmatched_count","used_cache","error_summary"
       FROM "FeedRun" ORDER BY "started_at" DESC LIMIT 12`),
     db.query(`SELECT
       (SELECT COUNT(*) FROM "UnderlyingObservation" WHERE "match_status" != 'MATCHED' AND "feed_run_id"=(SELECT "id" FROM "FeedRun" WHERE "source"='UNDERLYING' AND "status" IN ('SUCCEEDED','PARTIAL') ORDER BY datetime("started_at") DESC,"id" DESC LIMIT 1)) AS unresolved_players,
       (SELECT COUNT(*) FROM "MarketFixtureObservation" WHERE "fixture_id" IS NULL AND "feed_run_id"=(SELECT "id" FROM "FeedRun" WHERE "source"='MARKET' AND "status" IN ('SUCCEEDED','PARTIAL') ORDER BY datetime("started_at") DESC,"id" DESC LIMIT 1)) AS unresolved_fixtures`),
     getCurrentManager(db).catch(() => null),
+    db.query(`SELECT COUNT(*) AS request_count, COALESCE(SUM("input_tokens"), 0) AS input_tokens, COALESCE(SUM("output_tokens"), 0) AS output_tokens, COALESCE(SUM("total_tokens"), 0) AS total_tokens, COALESCE(SUM("web_search_calls"), 0) AS web_search_calls, SUM("estimated_cost_usd") AS estimated_cost_usd FROM "AiUsageEvent"`),
+    db.query(`SELECT "feature", COUNT(*) AS request_count, COALESCE(SUM("total_tokens"), 0) AS total_tokens, COALESCE(SUM("estimated_cost_usd"), 0) AS estimated_cost_usd FROM "AiUsageEvent" GROUP BY "feature" ORDER BY total_tokens DESC`),
+    db.query(`SELECT "id", "feature", "provider", "model", "total_tokens", "estimated_cost_usd", "created_at" FROM "AiUsageEvent" ORDER BY datetime("created_at") DESC, "id" DESC LIMIT 8`),
   ])
+  const usageRow=aiUsage.rows[0]||{}
   return {
     schemaVersion: 1,
     authenticationRequired: Boolean(process.env.ADMIN_TOKEN),
@@ -779,6 +783,11 @@ async function adminStatusSnapshot() {
     manager: manager?.account ? { teamId: manager.account.teamId, teamName: manager.account.teamName, lastSynced: manager.account.lastSynced, playerCount: manager.squad?.length || 0 } : null,
     oddsConfigured: Boolean(String(process.env.ODDS_API_KEY || '').trim()),
     scheduledRefreshes: systemStatus.scheduledRefreshes,
+    aiUsage: {
+      requestCount: Number(usageRow.request_count||0), inputTokens: Number(usageRow.input_tokens||0), outputTokens: Number(usageRow.output_tokens||0), totalTokens: Number(usageRow.total_tokens||0), webSearchCalls: Number(usageRow.web_search_calls||0), estimatedCostUsd: usageRow.estimated_cost_usd == null ? null : Number(usageRow.estimated_cost_usd),
+      byFeature: aiUsageByFeature.rows.map(row=>({feature:row.feature,requestCount:Number(row.request_count||0),totalTokens:Number(row.total_tokens||0),estimatedCostUsd:Number(row.estimated_cost_usd||0)})),
+      recent: recentAiUsage.rows.map(row=>({id:row.id,feature:row.feature,provider:row.provider,model:row.model,totalTokens:Number(row.total_tokens||0),estimatedCostUsd:row.estimated_cost_usd == null ? null : Number(row.estimated_cost_usd),createdAt:row.created_at})),
+    },
     season: FPL_SEASON,
   }
 }
@@ -890,6 +899,7 @@ async function refreshNativeCreatorFeeds(){
   const poll=await pollCreatorSources(db)
   const queue=await processCreatorQueue(db,{limit:Number(process.env.CREATOR_INGEST_BATCH_SIZE)||2,extractClaims:async({video,transcript})=>{
     const llm=await callLLMProvider(creatorExtractionPrompt(video,transcript),{rawJson:true,maxOutputTokens:4000})
+    await recordAiUsage({feature:'YOUTUBE_EXTRACTION',result:llm})
     if(!llm?.answer){
       const configured=loadAiSettings(),provider=String(configured.provider||'gemini').toLowerCase()
       const environmentKey=provider==='openai'?process.env.OPENAI_API_KEY:provider==='anthropic'?process.env.ANTHROPIC_API_KEY:provider==='deepseek'?process.env.DEEPSEEK_API_KEY:process.env.GEMINI_API_KEY
@@ -1088,7 +1098,7 @@ async function callLLMProvider(prompt, customConfig = {}) {
     }
     const data = await res.json()
     const text = data.candidates?.[0]?.content?.parts?.[0]?.text
-    if (text) return { answer: customConfig.rawJson ? text : formatProviderAnswer(text), provider: `Gemini (${model})` }
+    if (text) return aiProviderResult(text, 'Gemini', model, data.usageMetadata, customConfig)
   }
 
   if (openaiKey && (userProvider === 'openai' || !userKey)) {
@@ -1104,7 +1114,7 @@ async function callLLMProvider(prompt, customConfig = {}) {
     }
     const data = await res.json()
     const text = data.choices?.[0]?.message?.content
-    if (text) return { answer: customConfig.rawJson ? text : formatProviderAnswer(text), provider: `OpenAI (${model})` }
+    if (text) return aiProviderResult(text, 'OpenAI', model, data.usage, customConfig)
   }
 
   if (deepseekKey && userProvider === 'deepseek') {
@@ -1120,7 +1130,7 @@ async function callLLMProvider(prompt, customConfig = {}) {
     }
     const data = await res.json()
     const text = data.choices?.[0]?.message?.content
-    if (text) return { answer: customConfig.rawJson ? text : formatProviderAnswer(text), provider: `DeepSeek (${model})` }
+    if (text) return aiProviderResult(text, 'DeepSeek', model, data.usage, customConfig)
   }
 
   if (anthropicKey && (userProvider === 'anthropic' || !userKey)) {
@@ -1136,7 +1146,7 @@ async function callLLMProvider(prompt, customConfig = {}) {
     }
     const data = await res.json()
     const text = data.content?.[0]?.text
-    if (text) return { answer: customConfig.rawJson ? text : formatProviderAnswer(text), provider: `Anthropic (${model})` }
+    if (text) return aiProviderResult(text, 'Anthropic', model, data.usage, customConfig)
   }
 
   try {
@@ -1147,7 +1157,7 @@ async function callLLMProvider(prompt, customConfig = {}) {
     })
     if (res.ok) {
       const data = await res.json()
-      if (data.response) return { answer: customConfig.rawJson ? data.response : formatProviderAnswer(data.response), provider: 'Ollama (Local)' }
+      if (data.response) return aiProviderResult(data.response, 'Ollama', 'llama3', data, customConfig)
     }
   } catch {}
 
@@ -1190,6 +1200,10 @@ const canonicalUrl=value=>{
 
 function researchUsage(model,usage={},webSearchCalls=0,provider='openai'){
   const rates=provider==='deepseek'&&model.startsWith('deepseek-v4-flash')?{input:.14,cached:.0028,output:.28}
+    :model.startsWith('gpt-4o-mini')?{input:.15,cached:.075,output:.6}
+    :model.startsWith('gpt-4o')?{input:2.5,cached:1.25,output:10}
+    :model.startsWith('gemini-2.0-flash')?{input:.1,cached:.025,output:.4}
+    :model.startsWith('claude-3-5-haiku')?{input:.8,cached:.08,output:4}
     :model.startsWith('gpt-5-mini')?{input:.25,cached:.025,output:2}
     :model.startsWith('gpt-5.6-luna')?{input:1,cached:.1,output:6}
     :model.startsWith('gpt-5.6-terra')?{input:2.5,cached:.25,output:15}
@@ -1201,6 +1215,29 @@ function researchUsage(model,usage={},webSearchCalls=0,provider='openai'){
   const searchCharge=provider==='deepseek'?0:webSearchCalls*.01
   const estimatedCostUsd=rates?((inputTokens-cachedInputTokens)*rates.input+cachedInputTokens*rates.cached+outputTokens*rates.output)/1_000_000+searchCharge:null
   return {inputTokens,cachedInputTokens,outputTokens,totalTokens:Number(usage.total_tokens)||inputTokens+outputTokens,webSearchCalls,estimatedCostUsd:estimatedCostUsd===null?null:+estimatedCostUsd.toFixed(4)}
+}
+
+function normalizedAiUsage(provider, model, usage={}, webSearchCalls=0){
+  const inputTokens=Number(usage.input_tokens??usage.prompt_tokens??usage.promptTokenCount??usage.prompt_eval_count)||0
+  const cachedInputTokens=Number(usage.input_tokens_details?.cached_tokens??usage.prompt_tokens_details?.cached_tokens??usage.cache_read_input_tokens)||0
+  const outputTokens=Number(usage.output_tokens??usage.completion_tokens??usage.candidatesTokenCount??usage.eval_count)||0
+  const totalTokens=Number(usage.total_tokens??usage.totalTokenCount)||inputTokens+outputTokens
+  const estimatedCostUsd=researchUsage(model,{input_tokens:inputTokens,output_tokens:outputTokens,total_tokens:totalTokens,input_tokens_details:{cached_tokens:cachedInputTokens}},webSearchCalls,provider.toLowerCase()).estimatedCostUsd
+  return {inputTokens,cachedInputTokens,outputTokens,totalTokens,webSearchCalls,estimatedCostUsd}
+}
+
+function aiProviderResult(answer, provider, model, usage, config){
+  return {answer:config.rawJson?answer:formatProviderAnswer(answer),provider:`${provider} (${model})`,model,usage:normalizedAiUsage(provider,model,usage),billingSource:config.userApiKey?'USER_API_KEY':provider==='Ollama'?'LOCAL':'SERVER_API_KEY'}
+}
+
+async function recordAiUsage({feature,result,billingSource}){
+  if(!result?.usage)return
+  const usage=result.usage
+  if(!usage.totalTokens&&!usage.webSearchCalls)return
+  const db=await getDb()
+  await db.query(`INSERT INTO "AiUsageEvent" ("id","feature","provider","model","billing_source","input_tokens","cached_input_tokens","output_tokens","total_tokens","web_search_calls","estimated_cost_usd","created_at") VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)`,[
+    randomUUID(),feature,result.provider||'Unknown',result.model||'Unknown',billingSource||result.billingSource||'SERVER_API_KEY',usage.inputTokens||0,usage.cachedInputTokens||0,usage.outputTokens||0,usage.totalTokens||0,usage.webSearchCalls||0,usage.estimatedCostUsd,new Date().toISOString(),
+  ])
 }
 
 function responseOutputText(data){
@@ -1993,6 +2030,7 @@ function startServerOnAvailablePort(targetPort) {
         void (async()=>{
           try{
             const challenge=await callGroundedSquadChallenge(selected,data.currentGameweek,data.deadline,{userApiKey:payload.userApiKey,userProvider:payload.userProvider,userModel:payload.userModel})
+            await recordAiUsage({feature:'SQUAD_CHALLENGE',result:{provider:challenge.provider,model:challenge.provider.match(/\((.+)\)$/)?.[1]||'Unknown',usage:challenge.usage,billingSource:payload.userApiKey?'USER_API_KEY':'SERVER_API_KEY'}})
             const result=await persistChallengeSignals(challenge,data.currentGameweek)
             squadChallengeJobs.set(jobId,{status:'completed',result,createdAt,updatedAt:Date.now()})
           }catch(error){
@@ -2332,6 +2370,7 @@ function startServerOnAvailablePort(targetPort) {
 
           const llmResult = await callLLMProvider(prompt, { userApiKey, userProvider, userModel })
           if (llmResult) {
+            await recordAiUsage({feature:'ASK',result:llmResult})
             sendJson(res, 200, llmResult)
           } else {
             sendJson(res, 200, {

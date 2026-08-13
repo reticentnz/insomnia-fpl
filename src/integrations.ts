@@ -1105,6 +1105,7 @@ export type AdminStatus = {
   manager: { teamId: number; teamName: string; lastSynced: string | null; playerCount: number } | null;
   oddsConfigured: boolean;
   scheduledRefreshes: Record<string, ScheduledRefresh>;
+  aiUsage: { requestCount: number; inputTokens: number; outputTokens: number; totalTokens: number; webSearchCalls: number; estimatedCostUsd: number | null; byFeature: { feature: string; requestCount: number; totalTokens: number; estimatedCostUsd: number }[]; recent: { id: string; feature: string; provider: string; model: string; totalTokens: number; estimatedCostUsd: number | null; createdAt: string }[] };
   season: string;
 };
 
