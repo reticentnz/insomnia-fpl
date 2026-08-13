@@ -47,10 +47,10 @@ import { baseRole, createForecastRun, latestForecastSummary } from '../src/serve
 import { CatalogueCache, catalogueCacheKey, catalogueRequestKey } from '../src/server/catalog-cache.ts'
 import { ConcurrencyLimiter, TtlCache } from '../src/server/upstream-control.ts'
 import { HttpRequestError, MAX_JSON_BODY_BYTES, readJsonBody, sanitizeError } from '../src/server/http-security.mjs'
-import { createPlayerSignal, listPlayerSignals, revisePlayerSignalInterpretation, updatePlayerSignalStatuses } from '../src/server/signal-service.ts'
+import { createPlayerSignal, deletePlayerSignal, listPlayerSignals, revisePlayerSignalInterpretation, updatePlayerSignalStatuses } from '../src/server/signal-service.ts'
 import { latestSuccessfulFeedRun } from './feed-run.mjs'
 import { nextIngestSchedule, parseIngestIntervalHours } from '../src/server/ingest-scheduler.ts'
-import { addCreatorSource, deleteCreatorSource, listCreatorSources, pollCreatorSources, processCreatorQueue, setCreatorSourceEnabled, transcriptForPrompt } from './creator-feed-service.mjs'
+import { addCreatorSource, deleteCreatorSource, getCreatorVideoDetail, listCreatorSources, pollCreatorSources, processCreatorQueue, setCreatorSourceEnabled, transcriptForPrompt } from './creator-feed-service.mjs'
 
 let systemStatus = {
   status: 'initializing',
@@ -1589,6 +1589,16 @@ function startServerOnAvailablePort(targetPort) {
       return
     }
 
+    const creatorVideoMatch=request.match(/^\/api\/creator-videos\/(.+)$/)
+    if(creatorVideoMatch&&req.method==='GET'){
+      try{
+        const video=await getCreatorVideoDetail(await getDb(),decodeURIComponent(creatorVideoMatch[1]))
+        if(!video){sendJson(res,404,{error:'Creator video not found'});return}
+        sendJson(res,200,{schemaVersion:1,video})
+      }catch(error){sendJson(res,500,{error:error instanceof Error?error.message:'Creator video unavailable'})}
+      return
+    }
+
     const creatorSourceMatch=request.match(/^\/api\/creator-sources\/(.+)$/)
     if(creatorSourceMatch&&req.method==='PATCH'){
       try{const payload=await readRequestBody(req);await setCreatorSourceEnabled(await getDb(),decodeURIComponent(creatorSourceMatch[1]),Boolean(payload.enabled));await scheduleAuxiliaryRefresh('creator');sendJson(res,200,await listCreatorSources(await getDb()))}
@@ -1822,6 +1832,16 @@ function startServerOnAvailablePort(targetPort) {
     }
 
     const signalStatusMatch=request.match(/^\/api\/player-signals\/([^/]+)$/)
+    if(signalStatusMatch&&req.method==='DELETE'){
+      try{
+        const signal=await deletePlayerSignal(await getDb(),decodeURIComponent(signalStatusMatch[1]))
+        sendJson(res,200,{signal})
+      }catch(error){
+        const message=error instanceof Error?error.message:'Unable to delete signal'
+        sendJson(res,message.endsWith('not found')?404:400,{error:message})
+      }
+      return
+    }
     if(signalStatusMatch&&req.method==='PATCH'){
       try{
         const payload=await readRequestBody(req),allowed=new Set(['PENDING','VERIFIED','REJECTED','EXPIRED'])

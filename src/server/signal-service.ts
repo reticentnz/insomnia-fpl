@@ -131,6 +131,27 @@ export async function updatePlayerSignalStatuses(db: Database, updates: Array<{ 
   }
 }
 
+export async function deletePlayerSignal(db: Database, signalId: string | number) {
+  const id = String(signalId)
+  const current = await db.query(`${selectSignals} WHERE signal."id"=$1`, [id])
+  if (!current.rows[0]) throw new Error(`Signal ${id} not found`)
+  const signal = signalApiRow(current.rows[0])
+  await db.query('BEGIN IMMEDIATE')
+  try {
+    // The schema deliberately restricts deletion of evidence with provenance.
+    // Remove those dependent records in one transaction before the signal.
+    await db.query(`UPDATE "PlayerSignalInterpretation" SET "supersedes_id"=NULL WHERE "signal_id"=$1`, [id])
+    await db.query(`DELETE FROM "PlayerSignalAudit" WHERE "signal_id"=$1`, [id])
+    await db.query(`DELETE FROM "PlayerSignalInterpretation" WHERE "signal_id"=$1`, [id])
+    await db.query(`DELETE FROM "PlayerSignal" WHERE "id"=$1`, [id])
+    await db.query('COMMIT')
+    return signal
+  } catch (error) {
+    try { await db.query('ROLLBACK') } catch {}
+    throw error
+  }
+}
+
 export async function revisePlayerSignalInterpretation(db: Database, signalId: string, input: { claimClass?: ClaimClass; modelImpact?: ModelImpact; value?: unknown; rationale?: string; confidence?: number; finalizeContext?: boolean }, updatedAt = new Date().toISOString()) {
   const current = await db.query(`${selectSignals} WHERE signal."id"=$1`, [signalId])
   if (!current.rows[0]) throw new Error(`Signal ${signalId} not found`)

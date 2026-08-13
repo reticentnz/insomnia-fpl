@@ -2,7 +2,7 @@ import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
-import { addCreatorSource, listCreatorSources, normalizeYoutubeSource, parseYoutubeFeed, processCreatorQueue, transcriptForPrompt } from './creator-feed-service.mjs'
+import { addCreatorSource, getCreatorVideoDetail, listCreatorSources, normalizeYoutubeSource, parseYoutubeFeed, processCreatorQueue, transcriptForPrompt } from './creator-feed-service.mjs'
 import { migrateDatabase } from './db-migrate.mjs'
 import { closeDb, getDb } from './db.mjs'
 
@@ -45,5 +45,11 @@ describe('native YouTube creator feeds', () => {
     })
     expect(result).toMatchObject({ processed: 1, completed: 1, claims: 1 })
     expect((await listCreatorSources(db)).videos[0]).toMatchObject({ status: 'COMPLETE', claimCount: 1 })
+    expect(await getCreatorVideoDetail(db, 'videoABC123')).toMatchObject({
+      status: 'COMPLETE', transcriptLanguage: 'en', transcriptGenerated: true,
+      transcript: [{ text: 'Salah will start', start: 12, duration: 2 }],
+      extractionProvider: 'fixture', claimCount: 1,
+    })
+    expect(await getCreatorVideoDetail(db, 'missing')).toBeNull()
   })
 })

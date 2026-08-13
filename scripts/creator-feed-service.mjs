@@ -55,6 +55,27 @@ export async function listCreatorSources(db) {
   }
 }
 
+function parseStoredJson(value, fallback) {
+  if (!value) return fallback
+  try { return JSON.parse(value) } catch { return fallback }
+}
+
+export async function getCreatorVideoDetail(db, id) {
+  const result = await db.query(`SELECT video.*,source."name" AS source_name FROM "CreatorVideo" video JOIN "CreatorSource" source ON source."id"=video."source_id" WHERE video."id"=$1`, [id])
+  const row = result.rows[0]
+  if (!row) return null
+  return {
+    id: row.id, sourceName: row.source_name, title: row.title, url: row.url,
+    status: row.status, attempts: Number(row.attempt_count), claimCount: Number(row.claim_count),
+    error: row.last_error, processedAt: row.processed_at,
+    transcriptLanguage: row.transcript_language,
+    transcriptGenerated: row.transcript_generated == null ? null : Boolean(row.transcript_generated),
+    transcript: parseStoredJson(row.transcript_json, []),
+    extractionProvider: row.extraction_provider,
+    extraction: parseStoredJson(row.extraction_json, null),
+  }
+}
+
 export async function addCreatorSource(db, input, fetchImpl = fetch) {
   const normalized = normalizeYoutubeSource(input.url || input.channelId)
   const response = await fetchImpl(normalized.feedUrl, { headers: { 'user-agent': 'insomnia-fpl/0.1' }, signal: AbortSignal.timeout(15_000) })

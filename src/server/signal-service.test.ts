@@ -4,7 +4,7 @@ import path from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
 import { closeDb, getDb } from '../../scripts/db.mjs'
 import { ingestOfficialFpl } from '../../scripts/ingest-fpl.mjs'
-import { createPlayerSignal, listPlayerSignals, revisePlayerSignalInterpretation, updatePlayerSignalStatuses } from './signal-service.ts'
+import { createPlayerSignal, deletePlayerSignal, listPlayerSignals, revisePlayerSignalInterpretation, updatePlayerSignalStatuses } from './signal-service.ts'
 
 const directories: string[] = []
 const fixtures = path.resolve('scripts', 'fixtures')
@@ -41,6 +41,16 @@ describe('canonical signal service', () => {
     await createPlayerSignal(db, { id: 'pending', playerId: 10, kind: 'START_PROBABILITY', value: { startProbability: .5 }, sourceType: 'USER_FEEDBACK', evidenceSummary: 'Possible rotation', confidence: .4, observedAt: '2026-08-15T12:06:00Z', validUntil: '2026-08-22T12:06:00Z', status: 'PENDING' })
     const signals = await listPlayerSignals(db, { playerId: 10 })
     expect(signals.find(signal=>signal.id==='approved')?.status).toBe('VERIFIED')
+  })
+
+  it('deletes a signal and its restricted provenance records atomically', async () => {
+    const db = await seed()
+    await createPlayerSignal(db, { id: 'obsolete', playerId: 10, kind: 'EXPECTED_ROLE', value: { minutesIfStarting: 60 }, sourceType: 'MANUAL_OVERRIDE', evidenceSummary: 'Community Shield minutes', confidence: 1, observedAt: '2026-08-15T12:05:00Z', validUntil: '2026-08-22T12:05:00Z', status: 'VERIFIED' })
+    const deleted = await deletePlayerSignal(db, 'obsolete')
+    expect(deleted).toMatchObject({ id: 'obsolete', playerId: 10, status: 'VERIFIED' })
+    expect(await listPlayerSignals(db, { playerId: 10 })).toEqual([])
+    expect((await db.query(`SELECT "id" FROM "PlayerSignalAudit" WHERE "signal_id"='obsolete'`)).rows).toEqual([])
+    expect((await db.query(`SELECT "id" FROM "PlayerSignalInterpretation" WHERE "signal_id"='obsolete'`)).rows).toEqual([])
   })
 
   it('versions a user-adjusted interpretation and can finalize context with no impact', async () => {

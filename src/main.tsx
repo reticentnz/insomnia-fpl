@@ -67,6 +67,7 @@ import {
   saveServerAiConfig,
   challengeSquad,
   SquadChallengeError,
+  deletePlayerSignal,
   updatePlayerSignalStatusesBatch,
   revisePlayerSignalInterpretation,
   createManualPlayerSignal,
@@ -103,10 +104,12 @@ import {
   runAdminOperation,
   type AdminStatus,
   fetchCreatorSources,
+  fetchCreatorVideoDetail,
   addCreatorSource,
   setCreatorSourceEnabled,
   removeCreatorSource,
   type CreatorFeedState,
+  type CreatorVideoDetail,
   type ManualPlayerSignalInput,
 } from "./integrations";
 import {
@@ -502,6 +505,7 @@ function AdminView({ system, forecast, horizon }: { system: SystemStatus | null;
 
 function App() {
   const [tab, setTab] = useState("My Team");
+  const [signalsPlayerFilterId, setSignalsPlayerFilterId] = useState<number | null>(null);
   const [horizon, setHorizon] = useState(5);
   const [playerQuery, setPlayerQuery] = useState("");
   const [playerFilter, setPlayerFilter] = useState("All");
@@ -1798,7 +1802,10 @@ function App() {
             <button
               aria-label={label}
               className={tab === label ? "active" : ""}
-              onClick={() => setTab(label)}
+              onClick={() => {
+                if (label === "Signals") setSignalsPlayerFilterId(null);
+                setTab(label);
+              }}
               key={label}
             >
               <Icon size={17} />
@@ -2085,12 +2092,21 @@ function App() {
             catalog={catalog}
             squad={squad}
             currentGameweek={currentGameweek ?? 1}
+            playerFilterId={signalsPlayerFilterId}
+            onClearPlayerFilter={() => setSignalsPlayerFilterId(null)}
             onSelectPlayer={setPlayerDetail}
             onReviewSignal={reviewSquadSignal}
             stagedSignalReviews={stagedSignalReviews}
             onUnstageSignal={unstageSignalReview}
             onApplyBatch={applyBatchReview}
             applyingBatch={applyingBatch}
+            onSignalDeleted={(signal) => {
+              setToast({ message: "Signal deleted.", tone: "success" });
+              if (signal.status === "VERIFIED" && signal.interpretation?.modelImpact === "ROLE") {
+                setRecomputeRequest({ triggeredAt: Date.now(), baselineRunId: forecastSummary?.id ?? null });
+                triggerForecastRecompute().catch(() => {});
+              }
+            }}
           />
         ) : tab === "Transfers" ? (
           <TransfersV2
@@ -2258,6 +2274,7 @@ function App() {
             setExplanationTransfer(t);
           }}
           onOpenSignals={() => {
+            setSignalsPlayerFilterId(playerDetail.id);
             setPlayerDetail(null);
             setTab("Signals");
           }}
@@ -4991,22 +5008,28 @@ function SignalsTab({
   catalog,
   squad,
   currentGameweek,
+  playerFilterId,
+  onClearPlayerFilter,
   onSelectPlayer,
   onReviewSignal,
   stagedSignalReviews,
   onUnstageSignal,
   onApplyBatch,
   applyingBatch,
+  onSignalDeleted,
 }: {
   catalog: Player[];
   squad: Player[];
   currentGameweek: number;
+  playerFilterId: number | null;
+  onClearPlayerFilter: () => void;
   onSelectPlayer: (p: Player) => void;
   onReviewSignal: (signal: PlayerSignal, status: "VERIFIED" | "REJECTED") => void;
   stagedSignalReviews: Record<string, "VERIFIED" | "REJECTED">;
   onUnstageSignal: (signalId: string | number) => void;
   onApplyBatch: () => void;
   applyingBatch: boolean;
+  onSignalDeleted: (signal: PlayerSignal) => void;
 }) {
   const [signals, setSignals] = useState<PlayerSignal[]>([]);
   const [marketSnapshots, setMarketSnapshots] = useState<TeamMarketSnapshot[]>([]);
@@ -5015,6 +5038,10 @@ function SignalsTab({
   const [creatorSourceInput, setCreatorSourceInput] = useState("");
   const [creatorSourceBusy, setCreatorSourceBusy] = useState(false);
   const [creatorSourceError, setCreatorSourceError] = useState<string | null>(null);
+  const [expandedCreatorVideoId, setExpandedCreatorVideoId] = useState<string | null>(null);
+  const [creatorVideoDetails, setCreatorVideoDetails] = useState<Record<string, CreatorVideoDetail>>({});
+  const [creatorVideoDetailLoading, setCreatorVideoDetailLoading] = useState<string | null>(null);
+  const [creatorVideoDetailError, setCreatorVideoDetailError] = useState<Record<string, string>>({});
   const [claimSelections, setClaimSelections] = useState<Record<string, number>>({});
   const [claimReviewingId, setClaimReviewingId] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
@@ -5032,6 +5059,8 @@ function SignalsTab({
   const [laneFilter, setLaneFilter] = useState<"" | "ADJUSTMENTS" | "NEEDS" | "CONTEXT">("");
   const [editingSignalId, setEditingSignalId] = useState<string | number | null>(null);
   const [interpretationSaving, setInterpretationSaving] = useState(false);
+  const [deletingSignalId, setDeletingSignalId] = useState<string | number | null>(null);
+  const [deleteSignalError, setDeleteSignalError] = useState<string | null>(null);
 
   const playerMap = useMemo(() => {
     const m = new Map<number, Player>();
@@ -5094,6 +5123,22 @@ function SignalsTab({
     finally { setCreatorSourceBusy(false); }
   }
 
+  async function handleToggleCreatorVideo(id: string) {
+    if (expandedCreatorVideoId === id) { setExpandedCreatorVideoId(null); return; }
+    setExpandedCreatorVideoId(id);
+    if (creatorVideoDetails[id]) return;
+    setCreatorVideoDetailLoading(id);
+    setCreatorVideoDetailError((current) => ({ ...current, [id]: "" }));
+    try {
+      const detail = await fetchCreatorVideoDetail(id);
+      setCreatorVideoDetails((current) => ({ ...current, [id]: detail }));
+    } catch (reason) {
+      setCreatorVideoDetailError((current) => ({ ...current, [id]: reason instanceof Error ? reason.message : "Video details unavailable" }));
+    } finally {
+      setCreatorVideoDetailLoading((current) => current === id ? null : current);
+    }
+  }
+
   async function handleSaveConfig(updated: SignalSourceConfig) {
     setConfigSaving(true);
     try {
@@ -5108,9 +5153,11 @@ function SignalsTab({
     signals.forEach((s) => seen.add(s.sourceType));
     return Array.from(seen).sort();
   }, [signals]);
+  const filteredPlayer = playerFilterId == null ? null : playerMap.get(playerFilterId);
 
   const filtered = useMemo(() => {
     let result = signals;
+    if (playerFilterId != null) result = result.filter((signal) => signal.playerId === playerFilterId);
     if (sourceFilter) result = result.filter((s) => s.sourceType === sourceFilter);
     if (statusFilter) result = result.filter((s) => s.status === statusFilter);
     if (laneFilter) result = result.filter((signal) => {
@@ -5131,7 +5178,24 @@ function SignalsTab({
       });
     }
     return result;
-  }, [signals, sourceFilter, statusFilter, laneFilter, playerQuery, playerMap]);
+  }, [signals, playerFilterId, sourceFilter, statusFilter, laneFilter, playerQuery, playerMap]);
+
+  async function handleDeleteSignal(signal: PlayerSignal) {
+    const playerName = playerMap.get(signal.playerId)?.name || `Player #${signal.playerId}`;
+    if (!window.confirm(`Permanently delete this signal for ${playerName}? This cannot be undone.`)) return;
+    setDeletingSignalId(signal.id);
+    setDeleteSignalError(null);
+    try {
+      const deleted = await deletePlayerSignal(signal.id);
+      setSignals((current) => current.filter((item) => item.id !== signal.id));
+      onUnstageSignal(signal.id);
+      onSignalDeleted(deleted);
+    } catch (error) {
+      setDeleteSignalError(error instanceof Error ? error.message : "Could not delete signal");
+    } finally {
+      setDeletingSignalId(null);
+    }
+  }
 
   async function saveInterpretation(signal: PlayerSignal, startProbability: number, depthRole: "FIRST_CHOICE" | "ROTATION" | "BACKUP" | "OUT") {
     setInterpretationSaving(true);
@@ -5433,6 +5497,14 @@ function SignalsTab({
         </div>
       </div>
 
+      {playerFilterId != null && (
+        <div className="signals-player-filter" role="status">
+          <span>Showing only signals for <b>{filteredPlayer?.name || `Player #${playerFilterId}`}</b></span>
+          <button type="button" className="ghost-btn" onClick={onClearPlayerFilter}>Show all players</button>
+        </div>
+      )}
+      {deleteSignalError && <div className="admin-error signal-delete-error" role="alert">{deleteSignalError}</div>}
+
       <section className="creator-feed-card">
         <div className="creator-feed-heading">
           <div><span className="eyebrow">YOUTUBE INTELLIGENCE</span><h2>Creator feeds</h2><p>New videos are discovered through RSS. Available captions are fetched locally and converted into reviewable FPL signals by your configured LLM.</p></div>
@@ -5452,10 +5524,39 @@ function SignalsTab({
           {!creatorFeeds.sources.length && <p className="creator-feed-empty">No channels followed yet. Adding one queues its latest three videos.</p>}
         </div>
         {!!creatorFeeds.videos.length && <div className="creator-video-list">
-          {creatorFeeds.videos.slice(0, 8).map((video) => <a href={video.url} target="_blank" rel="noreferrer" key={video.id} className="creator-video-row" title={video.error || undefined}>
-            <span><b>{video.title}</b><small>{video.sourceName} · {video.publishedAt ? relativeTime(video.publishedAt) : "publish date unknown"}</small></span>
-            <span className={`creator-video-status status-${video.status.toLowerCase()}`}>{video.status.replaceAll("_", " ")}{video.claimCount ? ` · ${video.claimCount} claims` : ""}</span>
-          </a>)}
+          {creatorFeeds.videos.slice(0, 8).map((video) => {
+            const detail = creatorVideoDetails[video.id];
+            const expanded = expandedCreatorVideoId === video.id;
+            return <article key={video.id} className={`creator-video-entry${expanded ? " expanded" : ""}`}>
+              <button type="button" className="creator-video-row" title={video.error || undefined} aria-expanded={expanded} onClick={() => void handleToggleCreatorVideo(video.id)}>
+                <span><b>{video.title}</b><small>{video.sourceName} · {video.publishedAt ? relativeTime(video.publishedAt) : "publish date unknown"}</small></span>
+                <span className={`creator-video-status status-${video.status.toLowerCase()}`}>{video.status.replaceAll("_", " ")}{video.claimCount ? ` · ${video.claimCount} claims` : ""}</span>
+                <span className="creator-video-chevron" aria-hidden="true">{expanded ? "▲" : "▼"}</span>
+              </button>
+              {expanded && <div className="creator-video-detail">
+                {creatorVideoDetailLoading === video.id && <p>Loading stored transcript…</p>}
+                {creatorVideoDetailError[video.id] && <div className="admin-error" role="alert">{creatorVideoDetailError[video.id]}</div>}
+                {detail && <>
+                  <div className="creator-video-meta">
+                    <span>Attempts: <b>{detail.attempts}</b></span>
+                    <span>Processed: <b>{detail.processedAt ? relativeTime(detail.processedAt) : "Not yet"}</b></span>
+                    <span>Captions: <b>{detail.transcriptLanguage ? `${detail.transcriptLanguage}${detail.transcriptGenerated ? " · generated" : " · manual"}` : "None stored"}</b></span>
+                    <span>Extractor: <b>{detail.extractionProvider || "None"}</b></span>
+                    <a href={detail.url} target="_blank" rel="noreferrer">Watch on YouTube ↗</a>
+                  </div>
+                  {detail.error && <div className="creator-video-error"><b>Processing message</b><span>{detail.error}</span></div>}
+                  {detail.transcript.length ? <details open>
+                    <summary>Raw transcript ({detail.transcript.length} segments)</summary>
+                    <pre className="creator-transcript">{detail.transcript.map((segment) => `[${Math.floor(segment.start / 60)}:${String(Math.round(segment.start % 60)).padStart(2, "0")}] ${segment.text}`).join("\n")}</pre>
+                  </details> : <p>No transcript has been stored for this video.</p>}
+                  {detail.extraction != null && <details>
+                    <summary>Raw extraction output</summary>
+                    <pre className="creator-transcript">{JSON.stringify(detail.extraction, null, 2)}</pre>
+                  </details>}
+                </>}
+              </div>}
+            </article>;
+          })}
         </div>}
       </section>
 
@@ -5644,6 +5745,15 @@ function SignalsTab({
                     <span className={stagedStatus ? `staged-pill ${stagedStatus === "REJECTED" ? "rejected" : ""}` : statusClass(effectiveStatus)}>
                       {stagedStatus ? `STAGED: ${stagedStatus === "VERIFIED" ? "APPROVE" : "REJECT"}` : effectiveStatus === "VERIFIED" ? "✓ APPROVED" : effectiveStatus}
                     </span>
+                    <button
+                      type="button"
+                      className="signal-delete-btn"
+                      disabled={deletingSignalId !== null}
+                      onClick={() => void handleDeleteSignal(signal)}
+                      aria-label={`Delete signal for ${player?.name || `player ${signal.playerId}`}`}
+                    >
+                      {deletingSignalId === signal.id ? "Deletingâ€¦" : "Delete"}
+                    </button>
                   </div>
                 </div>
 

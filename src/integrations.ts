@@ -799,6 +799,13 @@ export async function updatePlayerSignalStatus(
   return (data.signal || data) as PlayerSignal
 }
 
+export async function deletePlayerSignal(signalId: string | number): Promise<PlayerSignal> {
+  const response = await fetch(`/api/player-signals/${encodeURIComponent(String(signalId))}`, { method: 'DELETE' })
+  const data = await response.json().catch(() => null)
+  if (!response.ok) throw new Error(apiErrorMessage(data, `Could not delete signal: HTTP ${response.status}`))
+  return (data.signal || data) as PlayerSignal
+}
+
 export async function updatePlayerSignalStatusesBatch(
   updates: Array<{ id: string | number; status: 'VERIFIED' | 'REJECTED' }>,
 ): Promise<PlayerSignal[]> {
@@ -1095,6 +1102,14 @@ export type AdminStatus = {
 export type CreatorSource = { id: string; channelId: string; name: string; feedUrl: string; enabled: boolean; lastPolledAt: string | null; lastError: string | null };
 export type CreatorVideo = { id: string; sourceId: string; sourceName: string; title: string; url: string; publishedAt: string | null; status: 'DISCOVERED' | 'PROCESSING' | 'COMPLETE' | 'NO_TRANSCRIPT' | 'RETRY' | 'FAILED'; attempts: number; claimCount: number; error: string | null; processedAt: string | null };
 export type CreatorFeedState = { sources: CreatorSource[]; videos: CreatorVideo[] };
+export type CreatorTranscriptSegment = { text: string; start: number; duration?: number };
+export type CreatorVideoDetail = Pick<CreatorVideo, 'id' | 'sourceName' | 'title' | 'url' | 'status' | 'attempts' | 'claimCount' | 'error' | 'processedAt'> & {
+  transcriptLanguage: string | null;
+  transcriptGenerated: boolean | null;
+  transcript: CreatorTranscriptSegment[];
+  extractionProvider: string | null;
+  extraction: unknown;
+};
 
 async function creatorFeedRequest(url: string, init?: RequestInit): Promise<CreatorFeedState> {
   const response = await fetch(url, init)
@@ -1105,6 +1120,13 @@ async function creatorFeedRequest(url: string, init?: RequestInit): Promise<Crea
 
 export function fetchCreatorSources(): Promise<CreatorFeedState> {
   return creatorFeedRequest('/api/creator-sources')
+}
+
+export async function fetchCreatorVideoDetail(id: string): Promise<CreatorVideoDetail> {
+  const response = await fetch(`/api/creator-videos/${encodeURIComponent(id)}`)
+  const data = await response.json().catch(() => null)
+  if (!response.ok) throw new Error(typeof data?.error === 'string' ? data.error : data?.error?.message || `Creator video request failed: HTTP ${response.status}`)
+  return data.video
 }
 
 export function addCreatorSource(channelIdOrUrl: string, name = ''): Promise<CreatorFeedState> {
