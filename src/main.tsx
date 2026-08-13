@@ -5256,6 +5256,11 @@ function SignalsTab({
                     <span><small>DRAW</small><strong>{marketPercent(snapshot.drawProb)}</strong></span>
                     <span><small>AWAY</small><strong>{marketPercent(snapshot.awayWinProb)}</strong></span>
                   </div>
+                  <div className="market-probabilities">
+                    <span><small>HOME CS</small><strong>{marketPercent(snapshot.homeCleanSheetProb)}</strong></span>
+                    <span><small>CLEAN SHEET</small><strong>◈</strong></span>
+                    <span><small>AWAY CS</small><strong>{marketPercent(snapshot.awayCleanSheetProb)}</strong></span>
+                  </div>
                   <div className="market-context-favourite">Favourite: <b>{favourite?.label || "Unavailable"}</b>{favourite ? ` · ${marketPercent(favourite.value)}` : ""}</div>
                   <div className="market-context-updated">Updated {relativeTime(snapshot.capturedAt)}</div>
                 </article>

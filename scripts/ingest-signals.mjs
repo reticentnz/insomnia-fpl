@@ -99,6 +99,30 @@ export function marketProbabilities(bookmakers, marketKey) {
   return Object.fromEntries(names.map(name => [name, observations.reduce((sum, observation) => sum + (observation[name] || 0), 0) / observations.length]))
 }
 
+/** Convert each team's Under 0.5 team-total price into the opponent's clean-sheet probability. */
+export function cleanSheetProbabilities(bookmakers, homeTeam, awayTeam) {
+  const observations = { home: [], away: [] }
+  for (const bookmaker of bookmakers || []) {
+    const market = (bookmaker.markets || []).find(candidate => candidate.key === 'team_totals')
+    if (!market) continue
+    for (const defendingTeam of [homeTeam, awayTeam]) {
+      const scoringTeam = defendingTeam === homeTeam ? awayTeam : homeTeam
+      const outcomes = (market.outcomes || []).filter(outcome => {
+        const describedTeam = outcome.description || outcome.team || ''
+        return normalizeIdentity(describedTeam) === normalizeIdentity(scoringTeam) && Number(outcome.point) === 0.5
+      })
+      const under = outcomes.find(outcome => String(outcome.name).toLowerCase() === 'under')
+      const over = outcomes.find(outcome => String(outcome.name).toLowerCase() === 'over')
+      const underPrice = finite(under?.price); const overPrice = finite(over?.price)
+      if (underPrice <= 1 || overPrice <= 1) continue
+      const denominator = 1 / underPrice + 1 / overPrice
+      observations[defendingTeam === homeTeam ? 'home' : 'away'].push((1 / underPrice) / denominator)
+    }
+  }
+  const average = values => values.length ? values.reduce((sum, value) => sum + value, 0) / values.length : null
+  return { homeCleanSheet: average(observations.home), awayCleanSheet: average(observations.away) }
+}
+
 function poisson(value, lambda) {
   let term = Math.exp(-lambda)
   let sum = term
@@ -157,6 +181,48 @@ export function featuredOddsUrl({ apiKey, regions = 'uk' } = {}) {
     apiKey: String(apiKey || ''),
   })
   return `https://api.the-odds-api.com/v4/sports/soccer_epl/odds?${params}`
+}
+
+export function eventTeamTotalsUrl({ eventId, apiKey, regions = 'uk' } = {}) {
+  const params = new URLSearchParams({
+    regions: String(regions),
+    markets: 'team_totals',
+    oddsFormat: 'decimal',
+    dateFormat: 'iso',
+    apiKey: String(apiKey || ''),
+  })
+  return `https://api.the-odds-api.com/v4/sports/soccer_epl/events/${encodeURIComponent(String(eventId || ''))}/odds?${params}`
+}
+
+function mergeEventMarkets(featured, additional) {
+  const additionalByBookmaker = new Map((additional?.bookmakers || []).map(bookmaker => [bookmaker.key, bookmaker]))
+  const bookmakerKeys = new Set([...(featured.bookmakers || []).map(bookmaker => bookmaker.key), ...additionalByBookmaker.keys()])
+  return { ...featured, bookmakers: [...bookmakerKeys].map(key => {
+    const base = (featured.bookmakers || []).find(bookmaker => bookmaker.key === key) || additionalByBookmaker.get(key)
+    const extra = additionalByBookmaker.get(key)
+    const markets = [...(base?.markets || [])]
+    for (const market of extra?.markets || []) {
+      const index = markets.findIndex(candidate => candidate.key === market.key)
+      if (index >= 0) markets[index] = market
+      else markets.push(market)
+    }
+    return { ...base, ...extra, markets }
+  }) }
+}
+
+async function enrichCleanSheetMarkets(events, { apiKey, regions, fetchImpl, cacheDir }) {
+  let requestCount = 1
+  const enriched = await Promise.all(events.map(async event => {
+    try {
+      requestCount += 1
+      const url = eventTeamTotalsUrl({ eventId: event.id, apiKey, regions })
+      const detail = await withCache(`odds-epl-${event.id}-team-totals.json`, () => fetchJson(url, fetchImpl), cacheDir)
+      return mergeEventMarkets(event, detail.payload)
+    } catch {
+      return event
+    }
+  }))
+  return { payload: enriched, requestCount }
 }
 
 async function withCache(name, loader, cacheDir) {
@@ -222,6 +288,7 @@ export async function ingestMarketEvents(db, { season, events, capturedAt = new 
       const h2h = marketProbabilities(event.bookmakers, 'h2h')
       const totals = marketProbabilities(event.bookmakers, 'totals')
       const btts = marketProbabilities(event.bookmakers, 'btts')
+      const cleanSheets = cleanSheetProbabilities(event.bookmakers, event.home_team, event.away_team)
       const homeWin = h2h?.[event.home_team] ?? null
       const draw = h2h?.Draw ?? null
       const awayWin = h2h?.[event.away_team] ?? null
@@ -230,7 +297,7 @@ export async function ingestMarketEvents(db, { season, events, capturedAt = new 
       const expected = deriveExpectedGoals({ homeWin, draw, awayWin, over25, btts: bothTeamsToScore })
       const fixtureId = matchFixture(event, fixtures)
       if (!fixtureId) unmatched += 1
-      await db.query(`INSERT INTO "MarketFixtureObservation" ("id","feed_run_id","source","external_event_id","fixture_id","captured_at","kickoff_at","home_team_name","away_team_name","home_win_probability","draw_probability","away_win_probability","over_2_5_probability","btts_probability","home_expected_goals","away_expected_goals","derivation_method","raw_payload_json") VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18)`, [randomUUID(), runId, source, String(event.id), fixtureId, capturedAt, event.commence_time || null, event.home_team, event.away_team, homeWin, draw, awayWin, over25, bothTeamsToScore, expected?.homeExpectedGoals ?? null, expected?.awayExpectedGoals ?? null, expected?.derivationMethod ?? null, JSON.stringify(event)])
+      await db.query(`INSERT INTO "MarketFixtureObservation" ("id","feed_run_id","source","external_event_id","fixture_id","captured_at","kickoff_at","home_team_name","away_team_name","home_win_probability","draw_probability","away_win_probability","over_2_5_probability","btts_probability","home_clean_sheet_probability","away_clean_sheet_probability","home_expected_goals","away_expected_goals","derivation_method","raw_payload_json") VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20)`, [randomUUID(), runId, source, String(event.id), fixtureId, capturedAt, event.commence_time || null, event.home_team, event.away_team, homeWin, draw, awayWin, over25, bothTeamsToScore, cleanSheets.homeCleanSheet, cleanSheets.awayCleanSheet, expected?.homeExpectedGoals ?? null, expected?.awayExpectedGoals ?? null, expected?.derivationMethod ?? null, JSON.stringify(event)])
       inserted += 1
     }
     await succeedFeedRun(db, runId, { finishedAt: new Date().toISOString(), insertedCount: inserted, unmatchedCount: unmatched, usedCache: feedDetails.usedCache, cacheCapturedAt: feedDetails.cacheCapturedAt })
@@ -258,9 +325,11 @@ export async function ingestSignalFeeds({ db, season, fetchImpl = fetch, cacheDi
   const results = { underlying: await ingestUnderlyingRows(db, { season: activeSeason, rows: underlying.payload, feedDetails: underlying }) }
   if (marketEvents !== undefined) results.market = await ingestMarketEvents(db, { season: activeSeason, events: marketEvents })
   else if (process.env.ODDS_API_KEY) {
-    const url = featuredOddsUrl({ apiKey: process.env.ODDS_API_KEY, regions: process.env.ODDS_API_REGIONS || 'uk' })
+    const regions = process.env.ODDS_API_REGIONS || 'uk'
+    const url = featuredOddsUrl({ apiKey: process.env.ODDS_API_KEY, regions })
     const market = await withCache('odds-epl.json', () => fetchJson(url, fetchImpl), cacheDir)
-    results.market = await ingestMarketEvents(db, { season: activeSeason, events: market.payload, feedDetails: market })
+    const enriched = await enrichCleanSheetMarkets(market.payload, { apiKey: process.env.ODDS_API_KEY, regions, fetchImpl, cacheDir })
+    results.market = await ingestMarketEvents(db, { season: activeSeason, events: enriched.payload, feedDetails: { ...market, requestCount: enriched.requestCount } })
   }
   return results
 }
@@ -268,9 +337,11 @@ export async function ingestSignalFeeds({ db, season, fetchImpl = fetch, cacheDi
 export async function refreshBettingOdds({ db, season, fetchImpl = fetch, cacheDir = process.env.SIGNAL_CACHE_DIR || defaultCacheDir } = {}) {
   const activeSeason = await resolveSignalSeason(db, { season })
   if (!process.env.ODDS_API_KEY) throw new Error('ODDS_API_KEY is not configured')
-  const url = featuredOddsUrl({ apiKey: process.env.ODDS_API_KEY, regions: process.env.ODDS_API_REGIONS || 'uk' })
+  const regions = process.env.ODDS_API_REGIONS || 'uk'
+  const url = featuredOddsUrl({ apiKey: process.env.ODDS_API_KEY, regions })
   const market = await withCache('odds-epl.json', () => fetchJson(url, fetchImpl), cacheDir)
-  return ingestMarketEvents(db, { season: activeSeason, events: market.payload, feedDetails: market })
+  const enriched = await enrichCleanSheetMarkets(market.payload, { apiKey: process.env.ODDS_API_KEY, regions, fetchImpl, cacheDir })
+  return ingestMarketEvents(db, { season: activeSeason, events: enriched.payload, feedDetails: { ...market, requestCount: enriched.requestCount } })
 }
 
 async function main() {

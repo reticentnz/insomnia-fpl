@@ -4,7 +4,7 @@ import path from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
 import { closeDb, getDb } from './db.mjs'
 import { ingestOfficialFpl } from './ingest-fpl.mjs'
-import { deriveExpectedGoals, featuredOddsUrl, ingestMarketEvents, ingestUnderlyingRows, matchUnderlyingPlayer, resolveSignalSeason } from './ingest-signals.mjs'
+import { cleanSheetProbabilities, deriveExpectedGoals, eventTeamTotalsUrl, featuredOddsUrl, ingestMarketEvents, ingestUnderlyingRows, matchUnderlyingPlayer, resolveSignalSeason } from './ingest-signals.mjs'
 
 const directories: string[] = []
 const fixtureDirectory = path.resolve('scripts', 'fixtures')
@@ -26,6 +26,12 @@ const marketEvent = (markets: any[]) => ({ id: 'odds-100', commence_time: '2026-
 const h2h = { key: 'h2h', outcomes: [{ name: 'Alpha FC', price: 2 }, { name: 'Draw', price: 3.5 }, { name: 'Beta United', price: 4 }] }
 const totals = { key: 'totals', outcomes: [{ name: 'Over 2.5', price: 2 }, { name: 'Under 2.5', price: 2 }] }
 const btts = { key: 'btts', outcomes: [{ name: 'Yes', price: 1.8 }, { name: 'No', price: 2.2 }] }
+const teamTotals = { key: 'team_totals', outcomes: [
+  { name: 'Over', description: 'Alpha FC', point: 0.5, price: 1.25 },
+  { name: 'Under', description: 'Alpha FC', point: 0.5, price: 4 },
+  { name: 'Over', description: 'Beta United', point: 0.5, price: 1.5 },
+  { name: 'Under', description: 'Beta United', point: 0.5, price: 2.5 },
+] }
 
 afterEach(async () => {
   await closeDb()
@@ -37,6 +43,17 @@ describe('WP-07 optional source ingestion', () => {
     const url = new URL(featuredOddsUrl({ apiKey: 'secret', regions: 'uk' }))
     expect(url.searchParams.get('markets')).toBe('h2h,totals')
     expect(url.searchParams.get('markets')).not.toContain('btts')
+    const eventUrl = new URL(eventTeamTotalsUrl({ eventId: 'event/one', apiKey: 'secret', regions: 'uk' }))
+    expect(eventUrl.pathname).toContain('/events/event%2Fone/odds')
+    expect(eventUrl.searchParams.get('markets')).toBe('team_totals')
+  })
+
+  it('de-vigs opponent Under 0.5 team totals into clean-sheet probabilities', () => {
+    expect(cleanSheetProbabilities([{ markets: [teamTotals] }], 'Alpha FC', 'Beta United')).toEqual({
+      homeCleanSheet: 0.375,
+      awayCleanSheet: 0.23809523809523808,
+    })
+    expect(cleanSheetProbabilities([], 'Alpha FC', 'Beta United')).toEqual({ homeCleanSheet: null, awayCleanSheet: null })
   })
 
   it('resolves the season from official data when no environment override exists', async () => {
@@ -74,5 +91,13 @@ describe('WP-07 optional source ingestion', () => {
     expect(rows[1]).toMatchObject({ derivation_method: 'POISSON_MARKETS_V1' })
     expect(rows[1].home_expected_goals).toBeGreaterThan(0)
     expect(rows[1].away_expected_goals).toBeGreaterThan(0)
+  })
+
+  it('stores clean-sheet probabilities from team-total markets', async () => {
+    const db = await seed()
+    await ingestMarketEvents(db, { season: '2026/27', capturedAt: '2026-08-15T12:31:00Z', events: [marketEvent([h2h, teamTotals])] })
+    const row = (await db.query('SELECT "home_clean_sheet_probability", "away_clean_sheet_probability" FROM "MarketFixtureObservation"')).rows[0]
+    expect(row.home_clean_sheet_probability).toBeCloseTo(0.375)
+    expect(row.away_clean_sheet_probability).toBeCloseTo(0.238095)
   })
 })

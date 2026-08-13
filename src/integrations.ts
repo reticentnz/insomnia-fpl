@@ -17,6 +17,8 @@ export type TeamMarketSnapshot = {
   homeWinProb: number | null;
   drawProb: number | null;
   awayWinProb: number | null;
+  homeCleanSheetProb: number | null;
+  awayCleanSheetProb: number | null;
 };
 
 function apiErrorMessage(data: any, fallback: string) {

@@ -24,7 +24,7 @@ describe('canonical database migrations', () => {
     const first = await migrateDatabase(databasePath)
     const second = await migrateDatabase(databasePath)
 
-    const migrations = ['001_initial_rebuild', '002_app_state_and_manager_totals', '003_remove_app_user_api_key', '004_recommendation_cache_index', '005_draft_and_season_mode', '006_signal_interpretations', '007_reclassify_creator_bench_context', '008_league_differential', '009_signal_source_date']
+    const migrations = ['001_initial_rebuild', '002_app_state_and_manager_totals', '003_remove_app_user_api_key', '004_recommendation_cache_index', '005_draft_and_season_mode', '006_signal_interpretations', '007_reclassify_creator_bench_context', '008_league_differential', '009_signal_source_date', '010_market_clean_sheet_probabilities']
     expect(first.applied).toEqual(migrations)
     expect(second).toEqual({ applied: [], skipped: migrations })
 
