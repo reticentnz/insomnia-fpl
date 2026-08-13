@@ -221,7 +221,8 @@ function auxiliaryRefreshDefinition(id) {
   }
   if (id === 'rss') return {
     operationId: 'rss-sync', source: null, label: 'RSS feeds',
-    lastCompleted: async () => (await (await getDb()).query(`SELECT MAX(COALESCE("processed_at","updated_at")) AS completed_at FROM "RssItem"`)).rows[0]?.completed_at || null,
+    lastCompleted: async () => (await (await getDb()).query(`SELECT MAX("last_polled_at") AS completed_at FROM "RssSource"`)).rows[0]?.completed_at || null,
+    notBefore: async () => (await (await getDb()).query(`SELECT MIN("next_poll_at") AS next_poll_at FROM "RssSource" WHERE "enabled"=1 AND "next_poll_at" IS NOT NULL`)).rows[0]?.next_poll_at || null,
     work: refreshRssFeeds,
   }
   if (id === 'underlying') return {
@@ -256,6 +257,10 @@ async function scheduleAuxiliaryRefresh(id, { notBefore = 0 } = {}) {
   }
 
   const definition = auxiliaryRefreshDefinition(id)
+  if (definition.notBefore) {
+    const deferredUntil = Date.parse(await definition.notBefore())
+    if (Number.isFinite(deferredUntil)) notBefore = Math.max(notBefore, deferredUntil)
+  }
   let completedAt = null
   if (id === 'creator' || id === 'rss') {
     const table = id === 'creator' ? 'CreatorSource' : 'RssSource'
@@ -1690,7 +1695,7 @@ function startServerOnAvailablePort(targetPort) {
     if (request === '/api/rss-sources' && req.method === 'POST') {
       try {
         const payload = await readRequestBody(req), id = await addRssSource(await getDb(), payload)
-        if (!startAdminOperation('rss-sync', refreshRssFeeds)) await scheduleAuxiliaryRefresh('rss')
+        await scheduleAuxiliaryRefresh('rss')
         sendJson(res, 201, { id, ...(await listRssSources(await getDb())) })
       } catch (error) { sendJson(res, 400, { error: error instanceof Error ? error.message : 'Could not add RSS source' }) }
       return

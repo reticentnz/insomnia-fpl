@@ -54,7 +54,16 @@ async function fetchFeed(url, fetchImpl, validators = {}, redirects = 0) {
     return fetchFeed(redirected, fetchImpl, validators, redirects + 1)
   }
   if (response.status === 304) return { unchanged: true, etag: validators.etag || null, lastModified: validators.lastModified || null, payloadHash: validators.payloadHash || null }
-  if (!response.ok) throw new Error(`RSS feed returned HTTP ${response.status}`)
+  if (!response.ok) {
+    const error = new Error(`RSS feed returned HTTP ${response.status}`)
+    if (response.status === 429) {
+      const retryAfter = String(response.headers.get('retry-after') || '').trim()
+      const milliseconds = /^\d+$/.test(retryAfter) ? Number(retryAfter) * 1000 : Date.parse(retryAfter) - Date.now()
+      error.retryAt = new Date(Date.now() + (Number.isFinite(milliseconds) && milliseconds > 0 ? milliseconds : 60 * 60 * 1000)).toISOString()
+      error.message = `RSS feed returned HTTP 429; retrying after ${error.retryAt}`
+    }
+    throw error
+  }
   const length = Number(response.headers.get('content-length') || 0)
   if (length > MAX_FEED_BYTES) throw new Error('RSS feed exceeds the 2 MB limit')
   const body = await response.text()
@@ -95,21 +104,21 @@ async function discoverItems(db, source, feed) {
 }
 
 export async function pollRssSources(db, fetchImpl = fetch) {
-  const result = await db.query(`SELECT * FROM "RssSource" WHERE "enabled"=1 ORDER BY "created_at"`)
+  const result = await db.query(`SELECT * FROM "RssSource" WHERE "enabled"=1 AND ("next_poll_at" IS NULL OR datetime("next_poll_at")<=datetime('now')) ORDER BY "created_at"`)
   let discovered = 0
   for (const source of result.rows) {
     const now = new Date().toISOString()
     try {
       const fetched = await fetchFeed(source.feed_url, fetchImpl, { etag: source.feed_etag, lastModified: source.feed_last_modified, payloadHash: source.payload_hash })
       if (fetched.unchanged) {
-        await db.query(`UPDATE "RssSource" SET "last_polled_at"=$2,"last_error"=NULL,"updated_at"=$2 WHERE "id"=$1`, [source.id, now])
+        await db.query(`UPDATE "RssSource" SET "last_polled_at"=$2,"next_poll_at"=NULL,"last_error"=NULL,"updated_at"=$2 WHERE "id"=$1`, [source.id, now])
         continue
       }
       const feed = parseRssFeed(fetched.body)
       discovered += await discoverItems(db, source, feed)
-      await db.query(`UPDATE "RssSource" SET "name"=$2,"feed_etag"=$3,"feed_last_modified"=$4,"payload_hash"=$5,"last_polled_at"=$6,"last_error"=NULL,"updated_at"=$6 WHERE "id"=$1`, [source.id, feed.sourceName || source.name, fetched.etag, fetched.lastModified, fetched.payloadHash, now])
+      await db.query(`UPDATE "RssSource" SET "name"=$2,"feed_etag"=$3,"feed_last_modified"=$4,"payload_hash"=$5,"last_polled_at"=$6,"next_poll_at"=NULL,"last_error"=NULL,"updated_at"=$6 WHERE "id"=$1`, [source.id, feed.sourceName || source.name, fetched.etag, fetched.lastModified, fetched.payloadHash, now])
     } catch (error) {
-      await db.query(`UPDATE "RssSource" SET "last_polled_at"=$2,"last_error"=$3,"updated_at"=$2 WHERE "id"=$1`, [source.id, now, String(error?.message || error).slice(0, 500)])
+      await db.query(`UPDATE "RssSource" SET "last_polled_at"=$2,"next_poll_at"=$3,"last_error"=$4,"updated_at"=$2 WHERE "id"=$1`, [source.id, now, error?.retryAt || null, String(error?.message || error).slice(0, 500)])
     }
   }
   return { sources: result.rows.length, discovered }
