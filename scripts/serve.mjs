@@ -434,11 +434,19 @@ async function loadLeagueDetailsWithEO(leagueId, requestedGameweek, { youEntry, 
         if (picksRes.ok) picksData = await picksRes.json()
         if (historyRes.ok) historyData = await historyRes.json()
 
+        const entryHistory = picksData?.entry_history || {}
+        const seasonHits = Array.isArray(historyData?.current)
+          ? historyData.current.reduce((sum, e) => sum + (Number(e.event_transfers_cost) || 0), 0)
+          : 0
+
         return {
           ...rival,
           activeChip: picksData?.active_chip || null,
-          eventTransfers: picksData?.entry_history?.event_transfers || 0,
-          eventTransfersCost: picksData?.entry_history?.event_transfers_cost || 0,
+          eventTransfers: entryHistory.event_transfers || 0,
+          eventTransfersCost: entryHistory.event_transfers_cost || 0,
+          value: entryHistory.value == null ? null : Number(entryHistory.value) / 10,
+          bank: entryHistory.bank == null ? null : Number(entryHistory.bank) / 10,
+          seasonHits,
           picks: picksData?.picks || [],
           chipsUsed: historyData?.chips || []
         }
@@ -448,6 +456,9 @@ async function loadLeagueDetailsWithEO(leagueId, requestedGameweek, { youEntry, 
           activeChip: null,
           eventTransfers: 0,
           eventTransfersCost: 0,
+          value: null,
+          bank: null,
+          seasonHits: 0,
           picks: [],
           chipsUsed: []
         }
@@ -484,6 +495,17 @@ async function loadLeagueDetailsWithEO(leagueId, requestedGameweek, { youEntry, 
       effectiveOwnership: Number(eoPercent.toFixed(1))
     }
   }).sort((a, b) => b.effectiveOwnership - a.effectiveOwnership)
+
+  // "Template" = the league's most-owned players (top-N by ownership). Each
+  // rival's templateCount is how many of their STARTING XI fall inside that
+  // consensus set, so you can see who is playing off-template vs the field.
+  const TEMPLATE_TOP_N = 15
+  const templateElements = new Set(effectiveOwnership.slice(0, TEMPLATE_TOP_N).map(s => s.element))
+  for (const rival of enrichedRivals) {
+    const starters = (rival.picks || []).filter(p => (p.multiplier || 0) > 0)
+    rival.templateCount = starters.filter(p => templateElements.has(p.element)).length
+    rival.starterCount = starters.length
+  }
 
   const response = {
       league: standingsData.league,

@@ -5663,6 +5663,22 @@ function LeaguesView({
 
   const userOwnedSet = useMemo(() => new Set(userSquad.map(p => p.id)), [userSquad]);
 
+  const rivalsWithOverlap = useMemo(() => {
+    const myIds = new Set(userSquad.map(p => p.id));
+    return (details?.standings || []).map((rival) => {
+      const startPicks = (rival.picks || []).filter(p => (p.multiplier || 0) > 0);
+      const base = rival.starterCount || startPicks.length || 1;
+      const sharedPicks = startPicks.filter(p => myIds.has(p.element));
+      const overlapPct = Math.round((sharedPicks.length / base) * 100);
+      return {
+        ...rival,
+        overlapPct,
+        sharedElements: sharedPicks.map(p => p.element),
+        myDifferentialIds: userSquad.filter(p => !startPicks.some(sp => sp.element === p.id)).map(p => p.id),
+      };
+    });
+  }, [details, userSquad]);
+
   const enrichedEOList = useMemo(() => {
     if (!details?.effectiveOwnership) return [];
     return details.effectiveOwnership.map((item) => {
@@ -5684,6 +5700,35 @@ function LeaguesView({
       };
     });
   }, [details, catalog, userOwnedSet]);
+
+  const leagueTemplateXI = useMemo(() => {
+    if (!details?.effectiveOwnership || enrichedEOList.length === 0) {
+      return { slots: new Map<string, number>(), xi: [] as typeof enrichedEOList };
+    }
+    const byPos = (pos: string) => enrichedEOList
+      .filter(i => i.player?.position === pos)
+      .sort((a, b) => b.ownershipPercent - a.ownershipPercent);
+    const taken = new Set<number>();
+    const pickTop = (list: typeof enrichedEOList, n: number) => {
+      const picked: typeof enrichedEOList = [];
+      for (const item of list) {
+        if (taken.has(item.element)) continue;
+        taken.add(item.element);
+        picked.push(item);
+        if (picked.length >= n) break;
+      }
+      return picked;
+    };
+    const order: Array<{ pos: string; slots: number }> = [
+      { pos: "GK", slots: 1 },
+      { pos: "DEF", slots: 4 },
+      { pos: "MID", slots: 3 },
+      { pos: "FWD", slots: 3 },
+    ];
+    const slots = new Map(order.map(o => [o.pos, o.slots]));
+    const xi = order.flatMap(o => pickTop(byPos(o.pos), o.slots));
+    return { slots, xi };
+  }, [details, enrichedEOList]);
 
   const filteredEOList = useMemo(() => {
     return enrichedEOList.filter((item) => {
@@ -5874,6 +5919,41 @@ function LeaguesView({
             </div>
           )}
 
+          {/* League Template XI */}
+          {details.standings.length > 0 && leagueTemplateXI.xi.length > 0 && (
+            <div className="leagues-card" style={{ marginBottom: "16px" }}>
+              <div className="leagues-card-header">
+                <div>
+                  <h3 style={{ margin: 0 }}>League Template XI</h3>
+                  <span className="muted-text" style={{ fontSize: "12px" }}>
+                    The most-owned starting XI across your sampled rivals · "on-template" means these players
+                  </span>
+                </div>
+                <span className="badge-info">Consensus</span>
+              </div>
+              <div className="template-xi-grid">
+                {(["GK", "DEF", "MID", "FWD"] as const).map((pos) => (
+                  <div key={pos} className="template-pos-row">
+                    <span className="template-pos-label">{pos}</span>
+                    <div className="template-pos-players">
+                      {leagueTemplateXI.xi.filter(i => i.player?.position === pos).map(item => (
+                        <span
+                          key={item.element}
+                          className="template-player-chip"
+                          title={userOwnedSet.has(item.element) ? `${item.player!.name} — you own ✓` : `${item.player!.name} — ${item.ownershipPercent}% owned`}
+                        >
+                          <b>{item.player!.name}</b>
+                          <span className="template-own">{item.ownershipPercent}%</span>
+                          {userOwnedSet.has(item.element) && <span className="template-you">you</span>}
+                        </span>
+                      ))}
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+
           {/* Standings View */}
           {subTab === "standings" && details.standings.length > 0 && (
             <div className="leagues-card">
@@ -5896,16 +5976,21 @@ function LeaguesView({
                       <th>Manager & Team</th>
                       <th>GW Transfers & Hits</th>
                       <th>Active Chip</th>
+                      <th>Overlap</th>
+                      <th>Template</th>
+                      <th>Squad £</th>
                       <th>GW Pts</th>
                       <th>Total Pts</th>
                       <th>Action</th>
                     </tr>
                   </thead>
                   <tbody>
-                    {details.standings.map((rival) => {
+                    {rivalsWithOverlap.map((rival) => {
                       const isUser = rival.entry === fplAccount?.teamId;
                       const activeChipInfo = formatChipName(rival.activeChip);
                       const rankDiff = rival.last_rank ? rival.last_rank - rival.rank : 0;
+                      const overlapColor = rival.overlapPct >= 55 ? "#10b981" : rival.overlapPct >= 30 ? "#f59e0b" : "#3b82f6";
+                      const templateColor = rival.templateCount >= 7 ? "#10b981" : rival.templateCount >= 4 ? "#f59e0b" : "#3b82f6";
                       return (
                         <tr key={rival.id} className={isUser ? "user-row" : ""}>
                           <td className="rank-col">
@@ -5926,6 +6011,11 @@ function LeaguesView({
                                 <span className="hit-badge"> (-{rival.eventTransfersCost} pts)</span>
                               )}
                             </span>
+                            {rival.seasonHits > 0 && (
+                              <div className="muted-text" style={{ fontSize: "11px", marginTop: "2px" }}>
+                                −{rival.seasonHits} pts hits this season
+                              </div>
+                            )}
                           </td>
                           <td>
                             {activeChipInfo ? (
@@ -5934,6 +6024,30 @@ function LeaguesView({
                                 style={{ backgroundColor: activeChipInfo.color }}
                               >
                                 {activeChipInfo.label}
+                              </span>
+                            ) : (
+                              <span className="muted-text">-</span>
+                            )}
+                          </td>
+                          <td>
+                            <span className="status-pill" style={{ color: overlapColor }}>
+                              {rival.picks?.length ? `${rival.overlapPct}%` : "-"}
+                            </span>
+                          </td>
+                          <td>
+                            <span className="status-pill" style={{ color: templateColor }}>
+                              {rival.picks?.length ? `${rival.templateCount}/${rival.starterCount || 11}` : "-"}
+                            </span>
+                          </td>
+                          <td>
+                            {rival.value != null ? (
+                              <span>
+                                <b>£{rival.value.toFixed(1)}</b>
+                                {rival.bank != null && (
+                                  <span className="muted-text" style={{ fontSize: "11px", display: "block" }}>
+                                    £{rival.bank.toFixed(1)} bank
+                                  </span>
+                                )}
                               </span>
                             ) : (
                               <span className="muted-text">-</span>
@@ -6144,7 +6258,44 @@ function LeaguesView({
                   <small>Active Chip</small>
                   <b>{inspectingRival.activeChip || "None"}</b>
                 </div>
+                {inspectingRival.value != null && (
+                  <>
+                    <div>
+                      <small>Squad Value</small>
+                      <b>£{inspectingRival.value.toFixed(1)}</b>
+                      {inspectingRival.bank != null && (
+                        <small style={{ display: "block" }}>£{inspectingRival.bank.toFixed(1)} bank</small>
+                      )}
+                    </div>
+                    <div>
+                      <small>Roster Overlap</small>
+                      <b>{inspectingRival.overlapPct}%</b>
+                      <small style={{ display: "block" }}>
+                        Template {inspectingRival.templateCount}/{inspectingRival.starterCount || 11}
+                      </small>
+                    </div>
+                  </>
+                )}
               </div>
+
+              {inspectingRival.myDifferentialIds && inspectingRival.myDifferentialIds.length > 0 && (
+                <div className="differential-panel" style={{ margin: "12px 0 0 0" }}>
+                  <h4 style={{ margin: "0 0 8px 0", fontSize: "14px" }}>Your Differentials vs this rival</h4>
+                  <p className="muted-text" style={{ margin: "0 0 8px 0", fontSize: "12px" }}>
+                    {inspectingRival.myDifferentialIds.length} players you own that they don't
+                  </p>
+                  <div style={{ display: "flex", flexWrap: "wrap", gap: "6px" }}>
+                    {inspectingRival.myDifferentialIds.map((id) => {
+                      const p = catalog.find((item) => item.id === id);
+                      return (
+                        <span key={id} className="chip-badge" style={{ background: "rgba(59,130,246,0.15)", color: "#93c5fd" }}>
+                          {p ? p.name : `Player #${id}`}
+                        </span>
+                      );
+                    })}
+                  </div>
+                </div>
+              )}
 
               <h4 style={{ margin: "16px 0 10px 0" }}>Lineup & Picks (GW {currentGameweek})</h4>
               <div className="rival-picks-list">

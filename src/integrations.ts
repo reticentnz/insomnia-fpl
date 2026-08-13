@@ -358,8 +358,16 @@ export interface LeagueRival {
   activeChip: string | null;
   eventTransfers: number;
   eventTransfersCost: number;
+  value: number | null;
+  bank: number | null;
+  seasonHits: number;
+  templateCount: number;
+  starterCount: number;
   picks: LeagueRivalPick[];
   chipsUsed: LeagueRivalChip[];
+  overlapPct?: number;
+  sharedElements?: number[];
+  myDifferentialIds?: number[];
 }
 
 export interface LeaguePlayerEO {
