@@ -1140,7 +1140,11 @@ export async function fetchCreatorVideoDetail(id: string): Promise<CreatorVideoD
 }
 
 export async function retryCreatorVideo(id: string): Promise<CreatorFeedState> {
-  return creatorFeedRequest(`/api/creator-videos/${encodeURIComponent(id)}/retry`, { method: 'POST' })
+  return creatorFeedRequest(`/api/creator-videos/${encodeURIComponent(id)}/retry`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: '{}',
+  })
 }
 
 export function addCreatorSource(channelIdOrUrl: string, name = ''): Promise<CreatorFeedState> {
