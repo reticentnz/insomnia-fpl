@@ -102,6 +102,7 @@ import {
   fetchAdminStatus,
   runAdminOperation,
   type AdminStatus,
+  type ManualPlayerSignalInput,
 } from "./integrations";
 import {
   buildDraftImprovementPlanAsync,
@@ -1558,19 +1559,36 @@ function App() {
       setApplyingBatch(false);
     }
   };
+  const saveManualPlayerSignal = async (
+    playerId: number,
+    input: ManualPlayerSignalInput,
+  ) => {
+    const signal = await createManualPlayerSignal(playerId, input);
+    const data = await fetchLiveCatalog();
+    setLivePlayers(data.players);
+    setCapturedAt(data.capturedAt || null);
+    setPlayerDetail((current) =>
+      current?.id === playerId
+        ? data.players.find((candidate) => candidate.id === playerId) || current
+        : current,
+    );
+    setToast({
+      message: `${input.evidenceSummary} Projections recalculated.`,
+      tone: "success",
+    });
+    return signal;
+  };
   const handleManualOverride = async (
     playerId: number,
     startProbability: number,
     note?: string,
   ) => {
     try {
-      await createManualPlayerSignal(playerId, startProbability, note);
-      const data = await fetchLiveCatalog();
-      setLivePlayers(data.players);
-      setCapturedAt(data.capturedAt || null);
-      setToast({
-        message: `Updated start probability to ${Math.round(startProbability * 100)}% and recalculated projections.`,
-        tone: "success",
+      await saveManualPlayerSignal(playerId, {
+        kind: "START_PROBABILITY",
+        value: { startProbability },
+        claimClass: "REAL_WORLD_ROLE",
+        evidenceSummary: note || `Manual signal: start chance set to ${Math.round(startProbability * 100)}%`,
       });
     } catch (error) {
       setChallengeError(
@@ -2237,6 +2255,7 @@ function App() {
             setPlayerDetail(null);
             setTab("Signals");
           }}
+          onAddManualSignal={saveManualPlayerSignal}
         />
       )}{" "}
       {aiModalOpen && (
@@ -8581,6 +8600,7 @@ function PlayerDrawer({
   onAsk,
   onReviewTransfer,
   onOpenSignals,
+  onAddManualSignal,
 }: {
   player: Player;
   horizon: number;
@@ -8591,9 +8611,14 @@ function PlayerDrawer({
   onAsk: (p: Player) => void;
   onReviewTransfer: (t: Transfer) => void;
   onOpenSignals: () => void;
+  onAddManualSignal: (playerId: number, input: ManualPlayerSignalInput) => Promise<PlayerSignal>;
 }) {
   const [knownSignals, setKnownSignals] = useState<PlayerSignal[]>([]);
   const [signalsLoading, setSignalsLoading] = useState(true);
+  const [manualSignalOpen, setManualSignalOpen] = useState(false);
+  const [manualSignalNote, setManualSignalNote] = useState("");
+  const [savingManualSignal, setSavingManualSignal] = useState<string | null>(null);
+  const [manualSignalError, setManualSignalError] = useState<string | null>(null);
   useEffect(() => {
     let active = true;
     setSignalsLoading(true);
@@ -8611,6 +8636,63 @@ function PlayerDrawer({
   const activeAdjustments = knownSignals.filter(signal => signal.status === "VERIFIED" && signal.interpretation?.modelImpact === "ROLE");
   const pendingInterpretations = knownSignals.filter(signal => signal.status === "PENDING");
   const contextualSignals = knownSignals.filter(signal => signal.status === "VERIFIED" && signal.interpretation?.modelImpact === "NONE");
+  const manualSignalPresets: Array<{
+    id: string;
+    label: string;
+    detail: string;
+    input: Omit<ManualPlayerSignalInput, "evidenceSummary"> & { defaultSummary: string };
+  }> = [
+    {
+      id: "first-choice",
+      label: "First choice",
+      detail: "88% start chance",
+      input: { kind: "DEPTH_CHART", claimClass: "REAL_WORLD_ROLE", value: { depthRole: "FIRST_CHOICE", startProbability: 0.88 }, defaultSummary: "Manual signal: first-choice starter" },
+    },
+    {
+      id: "rotation",
+      label: "Rotation risk",
+      detail: "55% start chance",
+      input: { kind: "DEPTH_CHART", claimClass: "ROTATION", value: { depthRole: "ROTATION", startProbability: 0.55 }, defaultSummary: "Manual signal: rotation risk" },
+    },
+    {
+      id: "backup",
+      label: "Backup",
+      detail: "8% start chance",
+      input: { kind: "DEPTH_CHART", claimClass: "REAL_WORLD_ROLE", value: { depthRole: "BACKUP", startProbability: 0.08 }, defaultSummary: "Manual signal: backup player" },
+    },
+    {
+      id: "minutes-risk",
+      label: "Minutes risk",
+      detail: "60 mins if starting",
+      input: { kind: "EXPECTED_ROLE", claimClass: "ROTATION", value: { minutesIfStarting: 60 }, defaultSummary: "Manual signal: minutes risk (60 minutes when starting)" },
+    },
+    {
+      id: "injured",
+      label: "Injured / out",
+      detail: "0% appearance chance",
+      input: { kind: "INJURY", claimClass: "INJURY", value: { depthRole: "OUT", startProbability: 0, minutesIfStarting: 0, substituteProbabilityWhenBenched: 0, minutesIfSubstitute: 0 }, defaultSummary: "Manual signal: injured or unavailable" },
+    },
+  ];
+
+  const addManualSignal = async (preset: typeof manualSignalPresets[number]) => {
+    setSavingManualSignal(preset.id);
+    setManualSignalError(null);
+    try {
+      const signal = await onAddManualSignal(player.id, {
+        kind: preset.input.kind,
+        value: preset.input.value,
+        claimClass: preset.input.claimClass,
+        evidenceSummary: manualSignalNote.trim() || preset.input.defaultSummary,
+      });
+      setKnownSignals((current) => [signal, ...current.filter((item) => item.id !== signal.id)]);
+      setManualSignalNote("");
+      setManualSignalOpen(false);
+    } catch (error) {
+      setManualSignalError(error instanceof Error ? error.message : "Could not add manual signal");
+    } finally {
+      setSavingManualSignal(null);
+    }
+  };
 
   return (
     <div className="drawer-backdrop" onClick={onClose}>
@@ -8690,6 +8772,42 @@ function PlayerDrawer({
               </span>
             )}
           </div>
+          <button
+            className="ghost-btn player-signal-add-toggle"
+            onClick={() => setManualSignalOpen((open) => !open)}
+            aria-expanded={manualSignalOpen}
+          >
+            {manualSignalOpen ? "Cancel manual signal" : "+ Add manual signal"}
+          </button>
+          {manualSignalOpen && (
+            <div className="manual-signal-composer">
+              <p>Choose a structured signal. It applies immediately without AI interpretation and is labelled as a manual addition.</p>
+              <div className="manual-signal-presets">
+                {manualSignalPresets.map((preset) => (
+                  <button
+                    key={preset.id}
+                    type="button"
+                    onClick={() => addManualSignal(preset)}
+                    disabled={savingManualSignal !== null}
+                  >
+                    <b>{savingManualSignal === preset.id ? "Saving…" : preset.label}</b>
+                    <small>{preset.detail}</small>
+                  </button>
+                ))}
+              </div>
+              <label className="manual-signal-note">
+                <span>Optional note</span>
+                <input
+                  value={manualSignalNote}
+                  onChange={(event) => setManualSignalNote(event.target.value)}
+                  placeholder="Why are you adding this signal?"
+                  maxLength={240}
+                />
+              </label>
+              <small className="manual-signal-validity">Manual signals are active for 7 days. The newest manual signal takes precedence.</small>
+              {manualSignalError && <p className="manual-signal-error" role="alert">{manualSignalError}</p>}
+            </div>
+          )}
           {signalsLoading ? (
             <p className="muted">Loading signal history…</p>
           ) : !knownSignals.length ? (

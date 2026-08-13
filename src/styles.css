@@ -5314,6 +5314,21 @@ h2 {
 .player-signal-context summary { cursor: pointer; color: #94a3b8; }
 .player-signal-context p { margin: 6px 0 0; padding-left: 8px; border-left: 2px solid rgba(100, 116, 139, .3); }
 .player-signal-all { margin-top: 9px; width: 100%; }
+.player-signal-add-toggle { margin-top: 10px; width: 100%; }
+.manual-signal-composer { margin-top: 8px; padding: 10px; border: 1px solid rgba(56, 189, 248, .22); border-radius: 9px; background: rgba(15, 23, 42, .6); }
+.manual-signal-composer > p { margin: 0 0 9px; color: #94a3b8; font-size: 11px; line-height: 1.45; }
+.manual-signal-presets { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 6px; }
+.manual-signal-presets button { display: flex; flex-direction: column; gap: 2px; padding: 8px 9px; border: 1px solid rgba(148, 163, 184, .2); border-radius: 7px; background: rgba(30, 41, 59, .72); color: #e2e8f0; cursor: pointer; text-align: left; }
+.manual-signal-presets button:hover:not(:disabled) { border-color: rgba(52, 211, 153, .65); background: rgba(16, 185, 129, .08); }
+.manual-signal-presets button:disabled { cursor: wait; opacity: .55; }
+.manual-signal-presets b { font-size: 11px; }
+.manual-signal-presets small { color: #64748b; font-size: 9px; }
+.manual-signal-note { display: flex; flex-direction: column; gap: 5px; margin-top: 9px; color: #94a3b8; font-size: 10px; font-weight: 700; }
+.manual-signal-note input { width: 100%; box-sizing: border-box; padding: 8px 9px; border: 1px solid rgba(148, 163, 184, .2); border-radius: 7px; background: rgba(2, 6, 23, .7); color: #e2e8f0; font: inherit; }
+.manual-signal-note input:focus { outline: 2px solid rgba(56, 189, 248, .35); border-color: #38bdf8; }
+.manual-signal-validity { display: block; margin-top: 7px; color: #64748b; font-size: 9px; line-height: 1.4; }
+.manual-signal-error { margin: 7px 0 0; color: #f87171; font-size: 10px; }
+@media (max-width: 520px) { .manual-signal-presets { grid-template-columns: 1fr; } }
 @keyframes signalPulse { 0%, 100% { opacity: 0.6; } 50% { opacity: 1; } }
 
 /* ── Signal risk strip on Transfers ──────────────────────────────────────── */

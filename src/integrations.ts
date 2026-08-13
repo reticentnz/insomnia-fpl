@@ -850,20 +850,29 @@ export async function revisePlayerSignalInterpretation(
   return (data.signal || data) as PlayerSignal
 }
 
+export type ManualPlayerSignalInput = {
+  kind: PlayerSignal['kind'];
+  value: PlayerSignal['value'];
+  evidenceSummary: string;
+  claimClass?: PlayerSignal['claimClass'];
+  validUntil?: string;
+};
+
 export async function createManualPlayerSignal(
   playerId: number,
-  startProbability: number,
-  note?: string,
+  input: ManualPlayerSignalInput,
 ): Promise<PlayerSignal> {
   const response = await fetch('/api/player-signals', {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
     body: JSON.stringify({
       playerId,
-      kind: 'START_PROBABILITY',
+      kind: input.kind,
       manualOverride: true,
-      evidenceSummary: note || `Manual override: start chance set to ${Math.round(startProbability * 100)}%`,
-      value: { startProbability },
+      evidenceSummary: input.evidenceSummary,
+      value: input.value,
+      claimClass: input.claimClass,
+      validUntil: input.validUntil,
     }),
   })
   const data = await response.json().catch(() => null)
