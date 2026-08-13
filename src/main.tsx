@@ -262,6 +262,7 @@ let activeManagerSettings: ManagerSettings = { bank: 1.2, freeTransfers: 1 };
 let activeDraftMode = false;
 let activeLockedIds: number[] = [];
 let activeDraftPlan: DraftImprovementPlan | null = null;
+let activeDraftPlanLoading = false;
 let activeApplyDraftPlan = () => {};
 function PlayerChip({
   p,
@@ -832,6 +833,7 @@ function App() {
   activeDraftMode = draftMode;
   activeLockedIds = lockedIds;
   activeDraftPlan = draftPlan;
+  activeDraftPlanLoading = draftPlanLoading;
   players = catalog;
   useEffect(() => {
     if (!profileHydrated) return;
@@ -7188,10 +7190,12 @@ function DashboardV2({
 
 function DraftPlanner({
   plan,
+  loading,
   horizon,
   onApply,
 }: {
   plan: DraftImprovementPlan | null;
+  loading: boolean;
   horizon: number;
   onApply: () => void;
 }) {
@@ -7215,7 +7219,18 @@ function DraftPlanner({
           cap
         </div>
       </div>
-      {plan ? (
+      {loading ? (
+        <div className="panel draft-empty draft-loading" role="status" aria-live="polite">
+          <span className="loading-spinner" aria-hidden="true" />
+          <div>
+            <b>Optimising your squad for the next {horizon} GW{horizon === 1 ? "" : "s"}…</b>
+            <p>
+              Checking legal player combinations, lineups and captaincy options.
+              This can take a few seconds.
+            </p>
+          </div>
+        </div>
+      ) : plan ? (
         <div className="panel draft-plan">
           <div className="panel-head">
             <div>
@@ -7453,6 +7468,7 @@ function TransfersV2({
         )}
         <DraftPlanner
           plan={activeDraftPlan}
+          loading={activeDraftPlanLoading}
           horizon={horizon}
           onApply={activeApplyDraftPlan}
         />

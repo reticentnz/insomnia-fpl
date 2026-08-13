@@ -3896,6 +3896,8 @@ h2 {
 .draft-empty { padding: 28px; text-align: left; }
 .draft-empty b { color: var(--text-main); font-size: 17px; }
 .draft-empty p { max-width: 720px; margin-top: 8px; }
+.draft-loading { display: flex; align-items: center; gap: 16px; min-height: 114px; }
+.draft-loading .loading-spinner { flex: 0 0 auto; }
 
 
 /* FPL Season Account Patch Styling */
