@@ -4,7 +4,7 @@ import path from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
 import { closeDb, getDb } from './db.mjs'
 import { ingestOfficialFpl } from './ingest-fpl.mjs'
-import { cleanSheetProbabilities, deriveExpectedGoals, eventTeamTotalsUrl, featuredOddsUrl, ingestMarketEvents, ingestUnderlyingRows, matchUnderlyingPlayer, resolveSignalSeason } from './ingest-signals.mjs'
+import { canonicalTeamIdentity, cleanSheetProbabilities, deriveExpectedGoals, eventTeamTotalsUrl, featuredOddsUrl, ingestMarketEvents, ingestUnderlyingRows, loadUnderstatRows, matchUnderlyingPlayer, resolveSignalSeason } from './ingest-signals.mjs'
 
 const directories: string[] = []
 const fixtureDirectory = path.resolve('scripts', 'fixtures')
@@ -39,6 +39,21 @@ afterEach(async () => {
 })
 
 describe('WP-07 optional source ingestion', () => {
+  it('canonicalizes Odds API club names to their FPL equivalents', () => {
+    const aliases = [
+      ['Manchester United', 'Man Utd'],
+      ['Nottingham Forest', "Nott'm Forest"],
+      ['Leeds United', 'Leeds'],
+      ['Tottenham Hotspur', 'Spurs'],
+      ['Brighton and Hove Albion', 'Brighton'],
+      ['Manchester City', 'Man City'],
+      ['Newcastle United', 'Newcastle'],
+    ]
+    for (const [oddsName, fplName] of aliases) {
+      expect(canonicalTeamIdentity(oddsName)).toBe(canonicalTeamIdentity(fplName))
+    }
+  })
+
   it('requests only markets supported by the featured odds endpoint', () => {
     const url = new URL(featuredOddsUrl({ apiKey: 'secret', regions: 'uk' }))
     expect(url.searchParams.get('markets')).toBe('h2h,totals')
@@ -80,6 +95,24 @@ describe('WP-07 optional source ingestion', () => {
     expect(matchUnderlyingPlayer({ player_name: 'Same Name', team_title: 'Alpha' }, [
       { id: 'one', web_name: 'Same Name', team_name: 'Alpha' }, { id: 'two', web_name: 'Same Name', team_name: 'Alpha' },
     ])).toEqual({ status: 'AMBIGUOUS', confidence: 0, playerId: null })
+    expect(matchUnderlyingPlayer({ player_name: 'Bruno Fernandes', team_title: 'Manchester United' }, [
+      { id: 'bruno', web_name: 'B.Fernandes', first_name: 'Bruno', second_name: 'Borges Fernandes', team_name: 'Manchester United' },
+    ])).toEqual({ status: 'MATCHED', confidence: 1, playerId: 'bruno' })
+    expect(matchUnderlyingPlayer({ player_name: 'Transferred Player', team_title: 'Old Club' }, [
+      { id: 'moved', web_name: 'Transferred Player', first_name: 'Transferred', second_name: 'Player', team_name: 'New Club' },
+    ])).toEqual({ status: 'MATCHED', confidence: .85, playerId: 'moved' })
+  })
+
+  it('uses the completed prior Understat season when the new season has no player rows', async () => {
+    const calls: string[] = []
+    const fetchImpl = async (_url: string, options: any) => {
+      const season = String(options.body.get('season'))
+      calls.push(season)
+      return { ok: true, json: async () => season === '2026' ? { players: [] } : { players: [{ id: '1', player_name: 'Prior Player' }] } } as any
+    }
+    const result = await loadUnderstatRows('2026/27', fetchImpl as any)
+    expect(calls).toEqual(['2026', '2025'])
+    expect(result).toMatchObject({ sourceSeason: 2025, rows: [expect.objectContaining({ _sourceSeason: '2025' })] })
   })
 
   it('stores expected goals only when complete goal-market inputs are available', async () => {

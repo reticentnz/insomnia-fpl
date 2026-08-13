@@ -30,6 +30,8 @@ docker run -d \
   -e SIGNAL_CONFIG_FILE='/app/data/signal-config.json' \
   -e FPL_INGEST_CACHE_PATH='/app/data/cache/fpl-official.json' \
   -e FPL_CATALOG_CACHE_FILE='/app/data/cache/projection-catalog.json' \
+  -e ODDS_API_KEY='optional-the-odds-api-key' \
+  -e ODDS_API_REGIONS='uk' \
   -v "$PWD/data:/app/data" \
   insomnia-fpl:local
 ```
@@ -65,7 +67,7 @@ The creator-signal endpoint is `POST /api/signals/ingest`. It requires `Authoriz
 }
 ```
 
-Matched claims become auditable player signals. Uncertain names are returned in the ingestion response and are not retained; correct the player hint and retry the stable claim payload. General opinions remain evidence only; projections change only when a verified claim includes explicit role/minutes fields.
+Matched claims become auditable player signals. Uncertain names are retained in the Signals review queue; linking one to a player can save that spelling as a persistent alias so later claims resolve automatically. General opinions remain evidence only; projections change only when a verified claim includes explicit role/minutes fields.
 
 GitHub is optional. The image can be built directly on Unraid from a copied or cloned working tree. For repeatable updates, push the repository to GitHub and publish an image to GitHub Container Registry; Unraid can then pull `ghcr.io/<owner>/<repository>:latest`. Keep database URLs and ingestion tokens in Unraid/n8n secrets, never in GitHub or the image.
 
@@ -133,7 +135,7 @@ The projection model separates a start, substitute appearance and no-show for ev
 
 On **My Team**, **Challenge squad** uses the OpenAI Responses API with web search and strict structured output to look for current role, injury, set-piece and minutes risks. Set `OPENAI_API_KEY` and optionally `OPENAI_RESEARCH_MODEL` in `.env.local`, or use the app's personal API-key setting. Results are accepted only when their URL appears in the API's actual web-search sources, then stored as `PENDING`. A manager must approve a finding before it can affect projections; the next catalogue and forecast resolve the canonical signal ledger directly. This is intentionally an evidence workflow, not a second optimiser or a mechanism that treats an LLM's prose as truth.
 
-Source priority is official FPL/club/Premier League material first, followed by reputable journalists and established predicted-lineup sources. A commercial editorial feed such as FPL Scout can be added later as a licensed provider, but the architecture does not require one and should not scrape or republish subscriber content. User-submitted feedback is stored as low-confidence `PENDING` evidence through `/api/player-signals`; manual overrides are explicit, fully trusted records rather than silently inferred from chat.
+Source priority is enforced by a curated domain registry: official FPL/club/Premier League material first, followed by reputable journalists and established predicted-lineup sources. Same-origin updates supersede older claims and materially weaker conflicting sources cannot pull the role estimate away from stronger evidence. A commercial editorial feed such as FPL Scout can be added later as a licensed provider, but the architecture does not require one and should not scrape or republish subscriber content. User-submitted feedback is stored as low-confidence `PENDING` evidence through `/api/player-signals`; manual overrides are explicit, fully trusted records rather than silently inferred from chat.
 
 ## Learning and backtesting
 

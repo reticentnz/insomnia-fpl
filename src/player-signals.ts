@@ -84,6 +84,8 @@ export type PlayerRoleProfile = {
   updatedAt?: string;
 };
 
+import { signalSourceTrust } from "./signal-sources.ts";
+
 const clamp = (value: number, min = 0, max = 1) =>
   Math.min(max, Math.max(min, Number.isFinite(value) ? value : min));
 
@@ -192,7 +194,24 @@ export function resolvePlayerRole(
       (a, b) =>
         new Date(b.observedAt).getTime() - new Date(a.observedAt).getTime(),
     );
-  const inputs = overrides.length ? [overrides[0]] : roleInputs;
+  const superseded = new Set<string | number>();
+  const latestByOrigin = new Map<string, PlayerSignal>();
+  roleInputs.forEach((signal) => {
+    const source = sanitizeExternalUrl(signal.sourceUrl);
+    if (!source) return;
+    const key = `${signal.kind}|${signal.sourceType}|${new URL(source).hostname}`;
+    const previous = latestByOrigin.get(key);
+    if (!previous || Date.parse(signal.observedAt) > Date.parse(previous.observedAt)) {
+      if (previous) superseded.add(previous.id);
+      latestByOrigin.set(key, signal);
+    } else superseded.add(signal.id);
+  });
+  const currentInputs = roleInputs.filter((signal) => !superseded.has(signal.id));
+  const strongestTrust = Math.max(...currentInputs.map((signal) => signalSourceTrust(signal.sourceType, signal.sourceUrl)));
+  // Conflicting lower-authority claims remain visible for review, but cannot
+  // pull an official/reputable role estimate away from stronger evidence.
+  const trustedInputs = currentInputs.filter((signal) => signalSourceTrust(signal.sourceType, signal.sourceUrl) >= strongestTrust - .08);
+  const inputs = overrides.length ? [overrides[0]] : trustedInputs;
   const effectiveWeight = (signal: PlayerSignal) => {
     // Manual overrides intentionally bypass both decay and weighted averaging.
     if (signal.sourceType === "MANUAL_OVERRIDE") return clamp(signal.confidence);
@@ -201,7 +220,7 @@ export function resolvePlayerRole(
     const ageDays = Number.isFinite(observedAt)
       ? Math.max(0, (now.getTime() - observedAt) / (24 * 60 * 60 * 1000))
       : 0;
-    return clamp(signal.confidence) * 2 ** (-ageDays / decayHalfLifeDays);
+    return clamp(signal.confidence) * signalSourceTrust(signal.sourceType, signal.sourceUrl) * 2 ** (-ageDays / decayHalfLifeDays);
   };
   const weighted = <K extends keyof RoleSignalValue>(key: K, fallback: number) => {
     const values: { value: number; weight: number }[] = [];

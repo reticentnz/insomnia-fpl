@@ -5,6 +5,7 @@ import { afterEach, describe, expect, it } from 'vitest'
 import { closeDb, getDb } from '../../scripts/db.mjs'
 import { ingestOfficialFpl } from '../../scripts/ingest-fpl.mjs'
 import { summarizeBacktestRows } from '../backtest.ts'
+import { MODEL_VERSION } from '../core/projection.ts'
 import { createForecastRun } from './forecast-service.ts'
 import { eligibleBacktestObservations, runBacktest } from './backtest-service.ts'
 
@@ -38,7 +39,7 @@ describe('WP-12 deadline-safe backtesting and calibration', () => {
     const first = await runBacktest(db)
     const second = await runBacktest(db)
     expect(first).toEqual(second)
-    expect(first.models.map(model => model.modelVersion)).toEqual(['model-a', 'model-b', 'role-aware-v2.0'])
+    expect(first.models.map(model => model.modelVersion)).toEqual(['model-a', 'model-b', MODEL_VERSION])
     expect((await db.query('SELECT COUNT(*) AS count FROM "CalibrationSet"')).rows[0].count).toBe(3)
   })
 

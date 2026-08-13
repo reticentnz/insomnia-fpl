@@ -15,4 +15,14 @@ describe('forecast operational readiness', () => {
     expect(deriveForecastReadiness({ ...readySystem, status: 'error' }, forecast).state).toBe('FAILED')
     expect(deriveForecastReadiness(readySystem, null).state).toBe('MISSING')
   })
+
+  it('marks a fresh forecast degraded when fallback or minutes-risk coverage is excessive', () => {
+    const degraded = { ...forecast, quality: { fallbackFixtureRatio: 1, lowMinutesFixtureRatio: .31, underlyingPlayerRatio: 0, marketFixtureRatio: 0 } }
+    const result = deriveForecastReadiness(readySystem, degraded, Date.parse('2026-08-11T12:00:00Z'))
+    expect(result.state).toBe('DEGRADED')
+    expect(result.warnings).toEqual(expect.arrayContaining([
+      expect.stringContaining('100% of fixture forecasts use FDR fallback'),
+      expect.stringContaining('Underlying performance data is missing'),
+    ]))
+  })
 })

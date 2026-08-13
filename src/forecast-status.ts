@@ -1,4 +1,11 @@
-export type ForecastReadinessState = 'READY' | 'RUNNING' | 'STALE' | 'FAILED' | 'MISSING'
+export type ForecastReadinessState = 'READY' | 'DEGRADED' | 'RUNNING' | 'STALE' | 'FAILED' | 'MISSING'
+
+export type ForecastQualityInput = {
+  fallbackFixtureRatio: number
+  lowMinutesFixtureRatio: number
+  underlyingPlayerRatio: number
+  marketFixtureRatio: number
+}
 
 export type ForecastStatusInput = {
   reachable?: boolean
@@ -15,6 +22,7 @@ export type ForecastSummaryInput = {
   horizon: number
   gameweeks: number[]
   players: Array<{ fixtureCount: number }>
+  quality?: ForecastQualityInput
 }
 
 export function deriveForecastReadiness(system: ForecastStatusInput | null, forecast: ForecastSummaryInput | null, now = Date.now()) {
@@ -28,7 +36,12 @@ export function deriveForecastReadiness(system: ForecastStatusInput | null, fore
   else if (running) state = 'RUNNING'
   else if (!forecast) state = 'MISSING'
   else if (ageHours === null || ageHours > staleAfterHours) state = 'STALE'
+  else if ((forecast.quality?.fallbackFixtureRatio ?? 0) >= .5 || (forecast.quality?.lowMinutesFixtureRatio ?? 0) >= .25) state = 'DEGRADED'
   else state = 'READY'
+  const warnings: string[] = []
+  if (forecast?.quality && forecast.quality.fallbackFixtureRatio >= .5) warnings.push(`${Math.round(forecast.quality.fallbackFixtureRatio * 100)}% of fixture forecasts use FDR fallback strength.`)
+  if (forecast?.quality && forecast.quality.lowMinutesFixtureRatio >= .25) warnings.push(`${Math.round(forecast.quality.lowMinutesFixtureRatio * 100)}% of fixture forecasts have low minutes confidence.`)
+  if (forecast?.quality && forecast.quality.underlyingPlayerRatio === 0) warnings.push('Underlying performance data is missing.')
   return {
     state,
     ageHours,
@@ -36,5 +49,6 @@ export function deriveForecastReadiness(system: ForecastStatusInput | null, fore
     playerCount: forecast?.players.length || 0,
     fixtureCount: forecast?.players.reduce((sum, player) => sum + Number(player.fixtureCount || 0), 0) || 0,
     coveredGameweeks: forecast?.gameweeks.length || 0,
+    warnings,
   }
 }

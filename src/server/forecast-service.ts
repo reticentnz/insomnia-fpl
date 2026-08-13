@@ -175,7 +175,7 @@ export async function createForecastRun(db: Database, options: CreateForecastRun
   const createdAt = iso(options.createdAt)
   const maxGameweeks = options.maxGameweeks ?? DEFAULT_MAX_GAMEWEEKS
   if (!Number.isInteger(maxGameweeks) || maxGameweeks <= 0) throw new Error('maxGameweeks must be a positive integer')
-  const config = { priorVersion: 'role-aware-v2.0', priorMinutes: 540, simulationCount: SIMULATION_COUNT, seedVersion: SIMULATION_SEED_VERSION, ...options.config }
+  const config = { priorVersion: MODEL_VERSION, priorMinutes: 540, bonusPrior: 'bps-2026-27-v1', simulationCount: SIMULATION_COUNT, seedVersion: SIMULATION_SEED_VERSION, ...options.config }
   let catalog: ProjectionInputCatalog
   let target: Awaited<ReturnType<typeof targetGameweek>>
   let officialFeedRunId: string | null
@@ -238,7 +238,18 @@ export async function latestForecastSummary(db: Database, { horizon = 1 }: { hor
     current.fixtureCount += 1
     players.set(id, current)
   }
-  return { id: run.id, modelVersion: run.model_version, asOf: run.as_of, createdAt: run.created_at, horizon: Number(horizon), gameweeks, players: [...players.values()].map(player => {
+  const fixtureCount = selected.length
+  const playerIds = new Set(selected.map(row => Number(row.fpl_id)))
+  const underlyingPlayerIds = new Set(selected.filter(row => {
+    try { return Boolean(JSON.parse(String(row.input_provenance_json || '{}')).underlyingObservationId) } catch { return false }
+  }).map(row => Number(row.fpl_id)))
+  const quality = {
+    fallbackFixtureRatio: fixtureCount ? selected.filter(row => row.strength_method === 'FDR_FALLBACK').length / fixtureCount : 1,
+    lowMinutesFixtureRatio: fixtureCount ? selected.filter(row => row.minutes_confidence === 'LOW').length / fixtureCount : 1,
+    underlyingPlayerRatio: playerIds.size ? underlyingPlayerIds.size / playerIds.size : 0,
+    marketFixtureRatio: fixtureCount ? selected.filter(row => row.strength_method === 'MARKET_XG').length / fixtureCount : 0,
+  }
+  return { id: run.id, modelVersion: run.model_version, asOf: run.as_of, createdAt: run.created_at, horizon: Number(horizon), gameweeks, quality, players: [...players.values()].map(player => {
     const standardDeviation = Math.sqrt(player.variance)
     const percentileDistance = 1.2815515655446004 * standardDeviation
     return { ...player, standardDeviation, p10Points: player.meanPoints - percentileDistance, p50Points: player.meanPoints, p90Points: player.meanPoints + percentileDistance, variance: undefined }

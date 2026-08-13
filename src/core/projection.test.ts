@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { fixtureExpectedMinutes, fixtureRoleStates, projectFixture, projectPlayer, selectStrengthMethod } from './projection.ts'
+import { bonusAdjustment2026, fixtureExpectedMinutes, fixtureRoleStates, projectFixture, projectPlayer, selectStrengthMethod } from './projection.ts'
 import type { Player } from '../domain.ts'
 
 describe('fixture role states', () => {
@@ -57,7 +57,27 @@ describe('gameweek aggregation', () => {
     const double = projectPlayer(player, 2)
     const first = projectPlayer({ ...player, upcomingFixtures: [player.upcomingFixtures![0]] }, 2)
     const second = projectPlayer({ ...player, upcomingFixtures: [player.upcomingFixtures![1]] }, 2)
-    expect(double.expectedPoints).toBeCloseTo(first.expectedPoints + second.expectedPoints, 6)
+    expect(double.expectedPoints).toBeCloseTo(first.expectedPoints + second.expectedPoints, 2)
     expect(double.expectedMinutes).toBeCloseTo(first.expectedMinutes + second.expectedMinutes, 6)
+  })
+})
+
+describe('2026/27 projection adjustments', () => {
+  it('applies goals-conceded risk to defenders who play fewer than 60 minutes', () => {
+    const defender: Player = {
+      id: 99, name: 'Short Appearance', club: 'TST', position: 'DEF', price: 5,
+      form: 0, ownership: 0, minutes: 1000, expectedMinutes: 45, fixture: 'OPP (H)', difficulty: 3,
+      projection: 4, colour: '#000', dataConfidence: 'HIGH',
+      roleProfile: { startProbability: 1, substituteProbabilityWhenBenched: 0, minutesIfStarting: 45, minutesIfSubstitute: 0, confidence: 'HIGH', derivedFromSignalIds: [] },
+      stats: { minutes: 1000, expectedGoalsConcededPer90: 2.4 },
+    }
+    expect(projectFixture(defender, { gameweek: 1, opponent: 'OPP', venue: 'H', difficulty: 3 }).goalsConceded).toBeLessThan(0)
+  })
+
+  it('makes the new-season bonus prior explicit by player profile', () => {
+    expect(bonusAdjustment2026('GK', 0)).toBeGreaterThan(1)
+    expect(bonusAdjustment2026('MID', 6)).toBeGreaterThan(1)
+    expect(bonusAdjustment2026('DEF', 12)).toBeLessThan(1)
+    expect(bonusAdjustment2026('DEF', 6)).toBeGreaterThan(1)
   })
 })

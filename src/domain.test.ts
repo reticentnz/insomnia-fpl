@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { bestXI, bestXIForGameweek, buildDraftImprovementPlan, buildLegalDefaultSquad, buildLegalRemainingSquad, computeDraftFingerprint, computeDraftPlayerFingerprint, draftSquadScore, evaluateModeTransition, findTransferRoutesToTarget, getSquad, groupLegalChangeBundles, horizonProjection, initialSquadBank, isInitialDraftPeriod, isLegalTransfer, isPlayerInjured, isPlayerFlagged, optimizeInitialSquad, players, resolvePlanningMode, resolveSquadSaveTarget, transferDecision, transfers, validateInitialSquad, validateSquad, CLUB_FIXTURES, getPlayerUpcomingFixtures, INITIAL_SQUAD_BUDGET, TRANSFER_GAIN_THRESHOLDS, calculateChipImpact, generateSquadExportText, getPlayerFixtureTicker, getDifferentialsAndEnablers, getCaptaincyBreakdown, calculateRivalEO, getTeamColor, getPlayerShirtColor } from './domain'
+import { bestXI, bestXIForGameweek, buildDraftImprovementPlan, buildLegalDefaultSquad, buildLegalRemainingSquad, computeDraftFingerprint, computeDraftPlayerFingerprint, draftSquadScore, evaluateModeTransition, findTransferRoutesToTarget, getSquad, groupLegalChangeBundles, horizonProjection, initialSquadBank, isInitialDraftPeriod, isLegalTransfer, isPlayerInjured, isPlayerFlagged, optimizeInitialSquad, players, resolvePlanningMode, resolveSquadSaveTarget, transferDecision, transfers, validateInitialSquad, validateSquad, CLUB_FIXTURES, getPlayerUpcomingFixtures, gameweekProjection, INITIAL_SQUAD_BUDGET, TRANSFER_GAIN_THRESHOLDS, calculateChipImpact, generateSquadExportText, getPlayerFixtureTicker, getDifferentialsAndEnablers, getCaptaincyBreakdown, calculateRivalEO, getTeamColor, getPlayerShirtColor } from './domain'
 
 import { createToolContext, getBestTransfers, simulateTransfers } from './intelligence'
 import { allocateBonusPoints, scorePlayerMatch } from './model'
@@ -89,6 +89,22 @@ describe('player evidence signals',()=>{
     const resolved=resolvePlayerRole(base,[manual],{now:new Date('2026-08-10T00:00:00Z'),gameweek:1})
     expect(resolved.startProbability).toBe(1)
     expect(resolved.confidence).toBe('HIGH')
+  })
+
+  it('keeps lower-trust creator conflict from overriding official evidence',()=>{
+    const official=signal({id:9,sourceType:'OFFICIAL_CLUB',sourceUrl:'https://arsenal.com/news/team-update',value:{startProbability:.9}})
+    const creator=signal({id:10,sourceType:'YOUTUBE_TRANSCRIPT',sourceUrl:'https://youtube.com/watch?v=test',value:{startProbability:.1},confidence:1})
+    const resolved=resolvePlayerRole(base,[creator,official],{now:new Date('2026-08-10T00:00:00Z'),gameweek:1})
+    expect(resolved.startProbability).toBeCloseTo(.9)
+    expect(resolved.derivedFromSignalIds).toEqual([9])
+  })
+
+  it('supersedes an older claim from the same source and signal kind',()=>{
+    const old=signal({id:11,sourceType:'JOURNALIST',sourceUrl:'https://bbc.co.uk/sport/football/story',observedAt:'2026-08-09T00:00:00Z',value:{startProbability:.2}})
+    const latest=signal({id:12,sourceType:'JOURNALIST',sourceUrl:'https://bbc.co.uk/sport/football/update',observedAt:'2026-08-10T00:00:00Z',value:{startProbability:.8}})
+    const resolved=resolvePlayerRole(base,[old,latest],{now:new Date('2026-08-10T00:00:00Z'),gameweek:1})
+    expect(resolved.startProbability).toBeCloseTo(.8)
+    expect(resolved.derivedFromSignalIds).toEqual([12])
   })
 
   it('sanitizes external source URLs preventing invalid relative redirects to untitled pages',()=>{
@@ -406,9 +422,10 @@ describe('GW1 locked-core squad optimisation',()=>{
     // selectionAwareGain should be computed for the final transfers
     const withAware=ranked.filter(t=>t.selectionAwareGain!==undefined)
     expect(withAware.length).toBeGreaterThan(0)
-    // selectionAwareGain should never exceed the raw gain (it accounts for lineup context)
+    // Lineup context can exceed the direct player delta when formation or
+    // captaincy changes, but every surfaced value must be a finite team delta.
     for(const t of withAware){
-      expect(t.selectionAwareGain!).toBeLessThanOrEqual(t.gain+0.1)
+      expect(Number.isFinite(t.selectionAwareGain)).toBe(true)
     }
   }, 15000)
 
@@ -539,12 +556,21 @@ describe('GW1 locked-core squad optimisation',()=>{
 
   it('calculates chip strategy impact (TC, BB, WC, FH)',()=>{
     const squad = getSquad()
-    const chips = calculateChipImpact(squad, 5)
+    const chips = calculateChipImpact(squad, 1)
     expect(chips.length).toBe(4)
     const tc = chips.find(c => c.chip === 'TC')
     const bb = chips.find(c => c.chip === 'BB')
     expect(tc?.projectedGain).toBeGreaterThan(0)
     expect(bb?.projectedGain).toBeGreaterThan(0)
+  })
+
+  it('calculates chip gains for one target gameweek',()=>{
+    const squad = getSquad()
+    const chips = calculateChipImpact(squad, 1)
+    const captain = bestXIForGameweek(1, squad)[0]
+    expect(chips.find(chip => chip.chip === 'TC')?.projectedGain).toBeCloseTo(gameweekProjection(captain, 1), 1)
+    expect(chips.find(chip => chip.chip === 'TC')?.notes).toContain('GW1')
+    expect(calculateChipImpact(squad, 3).find(chip => chip.chip === 'TC')?.notes).toContain('GW3')
   })
 
   it('generates plain text squad export report',()=>{

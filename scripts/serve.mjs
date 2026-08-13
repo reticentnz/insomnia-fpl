@@ -4,7 +4,9 @@ import path from 'node:path'
 import { createHash, randomUUID, timingSafeEqual } from 'node:crypto'
 import { gzipSync } from 'node:zlib'
 import { resolvePlayerRole } from '../src/player-signals.ts'
-import { interpretManualSignalText, matchCreatorClaim, normalizeCreatorPayload, signalDraftFromClaim } from './creator-signals.mjs'
+import { MODEL_VERSION } from '../src/core/projection.ts'
+import { interpretManualSignalText, matchCreatorClaim, normalizeCreatorPayload, normalizeEntityText, signalDraftFromClaim } from './creator-signals.mjs'
+import { sourceTypeMatchesUrl } from '../src/signal-sources.ts'
 
 const port = Number(process.env.PORT || 4173)
 const host = process.env.HOST || '127.0.0.1'
@@ -76,7 +78,7 @@ let scheduledIngestTimer = null
 const INGEST_RETRY_DELAY_MS = 15 * 60 * 1000
 const MAX_TIMER_DELAY_MS = 2_147_483_647
 
-const adminOperations = Object.fromEntries(['fpl-sync', 'odds-sync', 'team-refresh', 'relink-player-teams'].map(id => [id, {
+const adminOperations = Object.fromEntries(['fpl-sync', 'signals-sync', 'odds-sync', 'team-refresh', 'relink-player-teams'].map(id => [id, {
   id, status: 'IDLE', startedAt: null, finishedAt: null, message: null, error: null,
 }]))
 
@@ -643,8 +645,8 @@ async function adminStatusSnapshot() {
     db.query(`SELECT "id","source","status","started_at","finished_at","inserted_count","updated_count","unmatched_count","used_cache","error_summary"
       FROM "FeedRun" ORDER BY "started_at" DESC LIMIT 12`),
     db.query(`SELECT
-      (SELECT COUNT(*) FROM "UnderlyingObservation" WHERE "match_status" != 'MATCHED') AS unresolved_players,
-      (SELECT COUNT(*) FROM "MarketFixtureObservation" WHERE "fixture_id" IS NULL) AS unresolved_fixtures`),
+      (SELECT COUNT(*) FROM "UnderlyingObservation" WHERE "match_status" != 'MATCHED' AND "feed_run_id"=(SELECT "id" FROM "FeedRun" WHERE "source"='UNDERLYING' AND "status" IN ('SUCCEEDED','PARTIAL') ORDER BY datetime("started_at") DESC,"id" DESC LIMIT 1)) AS unresolved_players,
+      (SELECT COUNT(*) FROM "MarketFixtureObservation" WHERE "fixture_id" IS NULL AND "feed_run_id"=(SELECT "id" FROM "FeedRun" WHERE "source"='MARKET' AND "status" IN ('SUCCEEDED','PARTIAL') ORDER BY datetime("started_at") DESC,"id" DESC LIMIT 1)) AS unresolved_fixtures`),
     getCurrentManager(db).catch(() => null),
   ])
   return {
@@ -654,7 +656,7 @@ async function adminStatusSnapshot() {
     feedRuns: runs.rows.map(row => ({ id: row.id, source: row.source, status: row.status, startedAt: row.started_at, finishedAt: row.finished_at, insertedCount: Number(row.inserted_count), updatedCount: Number(row.updated_count), unmatchedCount: Number(row.unmatched_count), usedCache: Boolean(row.used_cache), error: row.error_summary })),
     unresolved: { players: Number(unresolved.rows[0]?.unresolved_players || 0), fixtures: Number(unresolved.rows[0]?.unresolved_fixtures || 0) },
     manager: manager?.account ? { teamId: manager.account.teamId, teamName: manager.account.teamName, lastSynced: manager.account.lastSynced, playerCount: manager.squad?.length || 0 } : null,
-    oddsConfigured: Boolean(process.env.ODDS_API_KEY),
+    oddsConfigured: Boolean(String(process.env.ODDS_API_KEY || '').trim()),
     season: FPL_SEASON,
   }
 }
@@ -693,18 +695,45 @@ async function createSignalForCreatorClaim(db,claimRow,source,gameweek){
   return {signal,created:true}
 }
 
+async function creatorAliases(db){
+  const result=await db.query(`SELECT alias."alias", player."fpl_id" FROM "PlayerAlias" alias JOIN "Player" player ON player."id"=alias."player_id"`)
+  return result.rows.map(row=>({alias:row.alias,playerId:Number(row.fpl_id)}))
+}
+
+async function saveUnmatchedCreatorClaim(db,claim,source,match,candidates){
+  const now=new Date().toISOString(),id=String(claim.externalClaimId)
+  await db.query(`INSERT INTO "CreatorClaim" ("id","platform","external_source_id","raw_player_name","normalized_player_name","club_hint","position_hint","category","sentiment","summary","timestamp_seconds","time_horizon","claim_json","source_json","match_status","match_confidence","candidates_json","created_at","updated_at")
+    VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$18)
+    ON CONFLICT ("id") DO UPDATE SET "match_status"=excluded."match_status","match_confidence"=excluded."match_confidence","candidates_json"=excluded."candidates_json","claim_json"=excluded."claim_json","source_json"=excluded."source_json","updated_at"=excluded."updated_at"`,[
+      id,source.platform,source.externalId,claim.rawPlayerName,normalizeEntityText(claim.rawPlayerName),claim.clubHint||null,claim.positionHint||null,claim.category,claim.sentiment,claim.summary,claim.timestampSeconds??null,claim.timeHorizon||null,JSON.stringify(claim),JSON.stringify(source),match.status,Number(match.confidence||0),JSON.stringify(candidates),now,
+    ])
+}
+
+function creatorClaimView(row){
+  const source=parseJson(row.source_json,{})
+  return {id:row.id,rawPlayerName:row.raw_player_name,clubHint:row.club_hint,positionHint:row.position_hint,category:row.category,sentiment:row.sentiment,summary:row.summary,matchStatus:row.match_status,matchConfidence:Number(row.match_confidence||0),matchCandidates:parseJson(row.candidates_json,[]),creator:source.creator||'Unknown creator',contentTitle:source.title||'Untitled source',contentUrl:source.url||'',timestampSeconds:row.timestamp_seconds==null?null:Number(row.timestamp_seconds),signalId:row.signal_id||null}
+}
+
+async function unresolvedCreatorClaims(db,limit=200){
+  const result=await db.query(`SELECT * FROM "CreatorClaim" WHERE "match_status" IN ('AMBIGUOUS','UNRESOLVED') ORDER BY datetime("created_at") DESC LIMIT $1`,[Math.max(1,Math.min(500,Number(limit)||200))])
+  return result.rows.map(creatorClaimView)
+}
+
 async function processCreatorPayload(rawPayload){
   const payload=normalizeCreatorPayload(rawPayload),db=await getDb(),data=await liveData()
+  const aliases=await creatorAliases(db)
   const contentId=`${payload.source.platform}:${payload.source.externalId}`
   const results=[]
   for(const claim of payload.claims){
-    const match=matchCreatorClaim(claim,data.players,[])
+    const match=matchCreatorClaim(claim,data.players,aliases)
     const resolvedPlayerId=match.player?.id||null
     const signalValue=Object.fromEntries(['startProbability','minutesIfStarting','substituteProbabilityWhenBenched','minutesIfSubstitute','depthRole','confidence'].filter(key=>claim[key]!=null).map(key=>[key,claim[key]]))
     const candidates=Array.isArray(match.candidates)&&match.candidates[0]?.player?compactCandidates(match.candidates):match.candidates||[]
     let signalResult=null
     if(match.status==='MATCHED'&&resolvedPlayerId){
       signalResult=await createSignalForCreatorClaim(db,{...claim,id:claim.externalClaimId,externalClaimId:claim.externalClaimId,resolvedPlayerId,signalValue},payload.source,data.currentGameweek)
+    }else{
+      await saveUnmatchedCreatorClaim(db,claim,payload.source,match,candidates)
     }
     results.push({id:claim.externalClaimId,rawPlayerName:claim.rawPlayerName,matchStatus:match.status,resolvedPlayerId,confidence:match.confidence,candidates,signalId:signalResult?.signal?.id||null,created:Boolean(signalResult?.created)})
   }
@@ -731,7 +760,7 @@ async function refreshLiveData() {
     const expectedMinutes=roleProfile.startProbability*roleProfile.minutesIfStarting+(1-roleProfile.startProbability)*roleProfile.substituteProbabilityWhenBenched*roleProfile.minutesIfSubstitute
     return {id:item.fplId,name:item.name,club:item.team.shortName,clubName:item.team.name,position:official.position,price:Number(official.price_tenths||0)/10,form:Number(official.form||0),ownership:Number(official.ownership_percent||0),minutes:availability,expectedMinutes,roleProfile,fixture:first?`${first.opponent.shortName} (${first.isHome?'H':'A'})`:'Blank',difficulty:first?.difficulty||3,projection:Number(official.ep_next||0),colour:colours[index%colours.length],status:String(official.status||'a'),chanceOfPlaying:official.chance_of_playing==null?undefined:Number(official.chance_of_playing),news:official.news||null,transfersIn:Number(official.transfers_in||0),transfersOut:Number(official.transfers_out||0),active:Boolean(official.active),dataConfidence:item.provenance.underlyingObservationId?'HIGH':'MEDIUM',upcomingFixtures:item.fixtures.map(fixture=>({gameweek:fixture.gameweekFplId||0,opponent:fixture.opponent.shortName,venue:fixture.isHome?'H':'A',difficulty:fixture.difficulty||3})),stats:{minutes:Number(official.minutes||0),starts:Number(official.starts||0),totalPoints:Number(official.total_points||0),goals:Number(official.goals_scored||0),assists:Number(official.assists||0),cleanSheets:Number(official.clean_sheets||0),goalsConceded:Number(official.goals_conceded||0),saves:Number(official.saves||0),bonus:Number(official.bonus||0),bps:Number(official.bps||0),yellowCards:Number(official.yellow_cards||0),redCards:Number(official.red_cards||0),ownGoals:Number(official.own_goals||0),penaltiesMissed:Number(official.penalties_missed||0),penaltiesSaved:Number(official.penalties_saved||0),expectedGoals:Number(official.expected_goals||0),expectedAssists:Number(official.expected_assists||0),expectedGoalsConceded:Number(official.expected_goals_conceded||0)}}
   })
-  return {capturedAt:catalog.freshness.official.observedAt||catalog.asOf,currentGameweek,deadline,modelVersion:'role-aware-v2.0',players,freshness:catalog.freshness,inputHash:catalog.inputHash}
+  return {capturedAt:catalog.freshness.official.observedAt||catalog.asOf,currentGameweek,deadline,modelVersion:MODEL_VERSION,players,freshness:catalog.freshness,inputHash:catalog.inputHash}
 }
 
 function toCatalogRoleSignals(item) {
@@ -1251,6 +1280,7 @@ async function callGroundedSquadChallenge(players,gameweek,deadline,customConfig
     if(!signal||typeof signal!=='object')return false
     const source=canonicalUrl(signal.sourceUrl)
     if(!(signal.value&&typeof signal.value==='object'&&allowedIds.has(signal.playerId)&&sourceBacked(source)&&Number.isFinite(new Date(signal.validUntil).getTime())))return false
+    if(String(signal.sourceType).startsWith('OFFICIAL_')&&!sourceTypeMatchesUrl(signal.sourceType,source))return false
     // Recency gate: source publication date must exist and be recent enough.
     const sourceDate=signal.sourceDate==null?NaN:Date.parse(String(signal.sourceDate))
     // OpenAI is required to supply a dated source; DeepSeek cannot reliably
@@ -1273,7 +1303,11 @@ async function callGroundedSquadChallenge(players,gameweek,deadline,customConfig
       if(startDelta!==null&&startDelta<0.05&&!depthChanged&&!minutesChanged){softDroppedIds.add(signal.playerId);return false}
     }
     return true
-  }).map(signal=>({...signal,sourceUrl:canonicalUrl(signal.sourceUrl),sourceDate:signal.sourceDate?new Date(signal.sourceDate).toISOString():null,validUntil:new Date(Math.min(new Date(signal.validUntil).getTime(),evidenceExpiry)).toISOString(),value:Object.fromEntries(Object.entries(signal.value).filter(([,value])=>value!==null))}))
+  }).map(signal=>{
+    const sourceUrl=canonicalUrl(signal.sourceUrl)
+    const sourceType=sourceTypeMatchesUrl(signal.sourceType,sourceUrl)?signal.sourceType:'LLM_RESEARCH'
+    return {...signal,sourceType,sourceUrl,sourceDate:signal.sourceDate?new Date(signal.sourceDate).toISOString():null,validUntil:new Date(Math.min(new Date(signal.validUntil).getTime(),evidenceExpiry)).toISOString(),value:Object.fromEntries(Object.entries(signal.value).filter(([,value])=>value!==null))}
+  })
   const requiredAuditIds=new Set(priorityAudit.map(player=>player.id))
   const seenAuditIds=new Set()
   const audits=(Array.isArray(parsed.audits)?parsed.audits:[]).filter(audit=>{
@@ -1397,10 +1431,17 @@ function startServerOnAvailablePort(targetPort) {
             return await refreshSystemPlayerCount('Manual FPL sync completed successfully.')
           } finally { systemStatus.isIngesting = false }
         }
+      } else if (action === 'signals-sync') {
+        work = async () => {
+          const output = await runChildScript('scripts/ingest-signals.mjs')
+          const forecast = await runChildScript('scripts/create-forecast-run.mjs')
+          return `${output || 'Performance and odds sync completed'} ${forecast}`.trim()
+        }
       } else if (action === 'odds-sync') {
         work = async () => {
           const output = await runChildScript('scripts/ingest-signals.mjs', ['--market-only'])
-          return output || 'Betting odds sync completed'
+          const forecast = await runChildScript('scripts/create-forecast-run.mjs')
+          return `${output || 'Betting odds sync completed'} ${forecast}`.trim()
         }
       } else if (action === 'team-refresh') {
         work = refreshLinkedManagerTeam
@@ -1649,13 +1690,37 @@ function startServerOnAvailablePort(targetPort) {
     }
 
     if(request==='/api/creator-claims'&&req.method==='GET'){
-      sendJson(res,200,{claims:[],notice:'Unmatched creator claims are returned synchronously by the ingestion response and are not retained.'})
+      try{sendJson(res,200,{claims:await unresolvedCreatorClaims(await getDb(),new URL(req.url,'http://localhost').searchParams.get('limit'))})}
+      catch(error){sendJson(res,500,{error:error instanceof Error?error.message:'Could not load creator claims'})}
       return
     }
 
     const creatorClaimMatch=request.match(/^\/api\/creator-claims\/(.+)$/)
     if(creatorClaimMatch&&req.method==='PATCH'){
-      sendJson(res,410,{error:'Unmatched creator claims are not persisted. Correct the source payload and ingest it again.'})
+      try{
+        const id=decodeURIComponent(creatorClaimMatch[1]),payload=await readRequestBody(req),db=await getDb()
+        const claimResult=await db.query(`SELECT * FROM "CreatorClaim" WHERE "id"=$1 LIMIT 1`,[id])
+        const row=claimResult.rows[0]
+        if(!row){sendJson(res,404,{error:'Creator claim not found'});return}
+        const now=new Date().toISOString()
+        if(payload.dismiss){
+          await db.query(`UPDATE "CreatorClaim" SET "match_status"='DISMISSED',"updated_at"=$2 WHERE "id"=$1`,[id,now])
+          sendJson(res,200,{claim:{...creatorClaimView(row),matchStatus:'DISMISSED'}});return
+        }
+        const fplId=Number(payload.playerId)
+        if(!Number.isInteger(fplId)||fplId<=0)throw new Error('playerId is required')
+        const playerResult=await db.query(`SELECT "id","fpl_id" FROM "Player" WHERE "fpl_id"=$1 ORDER BY "season" DESC LIMIT 1`,[fplId])
+        const player=playerResult.rows[0]
+        if(!player)throw new Error('Player not found')
+        const claim=parseJson(row.claim_json,{}),source=parseJson(row.source_json,{})
+        const signalValue=Object.fromEntries(['startProbability','minutesIfStarting','substituteProbabilityWhenBenched','minutesIfSubstitute','depthRole','confidence'].filter(key=>claim[key]!=null).map(key=>[key,claim[key]]))
+        const result=await createSignalForCreatorClaim(db,{...claim,id,externalClaimId:id,resolvedPlayerId:Number(player.fpl_id),signalValue},source,null)
+        if(payload.rememberAlias!==false&&normalizeEntityText(row.raw_player_name)){
+          await db.query(`INSERT INTO "PlayerAlias" ("id","alias","normalized_alias","player_id","source","created_at","updated_at") VALUES ($1,$2,$3,$4,'USER',$5,$5) ON CONFLICT ("normalized_alias") DO UPDATE SET "player_id"=excluded."player_id","alias"=excluded."alias","updated_at"=excluded."updated_at"`,[randomUUID(),row.raw_player_name,normalizeEntityText(row.raw_player_name),player.id,now])
+        }
+        await db.query(`UPDATE "CreatorClaim" SET "match_status"='RESOLVED',"resolved_player_id"=$2,"signal_id"=$3,"updated_at"=$4 WHERE "id"=$1`,[id,player.id,String(result.signal.id),now])
+        sendJson(res,200,{claimId:id,signal:result.signal,rememberedAlias:payload.rememberAlias!==false})
+      }catch(error){sendJson(res,400,{error:error instanceof Error?error.message:'Could not resolve creator claim'})}
       return
     }
 

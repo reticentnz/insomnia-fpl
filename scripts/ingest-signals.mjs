@@ -25,6 +25,37 @@ export function normalizeIdentity(value) {
     .replace(/\b(fc|afc|football club)\b/g, '').replace(/[^a-z0-9]/g, '')
 }
 
+const TEAM_IDENTITY_ALIASES = new Map(Object.entries({
+  brightonandhovealbion: 'brighton',
+  leedsunited: 'leeds',
+  manchestercity: 'mancity',
+  manchesterunited: 'manutd',
+  newcastleunited: 'newcastle',
+  nottinghamforest: 'nottmforest',
+  tottenhamhotspur: 'spurs',
+  westhamunited: 'westham',
+  wolverhamptonwanderers: 'wolves',
+}))
+
+export function canonicalTeamIdentity(value) {
+  const normalized = normalizeIdentity(value)
+  return TEAM_IDENTITY_ALIASES.get(normalized) || normalized
+}
+
+function normalizedNameTokens(value) {
+  return String(value || '').toLowerCase().normalize('NFKD').replace(/[\u0300-\u036f]/g, '')
+    .replace(/[^a-z0-9]+/g, ' ').trim().split(/\s+/).filter(token => token.length > 1)
+}
+
+function playerNameMatches(sourceName, player) {
+  const source = normalizeIdentity(sourceName)
+  const aliases = [player.web_name, player.first_name, player.second_name, `${player.first_name || ''} ${player.second_name || ''}`]
+  if (aliases.some(alias => normalizeIdentity(alias) === source)) return true
+  const sourceTokens = normalizedNameTokens(sourceName)
+  const fullTokens = new Set(normalizedNameTokens(`${player.first_name || ''} ${player.second_name || ''}`))
+  return sourceTokens.length >= 2 && sourceTokens.every(token => fullTokens.has(token))
+}
+
 function decodeSingleQuotedJs(value) {
   let output = ''
   for (let index = 0; index < value.length; index += 1) {
@@ -75,12 +106,16 @@ export function extractUnderstatJson(html, variable) {
 }
 
 export function matchUnderlyingPlayer(row, players) {
-  const nameMatches = players.filter(player => normalizeIdentity(player.web_name) === normalizeIdentity(row.player_name))
+  const nameMatches = players.filter(player => playerNameMatches(row.player_name, player))
   const teamMatches = row.team_title
-    ? nameMatches.filter(player => normalizeIdentity(player.team_name) === normalizeIdentity(row.team_title))
+    ? nameMatches.filter(player => canonicalTeamIdentity(player.team_name) === canonicalTeamIdentity(row.team_title))
     : nameMatches
   if (teamMatches.length === 1) return { status: 'MATCHED', confidence: 1, playerId: teamMatches[0].id }
-  if (teamMatches.length > 1 || (nameMatches.length > 0 && row.team_title)) return { status: 'AMBIGUOUS', confidence: 0, playerId: null }
+  // Preseason imports intentionally use the completed prior season, so a
+  // unique player may now belong to a different club. Preserve the match with
+  // reduced confidence instead of discarding transferred players.
+  if (nameMatches.length === 1) return { status: 'MATCHED', confidence: .85, playerId: nameMatches[0].id }
+  if (teamMatches.length > 1 || nameMatches.length > 1) return { status: 'AMBIGUOUS', confidence: 0, playerId: null }
   return { status: 'UNMATCHED', confidence: 0, playerId: null }
 }
 
@@ -172,6 +207,29 @@ async function fetchText(url, fetchImpl) {
   return response.text()
 }
 
+export async function fetchUnderstatPlayerRows(seasonStartYear, fetchImpl = fetch) {
+  const response = await fetchImpl('https://understat.com/main/getPlayersStats/', {
+    method: 'POST',
+    headers: { ...headers, referer: 'https://understat.com/', 'x-requested-with': 'XMLHttpRequest', 'content-type': 'application/x-www-form-urlencoded' },
+    body: new URLSearchParams({ league: 'EPL', season: String(seasonStartYear) }),
+  })
+  if (!response.ok) throw new Error(`Understat player endpoint returned HTTP ${response.status}`)
+  const payload = await response.json()
+  if (!Array.isArray(payload?.players)) throw new Error('Understat player endpoint returned an invalid payload')
+  return payload.players.map(row => ({ ...row, _sourceSeason: String(seasonStartYear) }))
+}
+
+export async function loadUnderstatRows(activeSeason, fetchImpl = fetch) {
+  const currentStart = Number(String(activeSeason).slice(0, 4))
+  if (!Number.isInteger(currentStart)) throw new Error(`Invalid FPL season ${activeSeason}`)
+  const configured = Number(process.env.UNDERSTAT_SEASON_START_YEAR)
+  if (Number.isInteger(configured) && configured > 2000) return { rows: await fetchUnderstatPlayerRows(configured, fetchImpl), sourceSeason: configured }
+  const current = await fetchUnderstatPlayerRows(currentStart, fetchImpl)
+  if (current.length) return { rows: current, sourceSeason: currentStart }
+  const previous = currentStart - 1
+  return { rows: await fetchUnderstatPlayerRows(previous, fetchImpl), sourceSeason: previous }
+}
+
 export function featuredOddsUrl({ apiKey, regions = 'uk' } = {}) {
   const params = new URLSearchParams({
     regions: String(regions),
@@ -240,7 +298,7 @@ async function withCache(name, loader, cacheDir) {
 }
 
 async function currentSeasonPlayers(db, season) {
-  return (await db.query(`SELECT player."id", player."web_name", team."name" AS "team_name"
+  return (await db.query(`SELECT player."id", player."web_name", player."first_name", player."second_name", team."name" AS "team_name"
     FROM "Player" player JOIN "PlayerObservation" observation ON observation."player_id"=player."id"
     JOIN "Team" team ON team."id"=observation."team_id"
     WHERE player."season"=$1
@@ -254,7 +312,7 @@ async function currentSeasonFixtures(db, season) {
 }
 
 function matchFixture(event, fixtures) {
-  const matches = fixtures.filter(fixture => normalizeIdentity(fixture.home_team_name) === normalizeIdentity(event.home_team) && normalizeIdentity(fixture.away_team_name) === normalizeIdentity(event.away_team))
+  const matches = fixtures.filter(fixture => canonicalTeamIdentity(fixture.home_team_name) === canonicalTeamIdentity(event.home_team) && canonicalTeamIdentity(fixture.away_team_name) === canonicalTeamIdentity(event.away_team))
   return matches.length === 1 ? matches[0].id : null
 }
 
@@ -319,8 +377,10 @@ export async function resolveSignalSeason(db, { season, env = process.env } = {}
 
 export async function ingestSignalFeeds({ db, season, fetchImpl = fetch, cacheDir = process.env.SIGNAL_CACHE_DIR || defaultCacheDir, understatRows, marketEvents } = {}) {
   const activeSeason = await resolveSignalSeason(db, { season })
+  const activeStart = Number(activeSeason.slice(0, 4))
+  const preferredUnderstatSeason = Number(process.env.UNDERSTAT_SEASON_START_YEAR) || activeStart
   const underlying = understatRows === undefined
-    ? await withCache(`understat-epl-${activeSeason.slice(0, 4)}.json`, async () => extractUnderstatJson(await fetchText(`https://understat.com/league/EPL/${activeSeason.slice(0, 4)}`, fetchImpl), 'playersData'), cacheDir)
+    ? await withCache(`understat-epl-${preferredUnderstatSeason}.json`, async () => (await loadUnderstatRows(activeSeason, fetchImpl)).rows, cacheDir)
     : { payload: understatRows, usedCache: false, cacheCapturedAt: null }
   const results = { underlying: await ingestUnderlyingRows(db, { season: activeSeason, rows: underlying.payload, feedDetails: underlying }) }
   if (marketEvents !== undefined) results.market = await ingestMarketEvents(db, { season: activeSeason, events: marketEvents })

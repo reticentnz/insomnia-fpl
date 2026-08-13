@@ -3,7 +3,7 @@ import { expectedRoleMinutes, normalizeRoleProfile, type PlayerRoleProfile } fro
 import { scoringRules } from './scoring.ts'
 
 /** The calculation version recorded with every projection output. */
-export const MODEL_VERSION = 'role-aware-v2.0'
+export const MODEL_VERSION = 'role-aware-v2.1'
 
 /** Shared fixture-level role maths. The three states are exhaustive and mutually exclusive. */
 export type FixtureRoleProfile = {
@@ -121,11 +121,25 @@ function playerRates(player: Player) {
   const xgcObserved = stats?.expectedGoalsConcededPer90 ?? per90(stats?.expectedGoalsConceded, minutes)
   const xgcRate = minutes > 0 ? shrunkRate(xgcObserved || prior.xgc, prior.xgc, minutes, 720) : prior.xgc
   const saveRate = minutes > 0 ? shrunkRate(stats?.savesPer90 ?? per90(stats?.saves, minutes), prior.saves, minutes) : prior.saves
-  const bonusRate = minutes > 0 ? shrunkRate(per90(stats?.bonus, minutes), prior.bonus, minutes) : prior.bonus * fallbackStrength
+  const historicalBonusRate = minutes > 0 ? shrunkRate(per90(stats?.bonus, minutes), prior.bonus, minutes) : prior.bonus * fallbackStrength
   const cardRate = minutes > 0 ? shrunkRate(per90((stats?.yellowCards || 0) + 3 * (stats?.redCards || 0), minutes), prior.cards, minutes) : prior.cards
   const rawDefensive = (stats?.clearancesBlocksInterceptions || 0) + (stats?.tackles || 0) + (player.position === 'MID' || player.position === 'FWD' ? (stats?.recoveries || 0) : 0)
   const defensiveRate = minutes > 0 ? shrunkRate(per90(rawDefensive, minutes), prior.defensiveActions, minutes) : prior.defensiveActions
+  const bonusRate = historicalBonusRate * bonusAdjustment2026(player.position, defensiveRate)
   return { goalRate, assistRate, xgcRate, saveRate, bonusRate, cardRate, defensiveRate, minutes }
+}
+
+/**
+ * 2026/27 removed the tackled BPS penalty, reduced CBI reward, and improved
+ * goalkeeper save BPS. Until 2026/27 match data can calibrate those changes,
+ * make the prior explicit: slight GK/attacker uplift, attacking-defender uplift,
+ * and a small reduction for CBI-heavy defenders.
+ */
+export function bonusAdjustment2026(position: Position, defensiveActionsPer90: number) {
+  if (position === 'GK') return 1.08
+  if (position === 'MID' || position === 'FWD') return 1.05
+  if (position === 'DEF') return defensiveActionsPer90 >= 10 ? .94 : 1.04
+  return 1
 }
 
 /** Rates used by the seeded outcome simulator. This is deliberately derived from the same shrunk-rate model as expected value. */
@@ -145,8 +159,8 @@ function oneFixtureAtMinutes(player: Player, fixture: FixtureItem, mins: number)
   const goals = rates.goalRate * minuteShare * attack * scoringRules.goal[player.position], assists = rates.assistRate * minuteShare * attack * scoringRules.assist
   const appearance = playProbability + sixtyProbability, cleanSheetProbability = Math.exp(-rates.xgcRate * defence)
   const cleanSheet = cleanSheetProbability * sixtyProbability * scoringRules.cleanSheet[player.position]
-  const concededLambda = rates.xgcRate * defence * Math.max(0, mins - 60) / 30
-  const goalsConceded = player.position === 'GK' || player.position === 'DEF' ? -poissonFloorExpectation(concededLambda, 2) * sixtyProbability : 0
+  const concededLambda = rates.xgcRate * defence * minuteShare
+  const goalsConceded = player.position === 'GK' || player.position === 'DEF' ? -poissonFloorExpectation(concededLambda, 2) : 0
   const saves = player.position === 'GK' ? poissonFloorExpectation(rates.saveRate * minuteShare / Math.max(defence, .75), 3) : 0
   const penalties = minuteShare * (per90(player.stats?.penaltiesSaved, rates.minutes) * scoringRules.penaltySave + per90(player.stats?.penaltiesMissed, rates.minutes) * scoringRules.penaltyMiss + per90(player.stats?.ownGoals, rates.minutes) * scoringRules.ownGoal)
   const defensiveContribution = player.position === 'GK' ? 0 : poissonAtLeast(rates.defensiveRate * minuteShare, player.position === 'DEF' ? 10 : 12) * scoringRules.defensiveContribution

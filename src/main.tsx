@@ -12,6 +12,7 @@ import {
   getSquad,
   groupLegalChangeBundles,
   horizonProjection,
+  gameweekProjection,
   getPlayerUpcomingFixtures,
   initialSquadBank,
   isInitialDraftPeriod,
@@ -106,7 +107,8 @@ import {
   buildDraftImprovementPlanAsync,
   optimizeInitialSquadAsync,
 } from "./optimizer-worker-client";
-import { type PlayerSignal, sanitizeExternalUrl } from "./player-signals";
+import { expectedRoleMinutes, resolvePlayerRole, type PlayerSignal, sanitizeExternalUrl } from "./player-signals";
+import { classifySignalSource } from "./signal-sources.ts";
 import { createToolContext } from "./intelligence";
 import { reviewDecision, type DecisionReview } from "./decision-review";
 import { playerRoleProfile, projectionBreakdown } from "./model";
@@ -374,7 +376,7 @@ function getInitials(name: string) {
 }
 
 function formatDeadlineText(deadlineIso: string | null): string {
-  const targetIso = deadlineIso || "2026-08-21T05:30:00.000Z";
+  const targetIso = deadlineIso || "2026-08-21T17:30:00.000Z";
   const deadlineMs = new Date(targetIso).getTime();
   const diffMs = deadlineMs - Date.now();
   if (diffMs <= 0) return "Deadline passed";
@@ -397,6 +399,7 @@ function ForecastReadinessPanel({ system, forecast, requestedHorizon }: { system
   const readiness = deriveForecastReadiness(system, forecast);
   const copy = {
     READY: { title: "Forecast ready", detail: "Recommendations use this stored offline dataset." },
+    DEGRADED: { title: "Forecast quality limited", detail: readiness.warnings.join(" ") || "Recommendations are available, but important projection inputs are incomplete." },
     RUNNING: { title: "Forecast processing", detail: forecast ? "A refresh is running; the previous successful forecast remains available." : "Player projections are being generated in the background." },
     STALE: { title: "Forecast stale", detail: `The stored inputs are older than ${readiness.staleAfterHours} hours. Recommendations may be out of date.` },
     FAILED: { title: "Forecast refresh failed", detail: forecast ? "The previous successful forecast remains available while the refresh problem is resolved." : system?.message || "No usable forecast is currently available." },
@@ -408,6 +411,7 @@ function ForecastReadinessPanel({ system, forecast, requestedHorizon }: { system
       <span><small>Generated</small><b>{forecast ? formatOperationalTime(forecast.createdAt) : "—"}</b></span>
       <span><small>Coverage</small><b>{readiness.playerCount ? `${readiness.playerCount} players · ${readiness.fixtureCount} fixtures` : "—"}</b></span>
       <span><small>Gameweeks</small><b>{forecast ? `${readiness.coveredGameweeks}/${requestedHorizon} available` : "—"}</b></span>
+      <span><small>Model inputs</small><b>{forecast?.quality ? `${Math.round((1 - forecast.quality.fallbackFixtureRatio) * 100)}% strength · ${Math.round(forecast.quality.underlyingPlayerRatio * 100)}% underlying` : "—"}</b></span>
       <span><small>Next refresh</small><b>{system?.ingestIntervalHours === 0 ? "Disabled" : formatOperationalTime(system?.nextIngestAt)}</b></span>
     </div>
     {forecast && <code title={forecast.id}>Run {forecast.id.slice(0, 8)} · {forecast.modelVersion}</code>}
@@ -416,7 +420,8 @@ function ForecastReadinessPanel({ system, forecast, requestedHorizon }: { system
 
 const adminActionDetails = [
   { id: "fpl-sync", icon: "↻", title: "Sync FPL data", description: "Fetch the official bootstrap, fixtures, player histories, and rebuild the stored forecast." },
-  { id: "odds-sync", icon: "◈", title: "Sync betting odds", description: "Fetch current EPL markets and store de-vigged fixture probabilities." },
+  { id: "signals-sync", icon: "◉", title: "Sync performance + odds", description: "Fetch Understat and configured EPL markets, then rebuild the stored forecast." },
+  { id: "odds-sync", icon: "◈", title: "Sync betting odds", description: "Fetch current EPL markets and rebuild the forecast with de-vigged probabilities." },
   { id: "team-refresh", icon: "⚽", title: "Refresh linked team", description: "Re-import the currently linked manager squad, prices, bank, and points." },
   { id: "relink-player-teams", icon: "⤢", title: "Relink players to clubs", description: "Refresh official player-to-club observations, then re-import the linked manager squad." },
 ];
@@ -765,8 +770,8 @@ function App() {
   );
 
   const chipImpacts = useMemo(
-    () => calculateChipImpact(squad, horizon as 1 | 3 | 5),
-    [squad, horizon],
+    () => calculateChipImpact(squad, currentGameweek || 1),
+    [squad, currentGameweek],
   );
 
   const exportText = useMemo(
@@ -2054,6 +2059,7 @@ function App() {
         ) : tab === "Signals" ? (
           <SignalsTab
             catalog={catalog}
+            squad={squad}
             currentGameweek={currentGameweek ?? 1}
             onSelectPlayer={setPlayerDetail}
             onReviewSignal={reviewSquadSignal}
@@ -4958,6 +4964,7 @@ function MyTeamV2({
 
 function SignalsTab({
   catalog,
+  squad,
   currentGameweek,
   onSelectPlayer,
   onReviewSignal,
@@ -4967,6 +4974,7 @@ function SignalsTab({
   applyingBatch,
 }: {
   catalog: Player[];
+  squad: Player[];
   currentGameweek: number;
   onSelectPlayer: (p: Player) => void;
   onReviewSignal: (signal: PlayerSignal, status: "VERIFIED" | "REJECTED") => void;
@@ -5172,6 +5180,32 @@ function SignalsTab({
 
   const pendingCount = signals.filter((s) => s.status === "PENDING").length;
   const unresolvedClaims = creatorClaims.filter((claim) => claim.matchStatus === "UNRESOLVED" || claim.matchStatus === "AMBIGUOUS");
+  const readiness = useMemo(() => {
+    if (!squad.length) return null;
+    const squadIds = new Set(squad.map((player) => player.id));
+    const starters = bestXI(1, squad);
+    const starterIds = new Set(starters.map((player) => player.id));
+    const active = signals.filter((signal) => squadIds.has(signal.playerId) && signal.status !== "REJECTED" && signal.status !== "EXPIRED");
+    const verifiedIds = new Set(active.filter((signal) => signal.status === "VERIFIED").map((signal) => signal.playerId));
+    const supported = squad.filter((player) => playerRoleProfile(player).confidence === "HIGH" || verifiedIds.has(player.id)).length;
+    const priority = squad.filter((player) => starterIds.has(player.id) && (playerRoleProfile(player).confidence !== "HIGH" || isPlayerFlagged(player)));
+    const prioritySupported = priority.filter((player) => verifiedIds.has(player.id) || playerRoleProfile(player).confidence === "HIGH").length;
+    const pending = active.filter((signal) => signal.status === "PENDING").length;
+    const coverage = supported / squad.length;
+    const priorityCoverage = priority.length ? prioritySupported / priority.length : 1;
+    const score = Math.max(0, Math.min(100, Math.round(coverage * 70 + priorityCoverage * 30 - Math.min(20, pending * 4))));
+    return { score, supported, pending, priorityOpen: priority.length - prioritySupported, label: score >= 85 ? "READY" : score >= 65 ? "REVIEW" : "LIMITED" };
+  }, [signals, squad]);
+
+  function projectedSignalImpact(player: Player | undefined, signal: PlayerSignal) {
+    if (!player) return null;
+    const beforeRole = playerRoleProfile(player);
+    const candidate = { ...signal, status: "VERIFIED" as const };
+    const afterRole = resolvePlayerRole(beforeRole, [candidate], { gameweek: currentGameweek });
+    const beforePoints = gameweekProjection({ ...player, roleProfile: beforeRole }, currentGameweek);
+    const afterPoints = gameweekProjection({ ...player, roleProfile: afterRole }, currentGameweek);
+    return { beforeMinutes: expectedRoleMinutes(beforeRole), afterMinutes: expectedRoleMinutes(afterRole), deltaPoints: afterPoints - beforePoints };
+  }
 
   async function handleResolveClaim(claim: CreatorClaim) {
     const playerId=claimSelections[claim.id];
@@ -5203,6 +5237,13 @@ function SignalsTab({
           </span>
         )}
       </div>
+
+      {readiness && (
+        <section className={`signal-readiness signal-readiness-${readiness.label.toLowerCase()}`}>
+          <div><span className="eyebrow">SQUAD SIGNAL READINESS</span><strong>{readiness.score}/100 · {readiness.label}</strong></div>
+          <p>{readiness.supported}/{squad.length} players have high-confidence role support · {readiness.pending} pending squad finding{readiness.pending === 1 ? "" : "s"} · {readiness.priorityOpen} priority starter check{readiness.priorityOpen === 1 ? "" : "s"} open.</p>
+        </section>
+      )}
 
       {unresolvedClaims.length > 0 && (
         <section className="claim-review-panel">
@@ -5513,6 +5554,8 @@ function SignalsTab({
             const proposedProb = normProb !== null ? Math.round(normProb * 100) : null;
             const currentProb = Math.round((player?.roleProfile?.startProbability ?? 1) * 100);
             const proposedMinutes = normProb === null ? null : Math.round(normProb * Number(interpretation?.value?.minutesIfStarting ?? signal.value?.minutesIfStarting ?? (player?.position === "GK" ? 90 : 84)));
+            const impact = modelImpact === "ROLE" ? projectedSignalImpact(player, signal) : null;
+            const sourceTrust = classifySignalSource(signal.sourceType, signal.sourceUrl);
             const stagedStatus = stagedSignalReviews[signal.id];
             const effectiveStatus = stagedStatus || signal.status;
 
@@ -5566,6 +5609,7 @@ function SignalsTab({
                       <div className="signal-impact-preview">
                         <span>Start chance <b>{currentProb}% → {proposedProb}%</b></span>
                         {proposedMinutes !== null && <span>Proposed expected minutes <b>{proposedMinutes}</b></span>}
+                        {impact && <span>GW{currentGameweek} impact <b>{impact.beforeMinutes.toFixed(0)} → {impact.afterMinutes.toFixed(0)} min · {impact.deltaPoints >= 0 ? "+" : ""}{impact.deltaPoints.toFixed(1)} xPts</b></span>}
                         <span>{interpretation?.origin === "USER" ? "User-adjusted" : "Auto-interpreted"}</span>
                       </div>
                     )}
@@ -5593,6 +5637,7 @@ function SignalsTab({
                   <div className="signal-footer">
                     <span className="signal-confidence">
                       Source confidence {Math.round(signal.confidence * 100)}%
+                      {` · trust ${Math.round(sourceTrust.trustWeight * 100)}%${sourceTrust.curated ? " curated" : ""}`}
                       {interpretation ? ` · interpretation confidence ${Math.round(interpretation.confidence * 100)}%` : ""}
                       {signal.gameweek ? ` · GW${signal.gameweek}` : ""}
                     </span>

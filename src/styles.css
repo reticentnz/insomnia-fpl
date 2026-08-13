@@ -285,6 +285,7 @@ header {
 }
 
 .forecast-readiness-stale { --forecast-state: var(--accent-gold); }
+.forecast-readiness-degraded { --forecast-state: var(--accent-gold); }
 .forecast-readiness-failed, .forecast-readiness-missing { --forecast-state: var(--accent-rose); }
 .forecast-readiness-running { --forecast-state: var(--accent-cyan); }
 .forecast-readiness-primary { display: flex; align-items: flex-start; gap: 12px; min-width: 0; }
@@ -294,7 +295,7 @@ header {
 .forecast-readiness-primary p { margin-top: 2px; color: var(--text-muted); font-size: 11px; line-height: 1.35; }
 .forecast-readiness-dot { width: 9px; height: 9px; margin-top: 6px; flex: 0 0 auto; border-radius: 50%; background: var(--forecast-state); box-shadow: 0 0 12px color-mix(in srgb, var(--forecast-state) 65%, transparent); }
 .forecast-readiness-running .forecast-readiness-dot { animation: pulse 1.4s infinite; }
-.forecast-readiness-metrics { display: grid; grid-template-columns: repeat(4, minmax(90px, 1fr)); gap: 12px; }
+.forecast-readiness-metrics { display: grid; grid-template-columns: repeat(5, minmax(90px, 1fr)); gap: 12px; }
 .forecast-readiness-metrics span { display: grid; gap: 2px; min-width: 0; }
 .forecast-readiness-metrics b { overflow: hidden; color: var(--text-main); font-size: 11px; text-overflow: ellipsis; white-space: nowrap; }
 .forecast-readiness code { padding: 5px 8px; border: 1px solid var(--border-subtle); border-radius: 7px; color: var(--text-muted); background: rgba(0,0,0,.18); font-size: 9px; white-space: nowrap; }
@@ -5025,6 +5026,14 @@ h2 {
 ═══════════════════════════════════════ */
 
 .signals-page { display: flex; flex-direction: column; gap: 18px; }
+.signal-readiness { display: flex; align-items: center; justify-content: space-between; gap: 20px; padding: 16px 18px; border: 1px solid #334155; border-radius: 14px; background: linear-gradient(135deg, #101827, #172033); }
+.signal-readiness div { display: grid; gap: 4px; min-width: 190px; }
+.signal-readiness strong { color: #f8fafc; font-size: 18px; }
+.signal-readiness p { margin: 0; color: #cbd5e1; font-size: 13px; }
+.signal-readiness-ready { border-color: rgba(34,197,94,.45); }
+.signal-readiness-review { border-color: rgba(245,158,11,.45); }
+.signal-readiness-limited { border-color: rgba(239,68,68,.45); }
+@media (max-width: 720px) { .signal-readiness { align-items: flex-start; flex-direction: column; } }
 
 .claim-review-panel { border: 1px solid rgba(245, 158, 11, .3); border-radius: 14px; overflow: hidden; background: rgba(245, 158, 11, .035); }
 .claim-review-heading { padding: 13px 15px; border-bottom: 1px solid rgba(245, 158, 11, .16); }

@@ -2668,16 +2668,21 @@ export function getPlayerFixtureTicker(
 
 export function calculateChipImpact(
   squad: Player[],
-  horizon: 1 | 3 | 5 = 5,
+  targetGameweek = 1,
 ): ChipImpact[] {
-  const starters = bestXI(horizon, squad);
-  const bench = benchOrder(horizon, squad, starters);
-  const topStarter = starters[0];
-  const captainXpts = topStarter ? horizonProjection(topStarter, horizon) : 0;
+  const starters = bestXIForGameweek(targetGameweek, squad);
+  const starterIds = new Set(starters.map(player => player.id));
+  const bench = squad
+    .filter(player => !starterIds.has(player.id))
+    .sort((left, right) => gameweekProjection(right, targetGameweek) - gameweekProjection(left, targetGameweek));
+  const topStarter = [...starters].sort(
+    (left, right) => gameweekProjection(right, targetGameweek) - gameweekProjection(left, targetGameweek),
+  )[0];
+  const captainXpts = topStarter ? gameweekProjection(topStarter, targetGameweek) : 0;
   const tcGain = +captainXpts.toFixed(1);
 
   const benchXpts = bench.reduce(
-    (sum, p) => sum + horizonProjection(p, horizon),
+    (sum, p) => sum + gameweekProjection(p, targetGameweek),
     0,
   );
   const bbGain = +benchXpts.toFixed(1);
@@ -2691,7 +2696,7 @@ export function calculateChipImpact(
       description: "Triples your captain's score instead of doubling it.",
       projectedGain: tcGain,
       notes: topStarter
-        ? `Adds +${tcGain} xPts from ${topStarter.name}`
+        ? `GW${targetGameweek}: adds +${tcGain} xPts from ${topStarter.name}`
         : "No captain selected",
     },
     {
@@ -2700,7 +2705,7 @@ export function calculateChipImpact(
       shortName: "BB",
       description: "Includes all 4 bench players in your gameweek points total.",
       projectedGain: bbGain,
-      notes: `Adds +${bbGain} xPts from 4 bench players`,
+      notes: `GW${targetGameweek}: adds +${bbGain} xPts from 4 bench players`,
     },
     {
       chip: "WC",
