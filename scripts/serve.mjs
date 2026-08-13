@@ -62,7 +62,13 @@ let systemStatus = {
   playerCount: 0,
   lastIngestedAt: null,
   nextIngestAt: null,
-  ingestIntervalHours: 12
+  ingestIntervalHours: 12,
+  scheduledRefreshes: {
+    official: { enabled: true, available: true, intervalHours: 12, lastRefreshedAt: null, nextRefreshAt: null },
+    underlying: { enabled: true, available: true, intervalHours: 24, lastRefreshedAt: null, nextRefreshAt: null },
+    market: { enabled: true, available: false, intervalHours: 6, lastRefreshedAt: null, nextRefreshAt: null },
+    manager: { enabled: true, available: false, intervalHours: 12, lastRefreshedAt: null, nextRefreshAt: null },
+  },
 }
 
 // Debounced in-process forecast recompute triggered after signal approvals.
@@ -75,6 +81,7 @@ let recomputeQueued = false
 let recomputeLastTriggeredAt = 0
 
 let scheduledIngestTimer = null
+const scheduledAuxiliaryTimers = new Map()
 const INGEST_RETRY_DELAY_MS = 15 * 60 * 1000
 const MAX_TIMER_DELAY_MS = 2_147_483_647
 
@@ -113,11 +120,15 @@ function runChildScript(script, args = [], environment = {}) {
 function startAdminOperation(id, work) {
   if (adminOperationRunning()) return false
   const startedAt = new Date().toISOString()
+  let operationSucceeded = false
   setAdminOperation(id, { status: 'RUNNING', startedAt, finishedAt: null, message: 'Operation started', error: null })
   void work().then(result => {
+    operationSucceeded = true
     setAdminOperation(id, { status: 'SUCCEEDED', finishedAt: new Date().toISOString(), message: result || 'Operation completed', error: null })
   }).catch(error => {
     setAdminOperation(id, { status: 'FAILED', finishedAt: new Date().toISOString(), message: null, error: sanitizeError(error) })
+  }).finally(() => {
+    scheduleAuxiliaryRefreshes({ retryOperationId: operationSucceeded ? null : id }).catch(error => console.error('⚠️ Could not update auxiliary refresh schedules:', sanitizeError(error)))
   })
   return true
 }
@@ -131,9 +142,18 @@ function clearScheduledIngestion() {
 function configureScheduledIngestion() {
   const hours = parseIngestIntervalHours(process.env.FPL_INGEST_INTERVAL_HOURS)
   systemStatus.ingestIntervalHours = hours
+  systemStatus.scheduledRefreshes.official.intervalHours = hours
+  systemStatus.scheduledRefreshes.official.enabled = hours > 0
+  systemStatus.scheduledRefreshes.underlying.intervalHours = parseIngestIntervalHours(process.env.UNDERLYING_INGEST_INTERVAL_HOURS, 24)
+  systemStatus.scheduledRefreshes.underlying.enabled = systemStatus.scheduledRefreshes.underlying.intervalHours > 0
+  systemStatus.scheduledRefreshes.market.intervalHours = parseIngestIntervalHours(process.env.MARKET_INGEST_INTERVAL_HOURS, 6)
+  systemStatus.scheduledRefreshes.market.enabled = systemStatus.scheduledRefreshes.market.intervalHours > 0
+  systemStatus.scheduledRefreshes.manager.intervalHours = parseIngestIntervalHours(process.env.MANAGER_REFRESH_INTERVAL_HOURS, 12)
+  systemStatus.scheduledRefreshes.manager.enabled = systemStatus.scheduledRefreshes.manager.intervalHours > 0
   if (hours <= 0) {
     console.log('⏱️ Periodic FPL ingestion is disabled (FPL_INGEST_INTERVAL_HOURS=0).')
     systemStatus.nextIngestAt = null
+    systemStatus.scheduledRefreshes.official.nextRefreshAt = null
     return
   }
   console.log(`⏱️ Periodic FPL ingestion is enabled every ${hours} hour(s).`)
@@ -144,6 +164,7 @@ async function scheduleNextIngestion({ notBefore = 0 } = {}) {
   const hours = systemStatus.ingestIntervalHours
   if (!(hours > 0)) {
     systemStatus.nextIngestAt = null
+    systemStatus.scheduledRefreshes.official.nextRefreshAt = null
     return
   }
   const latest = await latestSuccessfulFeedRun(await getDb(), 'OFFICIAL_FPL')
@@ -151,6 +172,7 @@ async function scheduleNextIngestion({ notBefore = 0 } = {}) {
   const schedule = nextIngestSchedule(completedAt, hours, Date.now(), notBefore)
   systemStatus.lastIngestedAt = schedule.lastIngestedAt
   systemStatus.nextIngestAt = schedule.nextIngestAt
+  Object.assign(systemStatus.scheduledRefreshes.official, { available: true, lastRefreshedAt: schedule.lastIngestedAt, nextRefreshAt: schedule.nextIngestAt })
   console.log(`⏱️ Next FPL ingestion scheduled for ${systemStatus.nextIngestAt}.`)
   scheduledIngestTimer = setTimeout(async () => {
     scheduledIngestTimer = null
@@ -169,6 +191,87 @@ async function scheduleNextIngestion({ notBefore = 0 } = {}) {
     const triggered = await triggerBackgroundIngest()
     if (!triggered) await scheduleNextIngestion({ notBefore: Date.now() + 60_000 })
   }, Math.min(schedule.delayMs, MAX_TIMER_DELAY_MS))
+}
+
+function clearAuxiliaryTimer(id) {
+  const timer = scheduledAuxiliaryTimers.get(id)
+  if (timer) clearTimeout(timer)
+  scheduledAuxiliaryTimers.delete(id)
+}
+
+function auxiliaryRefreshDefinition(id) {
+  if (id === 'underlying') return {
+    operationId: 'signals-sync',
+    source: 'UNDERLYING',
+    label: 'Understat performance',
+    work: async () => {
+      const output = await runChildScript('scripts/ingest-signals.mjs', ['--underlying-only'])
+      const forecast = await runChildScript('scripts/create-forecast-run.mjs')
+      return `${output} ${forecast}`.trim()
+    },
+  }
+  if (id === 'market') return {
+    operationId: 'odds-sync',
+    source: 'MARKET',
+    label: 'betting market',
+    work: async () => {
+      const output = await runChildScript('scripts/ingest-signals.mjs', ['--market-only'])
+      const forecast = await runChildScript('scripts/create-forecast-run.mjs')
+      return `${output} ${forecast}`.trim()
+    },
+  }
+  return { operationId: 'team-refresh', source: null, label: 'linked manager', work: refreshLinkedManagerTeam }
+}
+
+async function scheduleAuxiliaryRefresh(id, { notBefore = 0 } = {}) {
+  clearAuxiliaryTimer(id)
+  const state = systemStatus.scheduledRefreshes[id]
+  if (!state?.enabled) {
+    if (state) Object.assign(state, { available: id !== 'market' || Boolean(String(process.env.ODDS_API_KEY || '').trim()), nextRefreshAt: null })
+    return
+  }
+
+  const definition = auxiliaryRefreshDefinition(id)
+  let completedAt = null
+  if (id === 'market' && !String(process.env.ODDS_API_KEY || '').trim()) {
+    Object.assign(state, { available: false, lastRefreshedAt: null, nextRefreshAt: null })
+    return
+  }
+  if (id === 'manager') {
+    const manager = await getCurrentManager(await getDb()).catch(() => null)
+    completedAt = manager?.account?.lastSynced || null
+    if (!manager?.account?.teamId) {
+      Object.assign(state, { available: false, lastRefreshedAt: null, nextRefreshAt: null })
+      return
+    }
+  } else {
+    const latest = await latestSuccessfulFeedRun(await getDb(), definition.source)
+    completedAt = latest?.finished_at || latest?.started_at || null
+  }
+
+  const schedule = nextIngestSchedule(completedAt, state.intervalHours, Date.now(), notBefore)
+  Object.assign(state, { available: true, lastRefreshedAt: schedule.lastIngestedAt, nextRefreshAt: schedule.nextIngestAt })
+  console.log(`⏱️ Next ${definition.label} refresh scheduled for ${schedule.nextIngestAt}.`)
+  const timer = setTimeout(async () => {
+    scheduledAuxiliaryTimers.delete(id)
+    if (systemStatus.isSeeding || systemStatus.isIngesting || adminOperationRunning()) {
+      await scheduleAuxiliaryRefresh(id, { notBefore: Date.now() + 60_000 })
+      return
+    }
+    console.log(`⏱️ Starting scheduled ${definition.label} refresh...`)
+    if (!startAdminOperation(definition.operationId, definition.work)) {
+      await scheduleAuxiliaryRefresh(id, { notBefore: Date.now() + 60_000 })
+    }
+  }, Math.min(schedule.delayMs, MAX_TIMER_DELAY_MS))
+  scheduledAuxiliaryTimers.set(id, timer)
+}
+
+async function scheduleAuxiliaryRefreshes({ retryOperationId = null } = {}) {
+  await Promise.all(['underlying', 'market', 'manager'].map(id => {
+    const definition = auxiliaryRefreshDefinition(id)
+    const notBefore = definition.operationId === retryOperationId ? Date.now() + INGEST_RETRY_DELAY_MS : 0
+    return scheduleAuxiliaryRefresh(id, { notBefore })
+  }))
 }
 
 async function performColdStartInitialization() {
@@ -193,6 +296,7 @@ async function performColdStartInitialization() {
       systemStatus.message = `System ready with ${count} players.`
       console.log(`✅ Database ready (${count} players loaded).`)
       await scheduleNextIngestion()
+      await scheduleAuxiliaryRefreshes()
     }
   } catch (err) {
     console.error('⚠️ Cold-start setup warning:', sanitizeError(err))
@@ -231,6 +335,7 @@ async function triggerBackgroundIngest() {
           systemStatus.playerCount = Number(result.rows[0]?.count || 0)
         } catch {}
         await scheduleNextIngestion().catch(scheduleError => console.error('⚠️ Could not schedule next ingestion:', sanitizeError(scheduleError)))
+        await scheduleAuxiliaryRefreshes().catch(scheduleError => console.error('⚠️ Could not schedule auxiliary ingestion:', sanitizeError(scheduleError)))
       }
     })
     return true
@@ -657,6 +762,7 @@ async function adminStatusSnapshot() {
     unresolved: { players: Number(unresolved.rows[0]?.unresolved_players || 0), fixtures: Number(unresolved.rows[0]?.unresolved_fixtures || 0) },
     manager: manager?.account ? { teamId: manager.account.teamId, teamName: manager.account.teamName, lastSynced: manager.account.lastSynced, playerCount: manager.squad?.length || 0 } : null,
     oddsConfigured: Boolean(String(process.env.ODDS_API_KEY || '').trim()),
+    scheduledRefreshes: systemStatus.scheduledRefreshes,
     season: FPL_SEASON,
   }
 }
@@ -1816,6 +1922,7 @@ function startServerOnAvailablePort(targetPort) {
             importStatus: { squadAvailable: true, code: 'SQUAD_IMPORTED' },
           })
         }
+        scheduleAuxiliaryRefreshes().catch(error => console.error('⚠️ Could not update manager refresh schedule:', sanitizeError(error)))
       } catch (error) {
         sendJson(res, 400, { error: error instanceof Error ? error.message : 'Manager import failed' })
       }
@@ -1842,6 +1949,7 @@ function startServerOnAvailablePort(targetPort) {
       try {
         const db = await getDb()
         await unlinkCurrentManager(db)
+        await scheduleAuxiliaryRefresh('manager')
         sendJson(res, 200, { success: true })
       } catch (error) {
         sendJson(res, 400, { error: error instanceof Error ? error.message : 'Manager could not be unlinked' })
@@ -2052,6 +2160,7 @@ function startServerOnAvailablePort(targetPort) {
       }
       if (req.method === 'DELETE') {
         await unlinkCurrentManager(await getDb())
+        await scheduleAuxiliaryRefresh('manager')
         sendJson(res, 200, { success: true })
         return
       }

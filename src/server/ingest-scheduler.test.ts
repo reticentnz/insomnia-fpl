@@ -32,6 +32,7 @@ describe('durable official-ingestion scheduling', () => {
     expect(parseIngestIntervalHours('0')).toBe(0)
     expect(parseIngestIntervalHours('invalid')).toBe(0)
     expect(parseIngestIntervalHours(undefined)).toBe(12)
+    expect(parseIngestIntervalHours(undefined, 24)).toBe(24)
     expect(nextIngestSchedule(null, 0)).toBeNull()
   })
 })

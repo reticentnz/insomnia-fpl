@@ -404,6 +404,18 @@ export async function refreshBettingOdds({ db, season, fetchImpl = fetch, cacheD
   return ingestMarketEvents(db, { season: activeSeason, events: enriched.payload, feedDetails: { ...market, requestCount: enriched.requestCount } })
 }
 
+export async function refreshUnderlyingPerformance({ db, season, fetchImpl = fetch, cacheDir = process.env.SIGNAL_CACHE_DIR || defaultCacheDir } = {}) {
+  const activeSeason = await resolveSignalSeason(db, { season })
+  const activeStart = Number(activeSeason.slice(0, 4))
+  const preferredUnderstatSeason = Number(process.env.UNDERSTAT_SEASON_START_YEAR) || activeStart
+  const underlying = await withCache(
+    `understat-epl-${preferredUnderstatSeason}.json`,
+    async () => (await loadUnderstatRows(activeSeason, fetchImpl)).rows,
+    cacheDir,
+  )
+  return ingestUnderlyingRows(db, { season: activeSeason, rows: underlying.payload, feedDetails: underlying })
+}
+
 async function main() {
   let db
   try {
@@ -412,6 +424,9 @@ async function main() {
     if (process.argv.includes('--market-only')) {
       const market = await refreshBettingOdds({ db })
       console.log(`Odds: saved ${market.inserted} market observations (${market.unmatched} unresolved fixtures)`)
+    } else if (process.argv.includes('--underlying-only')) {
+      const underlying = await refreshUnderlyingPerformance({ db })
+      console.log(`Understat: saved ${underlying.inserted} observations (${underlying.unmatched} reviewable unmatched/ambiguous)`)
     } else {
       const result = await ingestSignalFeeds({ db })
       console.log(`Understat: saved ${result.underlying.inserted} observations (${result.underlying.unmatched} reviewable unmatched/ambiguous)`)

@@ -23,7 +23,11 @@ ENV NODE_ENV=production \
     SIGNAL_CONFIG_FILE=/app/data/signal-config.json \
     FPL_INGEST_CACHE_PATH=/app/data/cache/fpl-official.json \
     FPL_DATA_CACHE_FILE=/app/data/cache/fpl-data.json \
-    SIGNAL_CACHE_DIR=/app/data/cache/signal-feeds
+    SIGNAL_CACHE_DIR=/app/data/cache/signal-feeds \
+    FPL_INGEST_INTERVAL_HOURS=12 \
+    UNDERLYING_INGEST_INTERVAL_HOURS=24 \
+    MARKET_INGEST_INTERVAL_HOURS=6 \
+    MANAGER_REFRESH_INTERVAL_HOURS=12
 
 WORKDIR /app
 

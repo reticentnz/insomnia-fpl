@@ -1,7 +1,7 @@
 export const DEFAULT_INGEST_INTERVAL_HOURS = 12
 
-export function parseIngestIntervalHours(value: unknown) {
-  const hours = Number.parseFloat(String(value ?? DEFAULT_INGEST_INTERVAL_HOURS))
+export function parseIngestIntervalHours(value: unknown, defaultHours = DEFAULT_INGEST_INTERVAL_HOURS) {
+  const hours = Number.parseFloat(String(value ?? defaultHours))
   return Number.isFinite(hours) && hours > 0 ? hours : 0
 }
 
