@@ -51,6 +51,7 @@ import { createPlayerSignal, deletePlayerSignal, listPlayerSignals, revisePlayer
 import { latestSuccessfulFeedRun } from './feed-run.mjs'
 import { nextIngestSchedule, parseIngestIntervalHours } from '../src/server/ingest-scheduler.ts'
 import { addCreatorSource, deleteCreatorSource, getCreatorVideoDetail, listCreatorSources, pollCreatorSources, processCreatorQueue, retryCreatorVideo, setCreatorSourceEnabled, transcriptForPrompt } from './creator-feed-service.mjs'
+import { callDeepSeekCompletion } from './deepseek-client.mjs'
 
 let systemStatus = {
   status: 'initializing',
@@ -1119,18 +1120,9 @@ async function callLLMProvider(prompt, customConfig = {}) {
 
   if (deepseekKey && userProvider === 'deepseek') {
     const model = customConfig.userModel || process.env.DEEPSEEK_MODEL || 'deepseek-v4-flash'
-    const res = await fetch('https://api.deepseek.com/chat/completions', {
-      method: 'POST',
-      headers: { 'content-type': 'application/json', 'authorization': `Bearer ${deepseekKey}` },
-      body: JSON.stringify({ model, messages: [{ role: 'user', content: prompt }], max_tokens: maxOutputTokens, response_format: { type: 'json_object' } })
-    })
-    if (!res.ok) {
-      const errText = await res.text()
-      throw new Error(`DeepSeek API error ${res.status}: ${errText}`)
-    }
-    const data = await res.json()
-    const text = data.choices?.[0]?.message?.content
-    if (text) return aiProviderResult(text, 'DeepSeek', model, data.usage, customConfig)
+    const structured = Boolean(customConfig.rawJson)
+    const completion = await callDeepSeekCompletion({ apiKey: deepseekKey, model, prompt, maxTokens: maxOutputTokens, structured })
+    return aiProviderResult(completion.text, 'DeepSeek', model, completion.data.usage, customConfig)
   }
 
   if (anthropicKey && (userProvider === 'anthropic' || !userKey)) {
