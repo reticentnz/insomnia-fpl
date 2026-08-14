@@ -5269,7 +5269,9 @@ function SignalsTab({
   const [claimReviewingId, setClaimReviewingId] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
   const [sourceFilter, setSourceFilter] = useState("");
-  const [statusFilter, setStatusFilter] = useState("PENDING");
+  // Player-drawer links are intended to show the full signal history for that
+  // player. Keep the review queue as the default for the unfiltered Signals tab.
+  const [statusFilter, setStatusFilter] = useState(() => playerFilterId == null ? "PENDING" : "");
   const [playerQuery, setPlayerQuery] = useState("");
   const [ingestOpen, setIngestOpen] = useState(false);
   const [ingestText, setIngestText] = useState("");
