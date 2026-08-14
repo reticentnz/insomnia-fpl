@@ -1,19 +1,27 @@
 export async function callDeepSeekCompletion({ apiKey, model, prompt, maxTokens, structured = false, fetchImpl = fetch }) {
   let lastEmptyResponse = null
-  const attempts = structured ? 2 : 1
+  // DeepSeek documents an intermittent empty-content failure in JSON mode.  A
+  // final strict-prompt request without response_format avoids repeatedly
+  // hitting that same failure mode while keeping parsing/validation with the
+  // caller.
+  const attempts = structured ? 3 : 1
   for (let attempt = 0; attempt < attempts; attempt += 1) {
-    const retryInstruction = attempt ? '\n\nReturn the JSON object now. Do not emit analysis, markdown, or an empty response.' : ''
+    const retryInstruction = attempt
+      ? '\n\nReturn the JSON object now. Do not emit analysis, markdown, or an empty response. If there are no matching claims, return exactly {"claims":[]}.'
+      : ''
+    const useJsonMode = structured && attempt < 2
     const response = await fetchImpl('https://api.deepseek.com/chat/completions', {
       method: 'POST',
       headers: { 'content-type': 'application/json', authorization: `Bearer ${apiKey}` },
       body: JSON.stringify({
         model,
         messages: [
-          ...(structured ? [{ role: 'system', content: 'Return exactly one valid JSON object and no surrounding prose.' }] : []),
+          ...(structured ? [{ role: 'system', content: 'Return exactly one valid JSON object and no surrounding prose. For example, when nothing qualifies: {"claims":[]}.' }] : []),
           { role: 'user', content: `${prompt}${retryInstruction}` },
         ],
         max_tokens: maxTokens,
-        ...(structured ? { response_format: { type: 'json_object' }, thinking: { type: 'disabled' } } : {}),
+        ...(useJsonMode ? { response_format: { type: 'json_object' } } : {}),
+        ...(structured ? { thinking: { type: 'disabled' } } : {}),
       }),
     })
     if (!response.ok) throw new Error(`DeepSeek API error ${response.status}: ${await response.text()}`)

@@ -171,13 +171,17 @@ export async function processCreatorQueue(db, { extractClaims, transcriptFetcher
         continue
       }
       if (transcript.status !== 'ok') throw new Error(transcript.error || 'Transcript fetch failed')
+      // Keep successfully fetched captions even when the downstream LLM is
+      // temporarily unavailable. This makes failures inspectable and avoids
+      // throwing away the expensive, successful half of an ingestion attempt.
+      await db.query(`UPDATE "CreatorVideo" SET "transcript_json"=$2,"transcript_language"=$3,"transcript_generated"=$4,"updated_at"=$5 WHERE "id"=$1`, [video.id, JSON.stringify(transcript.segments), transcript.languageCode || transcript.language || null, transcript.isGenerated == null ? null : transcript.isGenerated ? 1 : 0, now])
       const extraction = await extractClaims({ video, transcript })
       const claims = Array.isArray(extraction?.payload?.claims) ? extraction.payload.claims : []
       const ingest = claims.length ? await extraction.ingest(extraction.payload) : { created: 0 }
       await db.query(`UPDATE "CreatorVideo" SET "status"='COMPLETE',"transcript_json"=$2,"transcript_language"=$3,"transcript_generated"=$4,"extraction_provider"=$5,"extraction_json"=$6,"claim_count"=$7,"last_error"=NULL,"updated_at"=$8,"processed_at"=$8 WHERE "id"=$1`, [video.id, JSON.stringify(transcript.segments), transcript.languageCode || transcript.language || null, transcript.isGenerated == null ? null : transcript.isGenerated ? 1 : 0, extraction.provider || null, JSON.stringify(extraction.payload), claims.length, now])
       summary.completed += 1; summary.claims += Number(ingest.created || claims.length)
     } catch (error) {
-      const retryable = attempts < 5
+      const retryable = attempts < 7
       const delayMinutes = Math.min(24 * 60, 15 * (2 ** (attempts - 1)))
       const next = new Date(Date.now() + delayMinutes * 60_000).toISOString()
       await db.query(`UPDATE "CreatorVideo" SET "status"=$2,"next_attempt_at"=$3,"last_error"=$4,"updated_at"=$5 WHERE "id"=$1`, [video.id, retryable ? 'RETRY' : 'FAILED', retryable ? next : null, String(error?.message || error).slice(0, 500), now])

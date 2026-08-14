@@ -73,4 +73,24 @@ describe('native YouTube creator feeds', () => {
     expect(await getCreatorVideoDetail(db, 'retryABC123')).toMatchObject({ status: 'DISCOVERED', error: null })
     await expect(retryCreatorVideo(db, 'retryABC123')).rejects.toThrow(/cannot be retried/)
   })
+
+  it('retains fetched captions when claim extraction must be retried', async () => {
+    const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'creator-captions-'))
+    directories.push(directory)
+    const database = path.join(directory, 'feed.sqlite')
+    await migrateDatabase(database)
+    const db = getDb(database)
+    await addCreatorSource(db, { channelId: 'UC1234567890123456789012' }, async () => new Response('<feed xmlns:yt="http://www.youtube.com/xml/schemas/2015"><title>Test Creator</title></feed>'))
+    await pollCreatorSources(db, async () => new Response('<feed xmlns:yt="http://www.youtube.com/xml/schemas/2015"><title>Test Creator</title><entry><yt:videoId>captionsABC123</yt:videoId><title>Keep captions</title><published>2099-08-13T10:00:00Z</published></entry></feed>'))
+
+    await processCreatorQueue(db, {
+      transcriptFetcher: async () => ({ status: 'ok', languageCode: 'en', isGenerated: false, segments: [{ text: 'Salah starts', start: 12, duration: 2 }] }),
+      extractClaims: async () => { throw new Error('Provider temporarily returned empty content') },
+    })
+
+    expect(await getCreatorVideoDetail(db, 'captionsABC123')).toMatchObject({
+      status: 'RETRY', transcriptLanguage: 'en', transcriptGenerated: false,
+      transcript: [{ text: 'Salah starts', start: 12, duration: 2 }],
+    })
+  })
 })

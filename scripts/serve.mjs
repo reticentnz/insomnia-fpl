@@ -864,7 +864,7 @@ function parseCreatorExtraction(value){
 
 function creatorExtractionPrompt(video,transcript){
   return `Extract only FPL-relevant, player-specific claims from this timestamped YouTube transcript.
-Return JSON with one property, "claims", containing at most 40 objects. Each object must contain:
+Return JSON with one property, "claims", containing at most 20 objects. Each object must contain:
 rawPlayerName, clubHint (string or null), positionHint (GK/DEF/MID/FWD or null), category (ROLE, ROTATION, INJURY, SET_PIECES, PENALTIES, PRESEASON, TACTICS, VALUE, STATS, TRANSFER, FPL_SELECTION, or OTHER), sentiment (POSITIVE, NEGATIVE, MIXED, or NEUTRAL), summary, evidenceText, timestampSeconds, timeHorizon (GW<number>, SHORT_TERM, MEDIUM_TERM, SEASON, or UNKNOWN), and confidence (0 to 1).
 Optional fields are depthRole (FIRST_CHOICE, ROTATION, BACKUP, OUT), startProbability, minutesIfStarting, substituteProbabilityWhenBenched, minutesIfSubstitute, numericClaims, and relatedMentions.
 Never infer numeric probabilities or minutes from vague language; include those values only when the speaker explicitly states them. A creator's own buy/sell/start/bench choice is FPL_SELECTION, not evidence of real-world minutes. Exclude sponsor reads, jokes, repetitions, and claims that are not about a named player. Use the timestamp where the evidence begins. Do not add facts not present in the transcript.
@@ -874,7 +874,7 @@ Creator: ${video.source_name}
 Published: ${video.published_at||'unknown'}
 
 Transcript:
-${transcriptForPrompt(transcript.segments)}`
+${transcriptForPrompt(transcript.segments, 28_000)}`
 }
 
 async function refreshNativeCreatorFeeds(){
@@ -883,7 +883,7 @@ async function refreshNativeCreatorFeeds(){
   try {
   const poll=await pollCreatorSources(db)
   const queue=await processCreatorQueue(db,{limit:Number(process.env.CREATOR_INGEST_BATCH_SIZE)||2,extractClaims:async({video,transcript})=>{
-    const llm=await callLLMProvider(creatorExtractionPrompt(video,transcript),{rawJson:true,maxOutputTokens:4000})
+    const llm=await callLLMProvider(creatorExtractionPrompt(video,transcript),{rawJson:true,maxOutputTokens:3000})
     await recordAiUsage({feature:'YOUTUBE_EXTRACTION',result:llm})
     if(!llm?.answer){
       const configured=loadAiSettings(),provider=String(configured.provider||'gemini').toLowerCase()

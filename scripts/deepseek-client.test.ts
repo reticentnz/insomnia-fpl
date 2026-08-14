@@ -24,6 +24,20 @@ describe('DeepSeek structured completion', () => {
   it('reports the final empty-response diagnostics', async () => {
     const fetchImpl = vi.fn().mockImplementation(async () => new Response(JSON.stringify({ choices: [{ finish_reason: 'length', message: { content: null } }], usage: { completion_tokens: 4000 } })))
     await expect(callDeepSeekCompletion({ apiKey: 'fixture-key', model: 'deepseek-v4-flash', prompt: 'JSON', maxTokens: 4000, structured: true, fetchImpl }))
-      .rejects.toThrow('empty content after 2 attempts (finish reason: length, completion tokens: 4000)')
+      .rejects.toThrow('empty content after 3 attempts (finish reason: length, completion tokens: 4000)')
+  })
+
+  it('falls back to a strict JSON prompt without JSON mode after two empty responses', async () => {
+    const fetchImpl = vi.fn()
+      .mockResolvedValueOnce(new Response(JSON.stringify({ choices: [{ finish_reason: 'length', message: { content: '' } }] })))
+      .mockResolvedValueOnce(new Response(JSON.stringify({ choices: [{ finish_reason: 'length', message: { content: '' } }] })))
+      .mockResolvedValueOnce(new Response(JSON.stringify({ choices: [{ finish_reason: 'stop', message: { content: '{"claims":[]}' } }] })))
+
+    const result = await callDeepSeekCompletion({ apiKey: 'fixture-key', model: 'deepseek-v4-flash', prompt: 'Return JSON claims', maxTokens: 4000, structured: true, fetchImpl })
+
+    expect(result.text).toBe('{"claims":[]}')
+    const fallbackRequest = JSON.parse(fetchImpl.mock.calls[2][1].body)
+    expect(fallbackRequest.response_format).toBeUndefined()
+    expect(fallbackRequest.messages.at(-1).content).toMatch(/If there are no matching claims/)
   })
 })
