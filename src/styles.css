@@ -5660,10 +5660,18 @@ h2 {
 }
 
 .staged-pill {
+  display: inline-flex;
+  align-items: center;
+  white-space: nowrap;
+  padding: 3px 8px;
+  border-radius: 999px;
+  font-size: 10px;
+  letter-spacing: 0.04em;
+  line-height: 1.2;
   border: 1px solid var(--accent-emerald) !important;
   background: rgba(0, 255, 135, 0.12) !important;
   color: var(--accent-emerald) !important;
-  font-weight: 700 !important;
+  font-weight: 800 !important;
 }
 
 .staged-pill.rejected {
