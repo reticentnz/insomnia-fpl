@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import { expandSqlParams } from './db.mjs'
-import { interpretManualSignalText, matchCreatorClaim, normalizeCreatorPayload, signalDraftFromClaim } from './creator-signals.mjs'
+import { interpretManualSignalText, matchCreatorClaim, normalizeCreatorPayload, signalDraftFromClaim, shouldAutoApproveCreatorContext } from './creator-signals.mjs'
 
 const catalog=[
   {id:10,name:'Kai Havertz',club:'ARS',clubName:'Arsenal',position:'FWD',price:8},
@@ -52,6 +52,30 @@ describe('creator signal ingestion helpers',()=>{
     expect(draft.kind).toBe('VALUE_OPINION')
     expect(draft.value).toEqual({note:'Cheap upside'})
     expect(draft.sourceUrl).toBe('https://www.youtube.com/watch?v=abc123&t=69s')
+  })
+
+  it('turns an LLM role interpretation into a reviewable calibrated adjustment',()=>{
+    const payload=normalizeCreatorPayload({source:{url:'https://youtu.be/abc'},claims:[{rawPlayerName:'Foden',category:'ROTATION',summary:'Cherki may compete for minutes.',suggestedInterpretation:{role:'ROTATION_HIGH',confidence:.72,rationale:'Material competition for attacking midfield minutes.'}}]})
+    const draft=signalDraftFromClaim(payload.claims[0],10,payload.source)
+    expect(draft).toMatchObject({claimClass:'ROTATION',modelImpact:'ROLE',value:{note:'Cherki may compete for minutes.',depthRole:'ROTATION',startProbability:.4},interpretationConfidence:.72})
+    expect(draft.interpretationRationale).toContain('proposed model translation')
+  })
+
+  it('does not permit a model interpretation for creator FPL selections',()=>{
+    const payload=normalizeCreatorPayload({source:{url:'https://youtu.be/abc'},claims:[{rawPlayerName:'Foden',category:'FPL_SELECTION',summary:'I am benching Foden.',suggestedInterpretation:{role:'ROTATION_HIGH',confidence:.9,rationale:'Ignored'}}]})
+    expect(payload.claims[0].suggestedInterpretation).toBeNull()
+    expect(signalDraftFromClaim(payload.claims[0],10,payload.source)).toMatchObject({modelImpact:'NONE'})
+  })
+
+  it('auto-approves safe context while retaining ambiguous or role evidence for review',()=>{
+    const opinion=signalDraftFromClaim({category:'VALUE',summary:'Cheap upside'},10,{})
+    const selection=signalDraftFromClaim({category:'FPL_SELECTION',summary:'In my team'},10,{})
+    const unknown=signalDraftFromClaim({category:'OTHER',summary:'Worth monitoring'},10,{})
+    const role=signalDraftFromClaim({category:'ROTATION',summary:'May not start',suggestedInterpretation:{role:'ROTATION_HIGH'}},10,{})
+    expect(shouldAutoApproveCreatorContext(opinion)).toBe(true)
+    expect(shouldAutoApproveCreatorContext(selection)).toBe(true)
+    expect(shouldAutoApproveCreatorContext(unknown)).toBe(false)
+    expect(shouldAutoApproveCreatorContext(role)).toBe(false)
   })
 
   it('treats creator bench choices as context and strips accidental role values',()=>{

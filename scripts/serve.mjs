@@ -5,7 +5,7 @@ import { createHash, randomUUID, timingSafeEqual } from 'node:crypto'
 import { gzipSync } from 'node:zlib'
 import { resolvePlayerRole } from '../src/player-signals.ts'
 import { MODEL_VERSION } from '../src/core/projection.ts'
-import { interpretManualSignalText, matchCreatorClaim, normalizeCreatorPayload, normalizeEntityText, signalDraftFromClaim } from './creator-signals.mjs'
+import { interpretManualSignalText, matchCreatorClaim, normalizeCreatorPayload, normalizeEntityText, signalDraftFromClaim, shouldAutoApproveCreatorContext } from './creator-signals.mjs'
 import { sourceTypeMatchesUrl } from '../src/signal-sources.ts'
 
 const port = Number(process.env.PORT || 4173)
@@ -798,14 +798,14 @@ async function createSignalForCreatorClaim(db,claimRow,source,gameweek){
   const signalValue=parseJson(claimRow.signalValue,{})
   const draft=signalDraftFromClaim({...claimRow,...signalValue,numericClaims:parseJson(claimRow.numericClaims,[]),relatedMentions:parseJson(claimRow.relatedMentions,[])},Number(claimRow.resolvedPlayerId),source)
   const confidence=Math.max(0,Math.min(1,Number(draft.confidence)||.65))
-  const status='PENDING'
+  const status=shouldAutoApproveCreatorContext(draft)?'VERIFIED':'PENDING'
   const observedAt=new Date().toISOString()
   const id=`creator:${String(claimRow.externalClaimId||claimRow.id).slice(0,220)}`
   const existing=await listPlayerSignals(db,{playerId:draft.playerId,limit:500})
   if(existing.some(signal=>signal.id===id))return {signal:existing.find(signal=>signal.id===id),created:false}
   const horizonMatch=String(claimRow.timeHorizon||'').toUpperCase().match(/^GW\s*(\d+)$/)
   const applicableGameweek=horizonMatch?Number(horizonMatch[1]):null
-  const signal=await createPlayerSignal(db,{id,playerId:draft.playerId,gameweek:applicableGameweek,kind:draft.kind,value:draft.value,sourceType:draft.sourceType,sourceUrl:draft.sourceUrl,evidenceSummary:draft.evidenceSummary,evidenceText:draft.evidenceText,claimClass:draft.claimClass,modelImpact:draft.modelImpact,interpretationRationale:draft.interpretationRationale,confidence,observedAt,validUntil:validityDeadline(claimRow.timeHorizon),status,actorType:'INGESTION'})
+  const signal=await createPlayerSignal(db,{id,playerId:draft.playerId,gameweek:applicableGameweek,kind:draft.kind,value:draft.value,sourceType:draft.sourceType,sourceUrl:draft.sourceUrl,evidenceSummary:draft.evidenceSummary,evidenceText:draft.evidenceText,claimClass:draft.claimClass,modelImpact:draft.modelImpact,interpretationRationale:draft.interpretationRationale,interpretationConfidence:draft.interpretationConfidence,confidence,observedAt,validUntil:validityDeadline(claimRow.timeHorizon),status,actorType:'INGESTION'})
   return {signal,created:true}
 }
 
@@ -867,7 +867,9 @@ function creatorExtractionPrompt(video,transcript){
 Return JSON with one property, "claims", containing at most 20 objects. Each object must contain:
 rawPlayerName, clubHint (string or null), positionHint (GK/DEF/MID/FWD or null), category (ROLE, ROTATION, INJURY, SET_PIECES, PENALTIES, PRESEASON, TACTICS, VALUE, STATS, TRANSFER, FPL_SELECTION, or OTHER), sentiment (POSITIVE, NEGATIVE, MIXED, or NEUTRAL), summary, evidenceText, timestampSeconds, timeHorizon (GW<number>, SHORT_TERM, MEDIUM_TERM, SEASON, or UNKNOWN), and confidence (0 to 1).
 Optional fields are depthRole (FIRST_CHOICE, ROTATION, BACKUP, OUT), startProbability, minutesIfStarting, substituteProbabilityWhenBenched, minutesIfSubstitute, numericClaims, and relatedMentions.
-Never infer numeric probabilities or minutes from vague language; include those values only when the speaker explicitly states them. A creator's own buy/sell/start/bench choice is FPL_SELECTION, not evidence of real-world minutes. Exclude sponsor reads, jokes, repetitions, and claims that are not about a named player. Use the timestamp where the evidence begins. Do not add facts not present in the transcript.
+Never combine a creator's FPL recommendation with a distinct real-world claim. When one passage contains both, emit separate objects with the same timestamp: an FPL_SELECTION object for the buy/sell/captain/avoid view, and a ROLE or ROTATION object for the minutes evidence. For example, "Foden is a good GW1 pick, set to start, but Cherki may compete for minutes" yields one FPL_SELECTION and separate role claims for "set to start" and the minutes competition.
+For claims about real-world availability or minutes, you may also add suggestedInterpretation: {role: FIRST_CHOICE|ROTATION_LOW|ROTATION_MEDIUM|ROTATION_HIGH|BACKUP|OUT, confidence: 0 to 1, rationale: string}. This is a proposed translation for the FPL model, not a claim that the creator supplied a number. Use it only when the wording has a clear real-world implication: "not nailed", "no fixed number one", or "all positions are up for grabs" means ROTATION_MEDIUM; material competition, "one of two", or "may not get regular starts" means ROTATION_HIGH; "likely/expected first choice", "no real competition", or "assured of his place" means FIRST_CHOICE. Treat a conditional transfer, a possible future signing, or a player's own FPL selection as context only unless the speaker also makes a clear current role claim. Never add an interpretation to FPL_SELECTION, value opinions, or vague player mentions.
+Never infer numeric probabilities or minutes from vague language in the source claim fields; include those values only when the speaker explicitly states them. A creator's own buy/sell/start/bench choice is FPL_SELECTION, not evidence of real-world minutes. Make a player the subject only when the evidence is actually about that player: do not turn a teammate's injury, a team-level observation, or a list of several signings into the same claim for every mentioned player. For example, "Saliba is out, so Arsenal may suffer" is not an injury claim for Gabriel. Exclude sponsor reads, jokes, repetitions, and claims that are not about a named player. Use the timestamp where the evidence begins. Do not add facts not present in the transcript.
 
 Video: ${video.title}
 Creator: ${video.source_name}

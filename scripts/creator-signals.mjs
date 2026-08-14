@@ -66,7 +66,22 @@ function youtubeExternalId(url){
 const allowedCategories=new Set(['ROLE','ROTATION','INJURY','SET_PIECES','PENALTIES','PRESEASON','TACTICS','VALUE','STATS','TRANSFER','FPL_SELECTION','OTHER'])
 const allowedSentiments=new Set(['POSITIVE','NEGATIVE','MIXED','NEUTRAL'])
 const allowedDepthRoles=new Set(['FIRST_CHOICE','ROTATION','BACKUP','OUT'])
+const allowedInterpretationRoles=new Set(['FIRST_CHOICE','ROTATION_LOW','ROTATION_MEDIUM','ROTATION_HIGH','BACKUP','OUT'])
 const fplSelectionPattern=/\b(bench boost|my bench|gw\s*\d+\s+bench|bench goalkeeper|included[^.]*bench|my team|my squad|i(?:'m| am) going to (?:bench|start|buy|sell|own|pick)|selected as[^.]*bench)\b/i
+
+const interpretationRoleValues={
+  FIRST_CHOICE:{depthRole:'FIRST_CHOICE',startProbability:.88},
+  ROTATION_LOW:{depthRole:'ROTATION',startProbability:.70},
+  ROTATION_MEDIUM:{depthRole:'ROTATION',startProbability:.55},
+  ROTATION_HIGH:{depthRole:'ROTATION',startProbability:.40},
+  BACKUP:{depthRole:'BACKUP',startProbability:.15},
+  OUT:{depthRole:'OUT',startProbability:0},
+}
+const autoApprovedContextClasses=new Set(['FPL_SELECTION','CREATOR_RATING','VALUE_OPINION','STATISTICAL_CONTEXT'])
+
+export function shouldAutoApproveCreatorContext(draft){
+  return draft?.modelImpact==='NONE'&&autoApprovedContextClasses.has(draft.claimClass)
+}
 
 export function normalizeCreatorPayload(payload){
   if(!payload||typeof payload!=='object')throw new Error('JSON object payload is required')
@@ -96,6 +111,13 @@ export function normalizeCreatorPayload(payload){
     const timestampSeconds=raw.timestampSeconds!==null&&raw.timestampSeconds!==undefined&&Number.isFinite(Number(raw.timestampSeconds))?Math.max(0,Math.round(Number(raw.timestampSeconds))):null
     const depthRole=category!=='FPL_SELECTION'&&allowedDepthRoles.has(String(raw.depthRole||'').toUpperCase())?String(raw.depthRole).toUpperCase():null
     const startProbability=category!=='FPL_SELECTION'&&typeof raw.startProbability==='number'?clamp(raw.startProbability):null
+    const rawInterpretation=raw.suggestedInterpretation&&typeof raw.suggestedInterpretation==='object'?raw.suggestedInterpretation:null
+    const interpretationRole=category!=='FPL_SELECTION'&&allowedInterpretationRoles.has(String(rawInterpretation?.role||'').toUpperCase())?String(rawInterpretation.role).toUpperCase():null
+    const suggestedInterpretation=interpretationRole?{
+      role:interpretationRole,
+      confidence:typeof rawInterpretation.confidence==='number'?clamp(rawInterpretation.confidence):null,
+      rationale:String(rawInterpretation.rationale||'').replace(/\s+/g,' ').trim().slice(0,500)||null,
+    }:null
     const externalClaimId=String(raw.externalClaimId||`${source.platform}:${source.externalId}:${timestampSeconds??index}:${normalizeEntityText(rawPlayerName)}:${category}`).slice(0,300)
     return {
       externalClaimId,rawPlayerName,clubHint:raw.clubHint||raw.club||null,positionHint:raw.positionHint||null,
@@ -107,6 +129,7 @@ export function normalizeCreatorPayload(payload){
       substituteProbabilityWhenBenched:category!=='FPL_SELECTION'&&typeof raw.substituteProbabilityWhenBenched==='number'?clamp(raw.substituteProbabilityWhenBenched):null,
       minutesIfSubstitute:category!=='FPL_SELECTION'&&typeof raw.minutesIfSubstitute==='number'?clamp(raw.minutesIfSubstitute,0,45):null,
       confidence:typeof raw.confidence==='number'?clamp(raw.confidence):null,
+      suggestedInterpretation,
     }
   }).filter(Boolean)
   if(!claims.length)throw new Error('No valid claims were supplied')
@@ -148,9 +171,11 @@ export function matchCreatorClaim(claim,catalog,aliases=[]){
 
 export function signalDraftFromClaim(claim,playerId,source,defaultConfidence=.65){
   const value={note:claim.summary}
+  const inferredRole=claim.suggestedInterpretation?.role&&interpretationRoleValues[claim.suggestedInterpretation.role]
   for(const key of ['startProbability','minutesIfStarting','substituteProbabilityWhenBenched','minutesIfSubstitute','depthRole']){
     if(claim[key]!==null&&claim[key]!==undefined)value[key]=claim[key]
   }
+  if(!Object.keys(value).some(key=>key!=='note')&&inferredRole)Object.assign(value,inferredRole)
   const categoryKinds={ROLE:'EXPECTED_ROLE',ROTATION:'DEPTH_CHART',INJURY:'INJURY',SET_PIECES:'SET_PIECES',PENALTIES:'PENALTIES',PRESEASON:'PRESEASON_MINUTES',TACTICS:'TACTICAL_ROLE',VALUE:'VALUE_OPINION',STATS:'STATISTICAL_CLAIM',TRANSFER:'TRANSFER_OPINION',FPL_SELECTION:'VALUE_OPINION',OTHER:'VALUE_OPINION'}
   const claimClasses={ROLE:'REAL_WORLD_ROLE',ROTATION:'ROTATION',INJURY:'INJURY',SET_PIECES:'SET_PIECES',PENALTIES:'PENALTIES',PRESEASON:'REAL_WORLD_ROLE',TACTICS:'REAL_WORLD_ROLE',VALUE:'VALUE_OPINION',STATS:'STATISTICAL_CONTEXT',TRANSFER:'VALUE_OPINION',FPL_SELECTION:'FPL_SELECTION',OTHER:'UNKNOWN'}
   const modelImpact=['startProbability','minutesIfStarting','substituteProbabilityWhenBenched','minutesIfSubstitute','depthRole'].some(key=>value[key]!=null)?'ROLE':'NONE'
@@ -160,7 +185,12 @@ export function signalDraftFromClaim(claim,playerId,source,defaultConfidence=.65
   return {
     playerId,kind:categoryKinds[claim.category]||'VALUE_OPINION',value,sourceType:source.signalSourceType||'YOUTUBE_TRANSCRIPT',sourceUrl:timestampUrl,
     evidenceSummary:claim.summary,evidenceText:claim.evidenceText||claim.summary,claimClass:claimClasses[claim.category]||'UNKNOWN',modelImpact,
-    interpretationRationale:modelImpact==='ROLE'?'Structured real-world role claim extracted from the source.':'Creator context only; no projection adjustment proposed.',
+    interpretationRationale:modelImpact==='ROLE'
+      ? inferredRole
+        ? `LLM interpretation of the creator's wording: ${claim.suggestedInterpretation.rationale||`mapped to ${claim.suggestedInterpretation.role.replace(/_/g,' ').toLowerCase()} risk`}. This is a proposed model translation, not a numerical claim from the creator.`
+        : 'Structured real-world role claim extracted from the source.'
+      : 'Creator context only; no projection adjustment proposed.',
+    interpretationConfidence:inferredRole?(claim.suggestedInterpretation.confidence??claim.confidence??defaultConfidence):(claim.confidence??defaultConfidence),
     confidence:claim.confidence??defaultConfidence,
   }
 }
