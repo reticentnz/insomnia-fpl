@@ -403,16 +403,18 @@ function getInitials(name: string) {
 }
 
 function formatDeadlineText(deadlineIso: string | null): string {
+  const remaining = formatDeadlineRemaining(deadlineIso);
+  return remaining === "Deadline passed" ? remaining : `${remaining} until deadline`;
+}
+
+function formatDeadlineRemaining(deadlineIso: string | null): string {
   const targetIso = deadlineIso || "2026-08-21T17:30:00.000Z";
   const deadlineMs = new Date(targetIso).getTime();
   const diffMs = deadlineMs - Date.now();
   if (diffMs <= 0) return "Deadline passed";
   const diffHours = Math.floor(diffMs / (1000 * 60 * 60));
-  if (diffHours >= 48) {
-    const diffDays = Math.floor(diffHours / 24);
-    return `${diffDays}d until deadline`;
-  }
-  return `${diffHours}h until deadline`;
+  if (diffHours >= 48) return `${Math.floor(diffHours / 24)} days`;
+  return `${diffHours} hours`;
 }
 
 function formatOperationalTime(value?: string | null) {
@@ -2164,6 +2166,7 @@ function App() {
           <LeaguesView
             fplAccount={fplAccount}
             currentGameweek={currentGameweek ?? 1}
+            deadlineIso={deadlineTime}
             catalog={catalog}
             userSquad={squad}
             onSyncAccount={(id) => syncAccount(id)}
@@ -6123,12 +6126,14 @@ function SignalRiskStrip({ players }: { players: Player[] }) {
 function LeaguesView({
   fplAccount,
   currentGameweek,
+  deadlineIso,
   catalog,
   userSquad,
   onSyncAccount,
 }: {
   fplAccount: FplAccount | null;
   currentGameweek: number;
+  deadlineIso: string | null;
   catalog: Player[];
   userSquad: Player[];
   onSyncAccount?: (id?: number) => void;
@@ -6513,7 +6518,7 @@ function LeaguesView({
             <div className="preseason-banner" style={{ background: "rgba(59, 130, 246, 0.12)", border: "1px solid rgba(59, 130, 246, 0.3)", borderRadius: "10px", padding: "12px 16px", marginBottom: "16px", display: "flex", alignItems: "center", gap: "12px" }}>
               <span style={{ fontSize: "20px" }}>🔒</span>
               <div>
-                <b style={{ color: "#60a5fa", fontSize: "14px" }}>Pre-Season Mode (Gameweek 1 Deadline in 11 days)</b>
+                <b style={{ color: "#60a5fa", fontSize: "14px" }}>Pre-Season Mode (Gameweek 1 Deadline in {formatDeadlineRemaining(deadlineIso)})</b>
                 <p style={{ margin: "2px 0 0 0", fontSize: "13px", color: "#cbd5e1" }}>
                   FPL hides rival team picks until the Gameweek 1 deadline. Standings display all <b>{details.standings.length} members</b> who have joined your league so far. Live points, transfers, chip burn, and Effective Ownership (EO) will calculate live once GW1 kicks off!
                 </p>
