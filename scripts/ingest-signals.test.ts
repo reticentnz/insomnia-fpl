@@ -88,9 +88,11 @@ describe('WP-07 optional source ingestion', () => {
   })
 
   it('derives expected goals from the H2H and totals markets returned by the featured endpoint', () => {
-    expect(deriveExpectedGoals({ homeWin: .5, draw: .25, awayWin: .25, over25: .5, btts: null })).toMatchObject({
-      derivationMethod: 'POISSON_MARKETS_V1',
-    })
+    const expected = deriveExpectedGoals({ homeWin: .5, draw: .25, awayWin: .25, over25: .5, btts: null })
+    expect(expected).toMatchObject({ derivationMethod: 'POISSON_MARKETS_V2' })
+    expect(expected.homeExpectedGoals).toBeGreaterThan(expected.awayExpectedGoals)
+    expect(expected.homeExpectedGoals).toBeLessThan(3)
+    expect(expected.awayExpectedGoals).toBeGreaterThan(.4)
   })
 
   it('records reviewable underlying statuses and never auto-selects ambiguous identities', async () => {
@@ -134,7 +136,7 @@ describe('WP-07 optional source ingestion', () => {
     await ingestMarketEvents(db, { season: '2026/27', capturedAt: '2026-08-15T12:31:00Z', events: [marketEvent([h2h, totals])] })
     const rows = (await db.query('SELECT "home_expected_goals", "away_expected_goals", "derivation_method" FROM "MarketFixtureObservation" ORDER BY "captured_at"')).rows
     expect(rows[0]).toEqual({ home_expected_goals: null, away_expected_goals: null, derivation_method: null })
-    expect(rows[1]).toMatchObject({ derivation_method: 'POISSON_MARKETS_V1' })
+    expect(rows[1]).toMatchObject({ derivation_method: 'POISSON_MARKETS_V2' })
     expect(rows[1].home_expected_goals).toBeGreaterThan(0)
     expect(rows[1].away_expected_goals).toBeGreaterThan(0)
   })

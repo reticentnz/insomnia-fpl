@@ -91,7 +91,7 @@ describe('WP-05 projection input catalogue', () => {
     await ingestMarketEvents(db, { season: '2026/27', events: [market], capturedAt: '2026-08-15T12:30:00Z' })
     const withMarket = await assembleProjectionInputCatalog(db, { asOf: '2026-08-15T13:00:00Z' })
     const selected = withMarket.players.find(player => player.fplId === 10)!.fixtures.find(fixture => fixture.fplId === 100)!.market
-    expect(selected).toMatchObject({ derivationMethod: 'POISSON_MARKETS_V1', capturedAt: '2026-08-15T12:30:00Z', ageMs: 1_800_000 })
+    expect(selected).toMatchObject({ derivationMethod: 'POISSON_MARKETS_V2', capturedAt: '2026-08-15T12:30:00Z', ageMs: 1_800_000 })
     expect(selectStrengthMethod({ market: selected, official: { attack: 1200, defence: 1100 } })).toBe('MARKET_XG')
 
     await db.query('DELETE FROM "MarketFixtureObservation"')

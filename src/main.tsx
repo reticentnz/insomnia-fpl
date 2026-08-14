@@ -9054,7 +9054,7 @@ function PlayerDrawer({
           </span>
           <div>
             <div className="hero-stat-value">
-              {horizonProjection(player, horizon)} <small>pts</small>
+              {horizonProjection(player, horizon).toFixed(1)} <small>pts</small>
             </div>
             <div className="hero-stat-meta">
               {horizon}-GW projected score · {roleProjection.expectedMinutes.toFixed(0)} expected mins
@@ -9188,19 +9188,19 @@ function PlayerDrawer({
           <div className="stat-card">
             <span className="stat-label">1 GW</span>
             <span className="stat-val">
-              {horizonProjection(player, 1)} <small>pts</small>
+              {horizonProjection(player, 1).toFixed(1)} <small>pts</small>
             </span>
           </div>
           <div className="stat-card">
             <span className="stat-label">3 GW</span>
             <span className="stat-val">
-              {horizonProjection(player, 3)} <small>pts</small>
+              {horizonProjection(player, 3).toFixed(1)} <small>pts</small>
             </span>
           </div>
           <div className="stat-card">
             <span className="stat-label">5 GW</span>
             <span className="stat-val">
-              {horizonProjection(player, 5)} <small>pts</small>
+              {horizonProjection(player, 5).toFixed(1)} <small>pts</small>
             </span>
           </div>
           <div className="stat-card">

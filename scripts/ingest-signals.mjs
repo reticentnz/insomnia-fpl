@@ -8,7 +8,7 @@ import { failFeedRun, hashPayload, startFeedRun, succeedFeedRun } from './feed-r
 
 export const UNDERLYING_SOURCE = 'UNDERSTAT'
 export const MARKET_SOURCE = 'ODDS_MARKET'
-export const MARKET_XG_METHOD = 'POISSON_MARKETS_V1'
+export const MARKET_XG_METHOD = 'POISSON_MARKETS_V2'
 
 const defaultCacheDir = process.env.FPL_DATA_CACHE_FILE
   ? path.join(path.dirname(process.env.FPL_DATA_CACHE_FILE), 'signal-feeds')
@@ -168,17 +168,16 @@ export function cleanSheetProbabilities(bookmakers, homeTeam, awayTeam, expected
   }
 }
 
-function poisson(value, lambda) {
+function poissonProbability(value, lambda) {
   let term = Math.exp(-lambda)
-  let sum = term
-  for (let index = 1; index <= value; index += 1) { term *= lambda / index; sum += term }
-  return sum
+  for (let index = 1; index <= value; index += 1) term *= lambda / index
+  return term
 }
 
 function marketMetrics(home, away) {
   let homeWin = 0; let draw = 0; let over25 = 0; let btts = 0
   for (let homeGoals = 0; homeGoals <= 12; homeGoals += 1) for (let awayGoals = 0; awayGoals <= 12; awayGoals += 1) {
-    const probability = poisson(homeGoals, home) * poisson(awayGoals, away)
+    const probability = poissonProbability(homeGoals, home) * poissonProbability(awayGoals, away)
     if (homeGoals > awayGoals) homeWin += probability
     if (homeGoals === awayGoals) draw += probability
     if (homeGoals + awayGoals > 2) over25 += probability
