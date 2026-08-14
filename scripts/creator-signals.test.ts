@@ -71,6 +71,21 @@ describe('creator signal ingestion helpers',()=>{
     expect(draft.interpretationRationale).toContain('proposed model translation')
   })
 
+  it('supplies a reviewable fallback when clear rotation wording lacks the optional interpretation',()=>{
+    const payload=normalizeCreatorPayload({source:{url:'https://youtu.be/abc'},claims:[{rawPlayerName:'Wood',category:'ROTATION',summary:'Wood is 34 and may not get regular starts anymore.'}]})
+    expect(payload.claims[0].suggestedInterpretation).toMatchObject({role:'ROTATION_HIGH'})
+    expect(signalDraftFromClaim(payload.claims[0],10,payload.source)).toMatchObject({modelImpact:'ROLE',value:{depthRole:'ROTATION',startProbability:.4}})
+  })
+
+  it('derives only explicit availability and secure-role translations from creator wording',()=>{
+    const payload=normalizeCreatorPayload({source:{url:'https://youtu.be/abc'},claims:[
+      {rawPlayerName:'Gomez',category:'INJURY',summary:'Gomez is going to miss the start of the season.'},
+      {rawPlayerName:'Nunez',category:'ROLE',summary:'Nunez has no real competition for the right-back spot.'},
+      {rawPlayerName:'Isak',category:'INJURY',summary:'Isak has a poor historical injury record.'},
+    ]})
+    expect(payload.claims.map(claim=>claim.suggestedInterpretation?.role||null)).toEqual(['OUT','FIRST_CHOICE',null])
+  })
+
   it('does not permit a model interpretation for creator FPL selections',()=>{
     const payload=normalizeCreatorPayload({source:{url:'https://youtu.be/abc'},claims:[{rawPlayerName:'Foden',category:'FPL_SELECTION',summary:'I am benching Foden.',suggestedInterpretation:{role:'ROTATION_HIGH',confidence:.9,rationale:'Ignored'}}]})
     expect(payload.claims[0].suggestedInterpretation).toBeNull()

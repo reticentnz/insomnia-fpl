@@ -620,6 +620,10 @@ function App() {
   const [aiModalOpen, setAiModalOpen] = useState(false);
   const [squadChallenge, setSquadChallenge] = useState<SquadChallengeResult | null>(null);
   const [stagedSignalReviews, setStagedSignalReviews] = useState<Record<string, "VERIFIED" | "REJECTED">>({});
+  // SignalsTab keeps its own query result so it can filter and refresh independently.
+  // Advance this only after the server has confirmed a batch, so that tab replaces
+  // its stale PENDING rows immediately without hiding a review that failed to save.
+  const [signalReviewRefreshToken, setSignalReviewRefreshToken] = useState(0);
   const [applyingBatch, setApplyingBatch] = useState(false);
   const [recomputeRequest, setRecomputeRequest] = useState<{ triggeredAt: number; baselineRunId: string | null } | null>(null);
   const [recomputeReadyAt, setRecomputeReadyAt] = useState<number | null>(null);
@@ -1619,6 +1623,7 @@ function App() {
             }
           : current,
       );
+      setSignalReviewRefreshToken((token) => token + 1);
       setStagedSignalReviews({});
       const data = await fetchLiveCatalog();
       setLivePlayers(data.players);
@@ -2175,6 +2180,7 @@ function App() {
             onSelectPlayer={setPlayerDetail}
             onReviewSignal={reviewSquadSignal}
             stagedSignalReviews={stagedSignalReviews}
+            signalReviewRefreshToken={signalReviewRefreshToken}
             onUnstageSignal={unstageSignalReview}
             onApplyBatch={applyBatchReview}
             applyingBatch={applyingBatch}
@@ -5097,6 +5103,7 @@ function SignalsTab({
   onSelectPlayer,
   onReviewSignal,
   stagedSignalReviews,
+  signalReviewRefreshToken,
   onUnstageSignal,
   onApplyBatch,
   applyingBatch,
@@ -5111,6 +5118,7 @@ function SignalsTab({
   onSelectPlayer: (p: Player) => void;
   onReviewSignal: (signal: PlayerSignal, status: "VERIFIED" | "REJECTED") => void;
   stagedSignalReviews: Record<string, "VERIFIED" | "REJECTED">;
+  signalReviewRefreshToken: number;
   onUnstageSignal: (signalId: string | number) => void;
   onApplyBatch: () => void;
   applyingBatch: boolean;
@@ -5151,6 +5159,7 @@ function SignalsTab({
   const [interpretationSaving, setInterpretationSaving] = useState(false);
   const [deletingSignalId, setDeletingSignalId] = useState<string | number | null>(null);
   const [deleteSignalError, setDeleteSignalError] = useState<string | null>(null);
+  const seenReviewRefreshToken = useRef(signalReviewRefreshToken);
 
   const playerMap = useMemo(() => {
     const m = new Map<number, Player>();
@@ -5165,6 +5174,15 @@ function SignalsTab({
       .catch(() => {})
       .finally(() => setLoading(false));
   }, []);
+
+  // Applying a staged review happens above this tab. Refresh this tab's local
+  // collection as soon as that batch succeeds, rather than waiting for a tab
+  // navigation to mount it again.
+  useEffect(() => {
+    if (seenReviewRefreshToken.current === signalReviewRefreshToken) return;
+    seenReviewRefreshToken.current = signalReviewRefreshToken;
+    loadSignals();
+  }, [loadSignals, signalReviewRefreshToken]);
 
   const loadCreatorClaims = useCallback(() => {
     fetchCreatorClaims().then((claims) => {
@@ -5337,7 +5355,10 @@ function SignalsTab({
         rationale: `User-adjusted interpretation: ${depthRole.replace(/_/g, " ").toLowerCase()} with ${Math.round(startProbability * 100)}% start chance.`,
       });
       setEditingSignalId(null);
-      loadSignals();
+      // Keep the existing card mounted. A full reload briefly replaces the
+      // feed with its loading state, collapsing the page and snapping a
+      // manager reviewing a lower item back to the top.
+      setSignals((current) => current.map((item) => item.id === updated.id ? updated : item));
       if (affectedModel || (updated.status === "VERIFIED" && signalCarriesProjectionImpact(updated))) {
         await onModelSignalMutation();
       }
@@ -5367,7 +5388,7 @@ function SignalsTab({
         finalizeContext: true,
       });
       setEditingSignalId(null);
-      loadSignals();
+      setSignals((current) => current.map((item) => item.id === updated.id ? updated : item));
       if (affectedModel || (updated.status === "VERIFIED" && signalCarriesProjectionImpact(updated))) {
         await onModelSignalMutation();
       }
@@ -5837,7 +5858,18 @@ function SignalsTab({
             const interpretation = signal.interpretation;
             const modelImpact = interpretation?.modelImpact || (typeof signal.value?.startProbability === "number" || Boolean(signal.value?.depthRole) ? "ROLE" : "NONE");
             const claimClass = interpretation?.claimClass || signal.claimClass || "UNKNOWN";
-            const needsInterpretation = modelImpact === "NONE" && (claimClass === "UNKNOWN" || claimClass === "AVAILABILITY") && signal.status === "PENDING";
+            const interpretationText = `${signal.evidenceSummary || ""} ${signal.evidenceText || ""}`;
+            const tacticalMinutesClaim = signal.kind === "TACTICAL_ROLE"
+              && /\b(not (?:fully )?nailed|no (?:fixed )?number one|all positions are up for grabs|may not start|set to start|no real competition|assured of (?:his|her|their) place)\b/i.test(interpretationText);
+            // A pending real-world role, rotation, or injury claim has not been
+            // resolved merely because the extractor did not attach calibrated
+            // minutes fields.  It needs a manager choice; only opinions and
+            // other explicitly non-model evidence are context-only.
+            const needsInterpretation = modelImpact === "NONE"
+              && signal.status === "PENDING"
+              && (["UNKNOWN", "AVAILABILITY", "ROTATION", "INJURY"].includes(claimClass)
+                || (claimClass === "REAL_WORLD_ROLE" && signal.kind !== "TACTICAL_ROLE")
+                || tacticalMinutesClaim);
             const contextOnly = modelImpact === "NONE" && !needsInterpretation;
             const rawProb = interpretation?.value?.startProbability ?? signal.value?.startProbability;
             const normProb = typeof rawProb === "number" ? (rawProb > 1 ? rawProb / 100 : rawProb) : null;
@@ -6025,11 +6057,13 @@ function SignalsTab({
                   </div>
                 ) : signal.status === "PENDING" && (
                   <div className="signal-actions">
-                    <button className="dark-btn" disabled={applyingBatch || interpretationSaving} onClick={() => void handleReview(signal, "VERIFIED")}>
-                      ✓ Accept interpretation
-                    </button>
+                    {!needsInterpretation && (
+                      <button className="dark-btn" disabled={applyingBatch || interpretationSaving} onClick={() => void handleReview(signal, "VERIFIED")}>
+                        ✓ Accept interpretation
+                      </button>
+                    )}
                     <button className="ghost-btn" disabled={interpretationSaving} onClick={() => setEditingSignalId(editingSignalId === signal.id ? null : signal.id)}>
-                      Change interpretation
+                      {needsInterpretation ? "Choose interpretation" : "Change interpretation"}
                     </button>
                     <button
                       className="ghost-btn"

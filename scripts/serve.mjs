@@ -214,8 +214,10 @@ function auxiliaryRefreshDefinition(id) {
     source: null,
     label: 'YouTube creator feeds',
     lastCompleted: async () => {
-      const result = await (await getDb()).query(`SELECT MAX(COALESCE("processed_at","updated_at")) AS completed_at FROM "CreatorVideo"`)
-      return result.rows[0]?.completed_at || null
+      // A successful empty poll creates no CreatorVideo row, so deriving the
+      // schedule from videos would immediately re-run the poll forever.
+      const latest = await latestSuccessfulFeedRun(await getDb(), 'CREATOR')
+      return latest?.finished_at || latest?.started_at || null
     },
     work: refreshNativeCreatorFeeds,
   }

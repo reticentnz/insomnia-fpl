@@ -77,6 +77,29 @@ const interpretationRoleValues={
   BACKUP:{depthRole:'BACKUP',startProbability:.15},
   OUT:{depthRole:'OUT',startProbability:0},
 }
+
+// The model is asked to provide this translation, but it is optional in the
+// extraction JSON and some providers routinely omit optional nested objects.
+// Keep the fallback deliberately narrow: it only converts wording for which
+// the ingestion prompt already defines an unambiguous model meaning.  The
+// result remains PENDING for manager approval.
+function inferSuggestedInterpretation(category, text){
+  const evidence=String(text||'')
+  if(category==='INJURY'&&/\b(ruled out|unavailable|will miss|going to miss|set to miss|out for (?:weeks|months)|miss the start of the season)\b/i.test(evidence)){
+    return {role:'OUT',confidence:.75,rationale:'The creator explicitly says the player will be unavailable.'}
+  }
+  if(!['ROLE','ROTATION','TACTICS'].includes(category))return null
+  if(/\b(may not (?:get regular starts?|start)|not expected to (?:get )?regular starts?|material competition|one of two)\b/i.test(evidence)){
+    return {role:'ROTATION_HIGH',confidence:.65,rationale:'The creator describes material competition or a lack of regular starts.'}
+  }
+  if(/\b(not (?:fully )?nailed|no (?:fixed )?number one|all positions are up for grabs)\b/i.test(evidence)){
+    return {role:'ROTATION_MEDIUM',confidence:.6,rationale:'The creator describes an unsettled starting role.'}
+  }
+  if(/\b(?:looks )?(?:set|likely|expected) to (?:be )?(?:a )?first[ -]?choice|(?:is )?set to start|no real competition|assured of (?:his|her|their) place\b/i.test(evidence)){
+    return {role:'FIRST_CHOICE',confidence:.7,rationale:'The creator explicitly describes a secure starting role.'}
+  }
+  return null
+}
 const autoApprovedContextClasses=new Set(['FPL_SELECTION','CREATOR_RATING','VALUE_OPINION','STATISTICAL_CONTEXT'])
 
 export function shouldAutoApproveCreatorContext(draft){
@@ -111,7 +134,8 @@ export function normalizeCreatorPayload(payload){
     const timestampSeconds=raw.timestampSeconds!==null&&raw.timestampSeconds!==undefined&&Number.isFinite(Number(raw.timestampSeconds))?Math.max(0,Math.round(Number(raw.timestampSeconds))):null
     const depthRole=category!=='FPL_SELECTION'&&allowedDepthRoles.has(String(raw.depthRole||'').toUpperCase())?String(raw.depthRole).toUpperCase():null
     const startProbability=category!=='FPL_SELECTION'&&typeof raw.startProbability==='number'?clamp(raw.startProbability):null
-    const rawInterpretation=raw.suggestedInterpretation&&typeof raw.suggestedInterpretation==='object'?raw.suggestedInterpretation:null
+    const rawInterpretation=(raw.suggestedInterpretation&&typeof raw.suggestedInterpretation==='object'?raw.suggestedInterpretation:null)
+      ||inferSuggestedInterpretation(category,contextText)
     const interpretationRole=category!=='FPL_SELECTION'&&allowedInterpretationRoles.has(String(rawInterpretation?.role||'').toUpperCase())?String(rawInterpretation.role).toUpperCase():null
     const suggestedInterpretation=interpretationRole?{
       role:interpretationRole,
