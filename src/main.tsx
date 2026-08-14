@@ -271,6 +271,34 @@ let activeLockedIds: number[] = [];
 let activeDraftPlan: DraftImprovementPlan | null = null;
 let activeDraftPlanLoading = false;
 let activeApplyDraftPlan = () => {};
+
+const SIGNAL_SEEN_STORAGE_KEY = "insomnia-fpl-seen-signal-ids";
+
+function readSeenSignalIds(): Set<string> {
+  try {
+    const stored = JSON.parse(window.localStorage.getItem(SIGNAL_SEEN_STORAGE_KEY) || "[]");
+    return new Set(Array.isArray(stored) ? stored.map(String) : []);
+  } catch {
+    return new Set();
+  }
+}
+
+function writeSeenSignalIds(ids: Set<string>) {
+  try {
+    window.localStorage.setItem(SIGNAL_SEEN_STORAGE_KEY, JSON.stringify(Array.from(ids).slice(-1000)));
+  } catch {
+    // A private browsing context may reject localStorage; the UI still works for this session.
+  }
+}
+
+function activePlayerSignals(signals: PlayerSignal[], playerId: number, now = Date.now()) {
+  return signals.filter((signal) =>
+    signal.playerId === playerId &&
+    (signal.status === "PENDING" || signal.status === "VERIFIED") &&
+    new Date(signal.validUntil).getTime() >= now,
+  );
+}
+
 function PlayerChip({
   p,
   sub = false,
@@ -279,6 +307,8 @@ function PlayerChip({
   isSwapSource = false,
   isSwapTarget = false,
   isLocked = false,
+  signalCount = 0,
+  unreadSignalCount = 0,
 }: {
   p: Player;
   sub?: boolean;
@@ -287,6 +317,8 @@ function PlayerChip({
   isSwapSource?: boolean;
   isSwapTarget?: boolean;
   isLocked?: boolean;
+  signalCount?: number;
+  unreadSignalCount?: number;
 }) {
   const ticker = getPlayerFixtureTicker(p, 5);
   const pAlert = priceMovementAlert(p);
@@ -650,6 +682,8 @@ function App() {
   const [aiProvider, setAiProvider] = useState("gemini");
   const [aiModalOpen, setAiModalOpen] = useState(false);
   const [squadChallenge, setSquadChallenge] = useState<SquadChallengeResult | null>(null);
+  const [playerSignals, setPlayerSignals] = useState<PlayerSignal[]>([]);
+  const [seenSignalIds, setSeenSignalIds] = useState<Set<string>>(() => readSeenSignalIds());
   const [stagedSignalReviews, setStagedSignalReviews] = useState<Record<string, "VERIFIED" | "REJECTED">>({});
   // SignalsTab keeps its own query result so it can filter and refresh independently.
   // Advance this only after the server has confirmed a batch, so that tab replaces
@@ -668,6 +702,35 @@ function App() {
   const [copiedExport, setCopiedExport] = useState(false);
   const [initialClear, setInitialClear] = useState(false);
   const [lockedIds, setLockedIds] = useState<number[]>([]);
+  const refreshPlayerSignals = useCallback(() => {
+    fetchAllSignals({ limit: 500 }).then(setPlayerSignals).catch(() => {});
+  }, []);
+  useEffect(() => {
+    refreshPlayerSignals();
+    const timer = window.setInterval(refreshPlayerSignals, 30_000);
+    return () => window.clearInterval(timer);
+  }, [refreshPlayerSignals, signalReviewRefreshToken]);
+  const signalCounts = useMemo(() => {
+    const counts: Record<number, number> = {};
+    playerSignals.forEach((signal) => {
+      if (activePlayerSignals(playerSignals, signal.playerId).some((item) => item.id === signal.id)) counts[signal.playerId] = (counts[signal.playerId] || 0) + 1;
+    });
+    return counts;
+  }, [playerSignals]);
+  const unreadSignalCounts = useMemo(() => {
+    const counts: Record<number, number> = {};
+    playerSignals.forEach((signal) => {
+      if (!seenSignalIds.has(String(signal.id)) && activePlayerSignals(playerSignals, signal.playerId).some((item) => item.id === signal.id)) counts[signal.playerId] = (counts[signal.playerId] || 0) + 1;
+    });
+    return counts;
+  }, [playerSignals, seenSignalIds]);
+  const handleSelectPlayer = useCallback((player: Player) => {
+    const next = new Set(seenSignalIds);
+    activePlayerSignals(playerSignals, player.id).forEach((signal) => next.add(String(signal.id)));
+    setSeenSignalIds(next);
+    writeSeenSignalIds(next);
+    setPlayerDetail(player);
+  }, [playerSignals, seenSignalIds]);
   const debugEnabled = useMemo(
     () => new URLSearchParams(window.location.search).has("debug"),
     [],
@@ -2143,7 +2206,7 @@ function App() {
             catalog={catalog}
             squad={squad}
             horizon={horizon}
-            onSelectPlayer={setPlayerDetail}
+            onSelectPlayer={handleSelectPlayer}
             onApplyTransfer={requestTransfer}
           />
         ) : tab === "Model Debug" ? (
@@ -2159,7 +2222,7 @@ function App() {
               setInitialClear(false);
               setEditing(true);
             }}
-            onSelectPlayer={setPlayerDetail}
+            onSelectPlayer={handleSelectPlayer}
             challenge={squadChallenge}
             challengeLoading={challengeLoading}
             challengeError={challengeError}
@@ -2190,6 +2253,8 @@ function App() {
             forecastLoading={draftPlanLoading || !forecastSummary || forecastSummary.horizon !== horizon}
             leagueCoverage={canonicalRecommendation?.league?.coverageByFplId}
             leagueName={canonicalRecommendation?.league?.leagueName}
+            signalCounts={signalCounts}
+            unreadSignalCounts={unreadSignalCounts}
           />
         ) : tab === "Leagues" ? (
           <LeaguesView
@@ -4546,8 +4611,16 @@ function EvidencePanel({
                       {xPts !== null && (
                         <span style={{ fontSize: "13px", color: "#38bdf8", fontWeight: 600 }}>
                           {xPts.toFixed(1)} xPts over {horizon} GWs
-                        </span>
-                      )}
+            </span>
+          )}
+          {signalCount > 0 && (
+            <span
+              className={`player-signal-count${unreadSignalCount > 0 ? " unread" : ""}`}
+              title={`${signalCount} active signal${signalCount === 1 ? "" : "s"}${unreadSignalCount ? `, ${unreadSignalCount} new` : ""}`}
+            >
+              {signalCount}{unreadSignalCount > 0 ? <i aria-hidden="true" /> : null}
+            </span>
+          )}
                       <span
                         className={`pill ${
                           effectiveStatus === "VERIFIED"
@@ -4696,6 +4769,8 @@ function MyTeamV2({
   forecastLoading = false,
   leagueCoverage,
   leagueName,
+  signalCounts,
+  unreadSignalCounts,
 }: {
   squad: Player[];
   xi: Player[];
@@ -4735,6 +4810,8 @@ function MyTeamV2({
   forecastLoading?: boolean;
   leagueCoverage?: Record<string, number>;
   leagueName?: string | null;
+  signalCounts: Record<number, number>;
+  unreadSignalCounts: Record<number, number>;
 }) {
   const starters = new Set(xi.map((p) => p.id));
   const bench = benchOrder(horizon, squad, xi);
@@ -4931,6 +5008,11 @@ function MyTeamV2({
                       </span>
                       <span>
                         <b>{p.name}</b>
+                        {signalCounts[p.id] > 0 && (
+                          <span className={`player-signal-count${unreadSignalCounts[p.id] > 0 ? " unread" : ""}`} title={`${signalCounts[p.id]} active signal${signalCounts[p.id] === 1 ? "" : "s"}${unreadSignalCounts[p.id] ? `, ${unreadSignalCounts[p.id]} new` : ""}`}>
+                            {signalCounts[p.id]}{unreadSignalCounts[p.id] > 0 ? <i aria-hidden="true" /> : null}
+                          </span>
+                        )}
                         <small>
                           {p.club} · £{p.price.toFixed(1)}m
                         </small>
@@ -4956,6 +5038,11 @@ function MyTeamV2({
                 </span>
                 <span>
                   <b>{p.name}</b>
+                  {signalCounts[p.id] > 0 && (
+                    <span className={`player-signal-count${unreadSignalCounts[p.id] > 0 ? " unread" : ""}`} title={`${signalCounts[p.id]} active signal${signalCounts[p.id] === 1 ? "" : "s"}${unreadSignalCounts[p.id] ? `, ${unreadSignalCounts[p.id]} new` : ""}`}>
+                      {signalCounts[p.id]}{unreadSignalCounts[p.id] > 0 ? <i aria-hidden="true" /> : null}
+                    </span>
+                  )}
                   <small>
                     {p.club} · £{p.price.toFixed(1)}m
                   </small>
@@ -5083,6 +5170,11 @@ function MyTeamV2({
                 </span>
                 <div>
                   <b>{p.name}</b>
+                  {signalCounts[p.id] > 0 && (
+                    <span className={`roster-signal-count${unreadSignalCounts[p.id] > 0 ? " unread" : ""}`} title={`${signalCounts[p.id]} active signal${signalCounts[p.id] === 1 ? "" : "s"}${unreadSignalCounts[p.id] ? `, ${unreadSignalCounts[p.id]} new` : ""}`}>
+                      {signalCounts[p.id]} signal{signalCounts[p.id] === 1 ? "" : "s"}{unreadSignalCounts[p.id] > 0 ? <i aria-hidden="true" /> : null}
+                    </span>
+                  )}
                   <small>
                     {p.club} · £{p.price.toFixed(1)}m
                   </small>

@@ -835,7 +835,9 @@ Candidates: ${JSON.stringify(candidates)}`
 }
 
 function validityDeadline(timeHorizon){
-  const days={GW1:7,SHORT_TERM:14,MEDIUM_TERM:42,SEASON:120,UNKNOWN:14}[String(timeHorizon||'').toUpperCase()]||14
+  const normalized=String(timeHorizon||'').toUpperCase().replace(/\s+/g,'')
+  const gw=normalized.match(/^GW(\d+)$/)
+  const days=gw?Math.max(7,Number(gw[1])*7):({SHORT_TERM:14,MEDIUM_TERM:42,SEASON:120,UNKNOWN:14}[normalized]||14)
   return new Date(Date.now()+days*24*60*60*1000).toISOString()
 }
 
@@ -851,6 +853,11 @@ async function createSignalForCreatorClaim(db,claimRow,source,gameweek){
   const horizonMatch=String(claimRow.timeHorizon||'').toUpperCase().match(/^GW\s*(\d+)$/)
   const applicableGameweek=horizonMatch?Number(horizonMatch[1]):null
   const signal=await createPlayerSignal(db,{id,playerId:draft.playerId,gameweek:applicableGameweek,kind:draft.kind,value:draft.value,sourceType:draft.sourceType,sourceUrl:draft.sourceUrl,evidenceSummary:draft.evidenceSummary,evidenceText:draft.evidenceText,claimClass:draft.claimClass,modelImpact:draft.modelImpact,interpretationRationale:draft.interpretationRationale,interpretationConfidence:draft.interpretationConfidence,confidence,observedAt,validUntil:validityDeadline(claimRow.timeHorizon),status,actorType:'INGESTION'})
+  if(draft.claimClass==='PERFORMANCE_FORECAST'&&draft.value.forecastMetric&&draft.value.forecastDirection&&draft.value.forecastProbability!=null){
+    await db.query(`INSERT INTO "CreatorForecastOutcome" ("signal_id","creator","external_source_id","target_metric","direction","probability","horizon","observed_at") VALUES ($1,$2,$3,$4,$5,$6,$7,$8) ON CONFLICT ("signal_id") DO NOTHING`,[
+      String(signal.id),source.creator||'Unknown creator',source.externalId||'',draft.value.forecastMetric,draft.value.forecastDirection,Number(draft.value.forecastProbability),draft.value.forecastHorizon||claimRow.timeHorizon||'UNKNOWN',observedAt,
+    ])
+  }
   return {signal,created:true}
 }
 
@@ -870,7 +877,8 @@ async function saveUnmatchedCreatorClaim(db,claim,source,match,candidates){
 
 function creatorClaimView(row){
   const source=parseJson(row.source_json,{})
-  return {id:row.id,rawPlayerName:row.raw_player_name,clubHint:row.club_hint,positionHint:row.position_hint,category:row.category,sentiment:row.sentiment,summary:row.summary,matchStatus:row.match_status,matchConfidence:Number(row.match_confidence||0),matchCandidates:parseJson(row.candidates_json,[]),creator:source.creator||'Unknown creator',contentTitle:source.title||'Untitled source',contentUrl:source.url||'',timestampSeconds:row.timestamp_seconds==null?null:Number(row.timestamp_seconds),signalId:row.signal_id||null}
+  const claim=parseJson(row.claim_json,{})
+  return {id:row.id,rawPlayerName:row.raw_player_name,clubHint:row.club_hint,positionHint:row.position_hint,category:row.category,sentiment:row.sentiment,summary:row.summary,matchStatus:row.match_status,matchConfidence:Number(row.match_confidence||0),matchCandidates:parseJson(row.candidates_json,[]),creator:source.creator||'Unknown creator',contentTitle:source.title||'Untitled source',contentUrl:source.url||'',timestampSeconds:row.timestamp_seconds==null?null:Number(row.timestamp_seconds),signalId:row.signal_id||null,forecastMetric:claim.forecastMetric||null,forecastDirection:claim.forecastDirection||null,forecastProbability:claim.forecastProbability==null?null:Number(claim.forecastProbability),forecastHorizon:claim.forecastHorizon||claim.timeHorizon||null}
 }
 
 async function unresolvedCreatorClaims(db,limit=200){
@@ -887,7 +895,7 @@ async function processCreatorPayload(rawPayload){
     let match=matchCreatorClaim(claim,data.players,aliases)
     match=await resolveCreatorAmbiguityWithLlm(claim,match)
     const resolvedPlayerId=match.player?.id||null
-    const signalValue=Object.fromEntries(['startProbability','minutesIfStarting','substituteProbabilityWhenBenched','minutesIfSubstitute','depthRole','confidence'].filter(key=>claim[key]!=null).map(key=>[key,claim[key]]))
+    const signalValue=Object.fromEntries(['startProbability','minutesIfStarting','substituteProbabilityWhenBenched','minutesIfSubstitute','depthRole','forecastMetric','forecastDirection','forecastProbability','forecastHorizon','confidence'].filter(key=>claim[key]!=null).map(key=>[key,claim[key]]))
     const candidates=Array.isArray(match.candidates)&&match.candidates[0]?.player?compactCandidates(match.candidates):match.candidates||[]
     let signalResult=null
     if(match.status==='MATCHED'&&resolvedPlayerId){
@@ -911,8 +919,9 @@ function parseCreatorExtraction(value){
 function creatorExtractionPrompt(video,transcript){
   return `Extract only FPL-relevant, player-specific claims from this timestamped YouTube transcript.
 Return JSON with one property, "claims", containing at most 20 objects. Each object must contain:
-rawPlayerName, clubHint (string or null), positionHint (GK/DEF/MID/FWD or null), category (ROLE, ROTATION, INJURY, SET_PIECES, PENALTIES, PRESEASON, TACTICS, VALUE, STATS, TRANSFER, FPL_SELECTION, or OTHER), sentiment (POSITIVE, NEGATIVE, MIXED, or NEUTRAL), summary, evidenceText, timestampSeconds, timeHorizon (GW<number>, SHORT_TERM, MEDIUM_TERM, SEASON, or UNKNOWN), and confidence (0 to 1).
+rawPlayerName, clubHint (string or null), positionHint (GK/DEF/MID/FWD or null), category (ROLE, ROTATION, INJURY, SET_PIECES, PENALTIES, PRESEASON, TACTICS, VALUE, STATS, TRANSFER, FPL_SELECTION, PERFORMANCE_FORECAST, or OTHER), sentiment (POSITIVE, NEGATIVE, MIXED, or NEUTRAL), summary, evidenceText, timestampSeconds, timeHorizon (GW<number>, SHORT_TERM, MEDIUM_TERM, SEASON, or UNKNOWN), and confidence (0 to 1).
 Optional fields are depthRole (FIRST_CHOICE, ROTATION, BACKUP, OUT), startProbability, minutesIfStarting, substituteProbabilityWhenBenched, minutesIfSubstitute, numericClaims, and relatedMentions.
+For PERFORMANCE_FORECAST claims, also provide forecastMetric (EXPECTED_POINTS or PRICE), forecastDirection (UNDERPERFORM, OUTPERFORM, PRICE_FALL, or PRICE_RISE), forecastProbability (0 to 1), and forecastHorizon. Use this category only for a creator's explicit prediction about the player's FPL output or price, such as "he will blank" or "he will drop in price". These are context-only forecasts and must never be converted into role or minutes adjustments.
 Never combine a creator's FPL recommendation with a distinct real-world claim. When one passage contains both, emit separate objects with the same timestamp: an FPL_SELECTION object for the buy/sell/captain/avoid view, and a ROLE or ROTATION object for the minutes evidence. For example, "Foden is a good GW1 pick, set to start, but Cherki may compete for minutes" yields one FPL_SELECTION and separate role claims for "set to start" and the minutes competition.
 For claims about real-world availability or minutes, you may also add suggestedInterpretation: {role: FIRST_CHOICE|ROTATION_LOW|ROTATION_MEDIUM|ROTATION_HIGH|BACKUP|OUT, confidence: 0 to 1, rationale: string}. This is a proposed translation for the FPL model, not a claim that the creator supplied a number. Use it only when the wording has a clear real-world implication: "not nailed", "no fixed number one", or "all positions are up for grabs" means ROTATION_MEDIUM; material competition, "one of two", or "may not get regular starts" means ROTATION_HIGH; "likely/expected first choice", "no real competition", or "assured of his place" means FIRST_CHOICE. Treat a conditional transfer, a possible future signing, or a player's own FPL selection as context only unless the speaker also makes a clear current role claim. Never add an interpretation to FPL_SELECTION, value opinions, or vague player mentions.
 Never infer numeric probabilities or minutes from vague language in the source claim fields; include those values only when the speaker explicitly states them. A creator's own buy/sell/start/bench choice is FPL_SELECTION, not evidence of real-world minutes. Make a player the subject only when the evidence is actually about that player: do not turn a teammate's injury, a team-level observation, or a list of several signings into the same claim for every mentioned player. For example, "Saliba is out, so Arsenal may suffer" is not an injury claim for Gabriel. Exclude sponsor reads, jokes, repetitions, and claims that are not about a named player. Use the timestamp where the evidence begins. Do not add facts not present in the transcript.
@@ -2080,7 +2089,7 @@ function startServerOnAvailablePort(targetPort) {
         const player=playerResult.rows[0]
         if(!player)throw new Error('Player not found')
         const claim=parseJson(row.claim_json,{}),source=parseJson(row.source_json,{})
-        const signalValue=Object.fromEntries(['startProbability','minutesIfStarting','substituteProbabilityWhenBenched','minutesIfSubstitute','depthRole','confidence'].filter(key=>claim[key]!=null).map(key=>[key,claim[key]]))
+        const signalValue=Object.fromEntries(['startProbability','minutesIfStarting','substituteProbabilityWhenBenched','minutesIfSubstitute','depthRole','forecastMetric','forecastDirection','forecastProbability','forecastHorizon','confidence'].filter(key=>claim[key]!=null).map(key=>[key,claim[key]]))
         const result=await createSignalForCreatorClaim(db,{...claim,id,externalClaimId:id,resolvedPlayerId:Number(player.fpl_id),signalValue},source,null)
         if(payload.rememberAlias!==false&&normalizeEntityText(row.raw_player_name)){
           await db.query(`INSERT INTO "PlayerAlias" ("id","alias","normalized_alias","player_id","source","created_at","updated_at") VALUES ($1,$2,$3,$4,'USER',$5,$5) ON CONFLICT ("normalized_alias") DO UPDATE SET "player_id"=excluded."player_id","alias"=excluded."alias","updated_at"=excluded."updated_at"`,[randomUUID(),row.raw_player_name,normalizeEntityText(row.raw_player_name),player.id,now])

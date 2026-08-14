@@ -63,7 +63,7 @@ function youtubeExternalId(url){
   }catch{return ''}
 }
 
-const allowedCategories=new Set(['ROLE','ROTATION','INJURY','SET_PIECES','PENALTIES','PRESEASON','TACTICS','VALUE','STATS','TRANSFER','FPL_SELECTION','OTHER'])
+const allowedCategories=new Set(['ROLE','ROTATION','INJURY','SET_PIECES','PENALTIES','PRESEASON','TACTICS','VALUE','STATS','TRANSFER','FPL_SELECTION','PERFORMANCE_FORECAST','OTHER'])
 const allowedSentiments=new Set(['POSITIVE','NEGATIVE','MIXED','NEUTRAL'])
 const allowedDepthRoles=new Set(['FIRST_CHOICE','ROTATION','BACKUP','OUT'])
 const allowedInterpretationRoles=new Set(['FIRST_CHOICE','ROTATION_LOW','ROTATION_MEDIUM','ROTATION_HIGH','BACKUP','OUT'])
@@ -152,6 +152,10 @@ export function normalizeCreatorPayload(payload){
       minutesIfStarting:category!=='FPL_SELECTION'&&typeof raw.minutesIfStarting==='number'?clamp(raw.minutesIfStarting,0,90):null,
       substituteProbabilityWhenBenched:category!=='FPL_SELECTION'&&typeof raw.substituteProbabilityWhenBenched==='number'?clamp(raw.substituteProbabilityWhenBenched):null,
       minutesIfSubstitute:category!=='FPL_SELECTION'&&typeof raw.minutesIfSubstitute==='number'?clamp(raw.minutesIfSubstitute,0,45):null,
+      forecastMetric:category==='PERFORMANCE_FORECAST'&&['EXPECTED_POINTS','PRICE'].includes(String(raw.forecastMetric||'').toUpperCase())?String(raw.forecastMetric).toUpperCase():null,
+      forecastDirection:category==='PERFORMANCE_FORECAST'&&['UNDERPERFORM','OUTPERFORM','PRICE_FALL','PRICE_RISE'].includes(String(raw.forecastDirection||'').toUpperCase())?String(raw.forecastDirection).toUpperCase():null,
+      forecastProbability:category==='PERFORMANCE_FORECAST'&&typeof raw.forecastProbability==='number'?clamp(raw.forecastProbability):null,
+      forecastHorizon:category==='PERFORMANCE_FORECAST'?String(raw.forecastHorizon||raw.timeHorizon||'UNKNOWN').slice(0,40):null,
       confidence:typeof raw.confidence==='number'?clamp(raw.confidence):null,
       suggestedInterpretation,
     }
@@ -204,9 +208,12 @@ export function signalDraftFromClaim(claim,playerId,source,defaultConfidence=.65
     if(claim[key]!==null&&claim[key]!==undefined)value[key]=claim[key]
   }
   if(!Object.keys(value).some(key=>key!=='note')&&inferredRole)Object.assign(value,inferredRole)
-  const categoryKinds={ROLE:'EXPECTED_ROLE',ROTATION:'DEPTH_CHART',INJURY:'INJURY',SET_PIECES:'SET_PIECES',PENALTIES:'PENALTIES',PRESEASON:'PRESEASON_MINUTES',TACTICS:'TACTICAL_ROLE',VALUE:'VALUE_OPINION',STATS:'STATISTICAL_CLAIM',TRANSFER:'TRANSFER_OPINION',FPL_SELECTION:'VALUE_OPINION',OTHER:'VALUE_OPINION'}
-  const claimClasses={ROLE:'REAL_WORLD_ROLE',ROTATION:'ROTATION',INJURY:'INJURY',SET_PIECES:'SET_PIECES',PENALTIES:'PENALTIES',PRESEASON:'REAL_WORLD_ROLE',TACTICS:'REAL_WORLD_ROLE',VALUE:'VALUE_OPINION',STATS:'STATISTICAL_CONTEXT',TRANSFER:'VALUE_OPINION',FPL_SELECTION:'FPL_SELECTION',OTHER:'UNKNOWN'}
+  const categoryKinds={ROLE:'EXPECTED_ROLE',ROTATION:'DEPTH_CHART',INJURY:'INJURY',SET_PIECES:'SET_PIECES',PENALTIES:'PENALTIES',PRESEASON:'PRESEASON_MINUTES',TACTICS:'TACTICAL_ROLE',VALUE:'VALUE_OPINION',STATS:'STATISTICAL_CLAIM',TRANSFER:'TRANSFER_OPINION',FPL_SELECTION:'VALUE_OPINION',PERFORMANCE_FORECAST:'PERFORMANCE_FORECAST',OTHER:'VALUE_OPINION'}
+  const claimClasses={ROLE:'REAL_WORLD_ROLE',ROTATION:'ROTATION',INJURY:'INJURY',SET_PIECES:'SET_PIECES',PENALTIES:'PENALTIES',PRESEASON:'REAL_WORLD_ROLE',TACTICS:'REAL_WORLD_ROLE',VALUE:'VALUE_OPINION',STATS:'STATISTICAL_CONTEXT',TRANSFER:'VALUE_OPINION',FPL_SELECTION:'FPL_SELECTION',PERFORMANCE_FORECAST:'PERFORMANCE_FORECAST',OTHER:'UNKNOWN'}
   const modelImpact=['startProbability','minutesIfStarting','substituteProbabilityWhenBenched','minutesIfSubstitute','depthRole'].some(key=>value[key]!=null)?'ROLE':'NONE'
+  if(claim.category==='PERFORMANCE_FORECAST'){
+    for(const key of ['forecastMetric','forecastDirection','forecastProbability','forecastHorizon'])if(claim[key]!=null)value[key]=claim[key]
+  }
   const timestampUrl=source.url&&claim.timestampSeconds!==null
     ? `${source.url}${source.url.includes('?')?'&':'?'}t=${claim.timestampSeconds}s`
     : source.url||null

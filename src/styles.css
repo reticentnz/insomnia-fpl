@@ -656,7 +656,7 @@ h2 {
 .research-progress { position: relative; height: 5px; margin: 11px 0 8px; overflow: hidden; border-radius: 999px; background: rgba(148, 163, 184, .16); }
 .research-progress span { position: absolute; inset-block: 0; width: 36%; border-radius: inherit; background: linear-gradient(90deg, transparent, #34d399, transparent); animation: research-progress 1.45s ease-in-out infinite; }
 @keyframes research-progress { from { transform: translateX(-110%); } to { transform: translateX(310%); } }
-.research-run-details { margin: 10px 0 14px; }
+.research-run-details { margin: 10px 24px 14px; }
 .research-usage { display: flex; flex-wrap: wrap; gap: 7px 14px; margin: 0; color: #94a3b8; font-size: 12px; }
 .research-usage b { color: #dbeafe; }
 .research-discarded-claims { margin: 10px 0 0; color: #94a3b8; font-size: 13px; line-height: 1.45; }
@@ -891,6 +891,40 @@ h2 {
   white-space: nowrap;
   padding-left: 2px;
 }
+
+.player-signal-count,
+.roster-signal-count {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  margin-left: 6px;
+  padding: 2px 5px;
+  border: 1px solid rgba(56, 189, 248, .28);
+  border-radius: 999px;
+  background: rgba(56, 189, 248, .1);
+  color: #7dd3fc;
+  font-size: 10px;
+  font-weight: 800;
+  line-height: 1.1;
+  vertical-align: middle;
+  white-space: nowrap;
+}
+.player-signal-count.unread,
+.roster-signal-count.unread {
+  border-color: rgba(245, 158, 11, .45);
+  background: rgba(245, 158, 11, .12);
+  color: #fbbf24;
+}
+.player-signal-count i,
+.roster-signal-count i {
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+  background: #f59e0b;
+  box-shadow: 0 0 0 2px rgba(245, 158, 11, .14);
+}
+.roster-signal-count { margin-left: 0; margin-top: 4px; font-size: 10px; }
+.name-cell > div { min-width: 0; }
 
 .shirt, .mini-shirt {
   display: grid;

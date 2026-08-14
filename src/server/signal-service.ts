@@ -2,7 +2,7 @@ import { randomUUID } from 'node:crypto'
 
 type Database = { query(sql: string, params?: unknown[]): Promise<{ rows: any[]; changes?: number }> }
 type SignalStatus = 'PENDING' | 'VERIFIED' | 'REJECTED' | 'EXPIRED'
-type ClaimClass = 'REAL_WORLD_ROLE' | 'ROTATION' | 'AVAILABILITY' | 'INJURY' | 'SET_PIECES' | 'PENALTIES' | 'FPL_SELECTION' | 'CREATOR_RATING' | 'VALUE_OPINION' | 'STATISTICAL_CONTEXT' | 'UNKNOWN'
+type ClaimClass = 'REAL_WORLD_ROLE' | 'ROTATION' | 'AVAILABILITY' | 'INJURY' | 'SET_PIECES' | 'PENALTIES' | 'FPL_SELECTION' | 'CREATOR_RATING' | 'VALUE_OPINION' | 'STATISTICAL_CONTEXT' | 'PERFORMANCE_FORECAST' | 'UNKNOWN'
 type ModelImpact = 'ROLE' | 'NONE'
 
 const json = (value: unknown) => { try { return JSON.parse(String(value || '{}')) } catch { return {} } }
@@ -19,6 +19,7 @@ const defaultClaimClass = (kind: string): ClaimClass => {
   if (kind === 'PENALTIES') return 'PENALTIES'
   if (kind === 'VALUE_OPINION') return 'VALUE_OPINION'
   if (kind === 'STATISTICAL_CLAIM') return 'STATISTICAL_CONTEXT'
+  if (kind === 'PERFORMANCE_FORECAST') return 'PERFORMANCE_FORECAST'
   return 'UNKNOWN'
 }
 

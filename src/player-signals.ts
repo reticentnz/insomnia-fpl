@@ -9,7 +9,8 @@ export type SignalKind =
   | "TACTICAL_ROLE"
   | "VALUE_OPINION"
   | "STATISTICAL_CLAIM"
-  | "TRANSFER_OPINION";
+  | "TRANSFER_OPINION"
+  | "PERFORMANCE_FORECAST";
 
 export type SignalSourceType =
   | "OFFICIAL_FPL"
@@ -36,6 +37,7 @@ export type SignalClaimClass =
   | "CREATOR_RATING"
   | "VALUE_OPINION"
   | "STATISTICAL_CONTEXT"
+  | "PERFORMANCE_FORECAST"
   | "UNKNOWN";
 
 export type RoleSignalValue = {
@@ -47,6 +49,10 @@ export type RoleSignalValue = {
   /** A manager-confirmed responsibility that adds a conservative attacking-rate uplift. */
   setPieceRole?: "SET_PIECES" | "PENALTIES" | "PENALTIES_AND_SET_PIECES";
   note?: string;
+  forecastMetric?: "EXPECTED_POINTS" | "PRICE";
+  forecastDirection?: "UNDERPERFORM" | "OUTPERFORM" | "PRICE_FALL" | "PRICE_RISE";
+  forecastProbability?: number;
+  forecastHorizon?: string;
 };
 
 export type PlayerSignal = {

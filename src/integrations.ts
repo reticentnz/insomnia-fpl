@@ -983,6 +983,10 @@ export type CreatorClaim = {
   contentUrl: string;
   timestampSeconds?: number | null;
   signalId?: string | number | null;
+  forecastMetric?: 'EXPECTED_POINTS' | 'PRICE' | null;
+  forecastDirection?: 'UNDERPERFORM' | 'OUTPERFORM' | 'PRICE_FALL' | 'PRICE_RISE' | null;
+  forecastProbability?: number | null;
+  forecastHorizon?: string | null;
 };
 
 export async function fetchCreatorClaims(): Promise<CreatorClaim[]> {

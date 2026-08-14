@@ -92,6 +92,14 @@ describe('creator signal ingestion helpers',()=>{
     expect(signalDraftFromClaim(payload.claims[0],10,payload.source)).toMatchObject({modelImpact:'NONE'})
   })
 
+  it('creates a context-only structured performance forecast',()=>{
+    const payload=normalizeCreatorPayload({source:{url:'https://youtu.be/abc'},claims:[{rawPlayerName:'Groß',category:'PERFORMANCE_FORECAST',summary:'Groß could blank early and drop in price.',forecastMetric:'EXPECTED_POINTS',forecastDirection:'UNDERPERFORM',forecastProbability:.62,forecastHorizon:'GW1'}]})
+    expect(payload.claims[0]).toMatchObject({category:'PERFORMANCE_FORECAST',forecastMetric:'EXPECTED_POINTS',forecastDirection:'UNDERPERFORM',forecastProbability:.62,forecastHorizon:'GW1'})
+    const draft=signalDraftFromClaim(payload.claims[0],10,payload.source)
+    expect(draft).toMatchObject({kind:'PERFORMANCE_FORECAST',claimClass:'PERFORMANCE_FORECAST',modelImpact:'NONE',value:{forecastMetric:'EXPECTED_POINTS',forecastDirection:'UNDERPERFORM',forecastProbability:.62,forecastHorizon:'GW1'}})
+    expect(shouldAutoApproveCreatorContext(draft)).toBe(false)
+  })
+
   it('auto-approves safe context while retaining ambiguous or role evidence for review',()=>{
     const opinion=signalDraftFromClaim({category:'VALUE',summary:'Cheap upside'},10,{})
     const selection=signalDraftFromClaim({category:'FPL_SELECTION',summary:'In my team'},10,{})
