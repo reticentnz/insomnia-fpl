@@ -1,7 +1,9 @@
 import { execFile } from 'node:child_process'
+import { createHash } from 'node:crypto'
 import path from 'node:path'
 
 const YOUTUBE_FEED_BASE = 'https://www.youtube.com/feeds/videos.xml?channel_id='
+const digest = value => createHash('sha256').update(String(value)).digest('hex')
 const decodeXml = value => String(value || '')
   .replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&quot;/g, '"')
   .replace(/&#39;|&apos;/g, "'").replace(/&amp;/g, '&')
@@ -89,12 +91,32 @@ export async function addCreatorSource(db, input, fetchImpl = fetch) {
   const normalized = normalizeYoutubeSource(input.url || input.channelId)
   const response = await fetchImpl(normalized.feedUrl, { headers: { 'user-agent': 'insomnia-fpl/0.1' }, signal: AbortSignal.timeout(15_000) })
   if (!response.ok) throw new Error(`YouTube feed returned HTTP ${response.status}`)
-  const feed = parseYoutubeFeed(await response.text())
+  const body = await response.text()
+  const feed = parseYoutubeFeed(body)
+  const fetched = { etag: response.headers.get('etag'), lastModified: response.headers.get('last-modified'), payloadHash: digest(body) }
   const now = new Date().toISOString()
   const id = `youtube:${normalized.channelId}`
-  await db.query(`INSERT INTO "CreatorSource" ("id","channel_id","name","feed_url","enabled","created_at","updated_at") VALUES ($1,$2,$3,$4,1,$5,$5)
-    ON CONFLICT ("channel_id") DO UPDATE SET "name"=excluded."name","feed_url"=excluded."feed_url","enabled"=1,"updated_at"=excluded."updated_at"`, [id, normalized.channelId, String(input.name || feed.sourceName).trim().slice(0, 160), normalized.feedUrl, now])
+  await db.query(`INSERT INTO "CreatorSource" ("id","channel_id","name","feed_url","enabled","feed_etag","feed_last_modified","payload_hash","created_at","updated_at") VALUES ($1,$2,$3,$4,1,$5,$6,$7,$8,$8)
+    ON CONFLICT ("channel_id") DO UPDATE SET "name"=excluded."name","feed_url"=excluded."feed_url","enabled"=1,"feed_etag"=excluded."feed_etag","feed_last_modified"=excluded."feed_last_modified","payload_hash"=excluded."payload_hash","updated_at"=excluded."updated_at"`, [id, normalized.channelId, String(input.name || feed.sourceName).trim().slice(0, 160), normalized.feedUrl, fetched.etag, fetched.lastModified, fetched.payloadHash, now])
   return id
+}
+
+async function fetchYoutubeFeed(url, fetchImpl, validators = {}) {
+  const headers = { accept: 'application/atom+xml, application/xml, text/xml;q=0.9', 'user-agent': 'insomnia-fpl/0.1' }
+  if (validators.etag) headers['if-none-match'] = validators.etag
+  if (validators.lastModified) headers['if-modified-since'] = validators.lastModified
+  const response = await fetchImpl(url, { headers, signal: AbortSignal.timeout(15_000) })
+  if (response.status === 304) return { unchanged: true }
+  if (!response.ok) throw new Error(`HTTP ${response.status}`)
+  const body = await response.text()
+  const payloadHash = digest(body)
+  return {
+    unchanged: payloadHash === validators.payloadHash,
+    body,
+    etag: response.headers.get('etag'),
+    lastModified: response.headers.get('last-modified'),
+    payloadHash,
+  }
 }
 
 async function discoverCreatorVideos(db, sourceId, feed, { publishedAfter } = {}) {
@@ -116,11 +138,14 @@ export async function pollCreatorSources(db, fetchImpl = fetch) {
   for (const source of result.rows) {
     const now = new Date().toISOString()
     try {
-      const response = await fetchImpl(source.feed_url, { headers: { 'user-agent': 'insomnia-fpl/0.1' }, signal: AbortSignal.timeout(15_000) })
-      if (!response.ok) throw new Error(`HTTP ${response.status}`)
-      const feed = parseYoutubeFeed(await response.text())
+      const fetched = await fetchYoutubeFeed(source.feed_url, fetchImpl, { etag: source.feed_etag, lastModified: source.feed_last_modified, payloadHash: source.payload_hash })
+      if (fetched.unchanged) {
+        await db.query(`UPDATE "CreatorSource" SET "last_polled_at"=$2,"last_error"=NULL,"updated_at"=$2 WHERE "id"=$1`, [source.id, now])
+        continue
+      }
+      const feed = parseYoutubeFeed(fetched.body)
       discovered += await discoverCreatorVideos(db, source.id, feed, { publishedAfter: source.created_at })
-      await db.query(`UPDATE "CreatorSource" SET "name"=$2,"last_polled_at"=$3,"last_error"=NULL,"updated_at"=$3 WHERE "id"=$1`, [source.id, feed.sourceName || source.name, now])
+      await db.query(`UPDATE "CreatorSource" SET "name"=$2,"feed_etag"=$3,"feed_last_modified"=$4,"payload_hash"=$5,"last_polled_at"=$6,"last_error"=NULL,"updated_at"=$6 WHERE "id"=$1`, [source.id, feed.sourceName || source.name, fetched.etag, fetched.lastModified, fetched.payloadHash, now])
     } catch (error) {
       await db.query(`UPDATE "CreatorSource" SET "last_polled_at"=$2,"last_error"=$3,"updated_at"=$2 WHERE "id"=$1`, [source.id, now, String(error?.message || error).slice(0, 500)])
     }

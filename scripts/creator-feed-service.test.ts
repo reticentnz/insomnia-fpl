@@ -24,6 +24,23 @@ describe('native YouTube creator feeds', () => {
     expect(feed).toEqual({ sourceName: 'FPL Creator', entries: [{ videoId: 'abc123XYZ_0', title: 'GW1 & captaincy', url: 'https://www.youtube.com/watch?v=abc123XYZ_0', publishedAt: '2026-08-13T10:00:00Z' }] })
   })
 
+  it('uses validators and skips unchanged YouTube feeds', async () => {
+    const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'creator-cache-'))
+    directories.push(directory)
+    const database = path.join(directory, 'feed.sqlite')
+    await migrateDatabase(database)
+    const db = getDb(database)
+    const xml = `<feed xmlns:yt="http://www.youtube.com/xml/schemas/2015"><title>Cached Creator</title></feed>`
+    await addCreatorSource(db, { channelId: 'UC1234567890123456789012' }, async () => new Response(xml, { headers: { etag: '"v1"', 'last-modified': 'Thu, 13 Aug 2026 10:00:00 GMT' } }))
+    let requestHeaders
+    await pollCreatorSources(db, async (_url, init) => {
+      requestHeaders = init?.headers
+      return new Response(null, { status: 304 })
+    })
+    expect(requestHeaders).toMatchObject({ 'if-none-match': '"v1"', 'if-modified-since': 'Thu, 13 Aug 2026 10:00:00 GMT' })
+    expect((await listCreatorSources(db)).sources[0]).toMatchObject({ name: 'Cached Creator' })
+  })
+
   it('preserves timestamps and bounds transcript prompt size', () => {
     expect(transcriptForPrompt([{ start: 1.4, text: ' Salah   starts ' }, { start: 62, text: 'captain him' }])).toBe('[1s] Salah starts\n[62s] captain him')
     expect(transcriptForPrompt([{ start: 0, text: '123456789' }], 8)).toBe('')
