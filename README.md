@@ -91,7 +91,7 @@ The production server schedules every pull-based source by default: official FPL
 
 Add YouTube channels from the **Signals** page using a channel ID, `/channel/UC…` URL, or canonical RSS feed URL. The app records the time each channel is added and only queues videos published after that point, preventing historical uploads from creating an ingestion backlog. It discovers those future uploads through YouTube RSS, retrieves available English manual or generated captions with `youtube-transcript-api`, and asks the configured LLM provider to extract structured FPL claims. Captions-unavailable videos are retained as `NO_TRANSCRIPT`; transient failures retry with exponential backoff.
 
-Add general RSS or Atom feeds from the **Signals** page as well. The app fetches only the configured feed URL and analyzes only the title, summary, or content included in each feed item. It never opens, scrapes, or attempts to bypass protection on the linked article. New items are retained with their supplied evidence and extracted claims always remain `PENDING` for review; items without enough feed-supplied text are marked `INSUFFICIENT_EVIDENCE`.
+Add general RSS or Atom feeds from the **Signals** page as well. The app fetches the configured feed URL and, when an item links to a public HTML page, fetches and locally extracts readable article text before analysis. It does not bypass protection, follow non-public redirects, or treat an unavailable article as a failure: the supplied RSS text remains the fallback evidence. New items are retained with their evidence and extracted claims remain reviewable; items without enough combined feed and article text are marked `INSUFFICIENT_EVIDENCE`.
 
 ### RSS feed flow
 

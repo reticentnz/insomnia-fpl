@@ -1136,7 +1136,7 @@ export function removeCreatorSource(id: string): Promise<CreatorFeedState> {
 }
 
 export type RssSource = { id: string; name: string; feedUrl: string; enabled: boolean; lastPolledAt: string | null; lastError: string | null };
-export type RssItem = { id: string; sourceId: string; sourceName: string; title: string; url: string | null; publishedAt: string | null; status: 'DISCOVERED' | 'PROCESSING' | 'COMPLETE' | 'INSUFFICIENT_EVIDENCE' | 'RETRY' | 'FAILED'; attempts: number; claimCount: number; error: string | null; processedAt: string | null };
+export type RssItem = { id: string; sourceId: string; sourceName: string; title: string; url: string | null; publishedAt: string | null; status: 'DISCOVERED' | 'PROCESSING' | 'COMPLETE' | 'INSUFFICIENT_EVIDENCE' | 'RETRY' | 'FAILED'; attempts: number; claimCount: number; error: string | null; processedAt: string | null; articleFetchStatus?: 'FETCHED' | 'UNAVAILABLE' | null };
 export type RssFeedState = { sources: RssSource[]; items: RssItem[] };
 
 async function rssFeedRequest(url: string, init?: RequestInit): Promise<RssFeedState> {

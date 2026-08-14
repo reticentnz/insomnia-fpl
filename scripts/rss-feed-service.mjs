@@ -2,8 +2,15 @@ import { createHash } from 'node:crypto'
 
 const MAX_FEED_BYTES = 2 * 1024 * 1024
 const MAX_ITEM_TEXT = 45_000
+const MAX_ARTICLE_BYTES = 4 * 1024 * 1024
+const MAX_ARTICLE_TEXT = 60_000
 const clean = value => decodeXml(String(value || '').replace(/<!\[CDATA\[|\]\]>/g, '')).replace(/<[^>]*>/g, ' ').replace(/\s+/g, ' ').trim()
-const decodeXml = value => String(value || '').replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&quot;/g, '"').replace(/&#39;|&apos;/g, "'").replace(/&amp;/g, '&')
+const decodeXml = value => String(value || '')
+  .replace(/&#(x[0-9a-f]+|\d+);/gi, (_match, raw) => {
+    const code = String(raw).toLowerCase().startsWith('x') ? parseInt(String(raw).slice(1), 16) : Number(raw)
+    return Number.isFinite(code) ? String.fromCodePoint(code) : ''
+  })
+  .replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&quot;/g, '"').replace(/&#39;|&apos;/g, "'").replace(/&amp;/g, '&')
 const digest = value => createHash('sha256').update(String(value)).digest('hex')
 
 function tag(xml, name) {
@@ -71,6 +78,44 @@ async function fetchFeed(url, fetchImpl, validators = {}, redirects = 0) {
   return { unchanged: digest(body) === validators.payloadHash, body, etag: response.headers.get('etag'), lastModified: response.headers.get('last-modified'), payloadHash: digest(body) }
 }
 
+function articleCandidate(html) {
+  const withoutNoise = String(html || '')
+    .replace(/<!--[\s\S]*?-->/g, ' ')
+    .replace(/<(script|style|noscript|template|svg|nav|footer|header|aside|form)\b[\s\S]*?<\/\1>/gi, ' ')
+  const article = withoutNoise.match(/<article\b[\s\S]*?<\/article>/i)?.[0]
+    || withoutNoise.match(/<main\b[\s\S]*?<\/main>/i)?.[0]
+    || withoutNoise
+  return clean(decodeXml(article)).slice(0, MAX_ARTICLE_TEXT)
+}
+
+export async function fetchArticleText(url, fetchImpl = fetch, redirects = 0) {
+  const articleUrl = normalizeRssSource(url)
+  const response = await fetchImpl(articleUrl, {
+    headers: {
+      accept: 'text/html,application/xhtml+xml;q=0.9',
+      'user-agent': 'insomnia-fpl/0.1 (+RSS article enrichment)',
+    },
+    redirect: 'manual',
+    signal: AbortSignal.timeout(20_000),
+  })
+  if (response.status >= 300 && response.status < 400) {
+    if (redirects >= 3) throw new Error('Article redirected too many times')
+    const location = response.headers.get('location')
+    if (!location) throw new Error(`Article returned HTTP ${response.status} without a redirect location`)
+    return fetchArticleText(new URL(location, articleUrl).toString(), fetchImpl, redirects + 1)
+  }
+  if (!response.ok) throw new Error(`Article returned HTTP ${response.status}`)
+  const contentType = String(response.headers.get('content-type') || '').toLowerCase()
+  if (contentType && !/(text\/html|application\/xhtml\+xml)/.test(contentType)) throw new Error('Article did not return HTML')
+  const length = Number(response.headers.get('content-length') || 0)
+  if (length > MAX_ARTICLE_BYTES) throw new Error('Article exceeds the 4 MB limit')
+  const body = await response.text()
+  if (Buffer.byteLength(body) > MAX_ARTICLE_BYTES) throw new Error('Article exceeds the 4 MB limit')
+  const text = articleCandidate(body)
+  if (!text) throw new Error('Article did not contain readable text')
+  return { url: articleUrl, text }
+}
+
 export async function listRssSources(db) {
   const [sources, items] = await Promise.all([
     db.query(`SELECT * FROM "RssSource" ORDER BY lower("name"),"created_at"`),
@@ -78,7 +123,7 @@ export async function listRssSources(db) {
   ])
   return {
     sources: sources.rows.map(row => ({ id: row.id, name: row.name, feedUrl: row.feed_url, enabled: Boolean(row.enabled), lastPolledAt: row.last_polled_at, lastError: row.last_error })),
-    items: items.rows.map(row => ({ id: row.id, sourceId: row.source_id, sourceName: row.source_name, title: row.title, url: row.url, publishedAt: row.published_at, status: row.status, attempts: Number(row.attempt_count), claimCount: Number(row.claim_count), error: row.last_error, processedAt: row.processed_at })),
+    items: items.rows.map(row => ({ id: row.id, sourceId: row.source_id, sourceName: row.source_name, title: row.title, url: row.url, publishedAt: row.published_at, status: row.status, attempts: Number(row.attempt_count), claimCount: Number(row.claim_count), error: row.last_error, processedAt: row.processed_at, articleFetchStatus: row.article_fetch_status || null })),
   }
 }
 
@@ -124,7 +169,7 @@ export async function pollRssSources(db, fetchImpl = fetch) {
   return { sources: result.rows.length, discovered }
 }
 
-export async function processRssQueue(db, { extractClaims, limit = 3 } = {}) {
+export async function processRssQueue(db, { extractClaims, fetchArticle = fetchArticleText, limit = 3 } = {}) {
   if (typeof extractClaims !== 'function') throw new Error('extractClaims callback is required')
   const queued = await db.query(`SELECT item.*,source."name" AS source_name FROM "RssItem" item JOIN "RssSource" source ON source."id"=item."source_id" WHERE source."enabled"=1 AND item."status" IN ('DISCOVERED','RETRY') AND (item."next_attempt_at" IS NULL OR datetime(item."next_attempt_at")<=datetime('now')) ORDER BY datetime(item."published_at") ASC,datetime(item."created_at") ASC LIMIT $1`, [Math.max(1, Math.min(10, Number(limit) || 3))])
   const summary = { processed: 0, completed: 0, insufficient: 0, retrying: 0, failed: 0, claims: 0 }
@@ -133,10 +178,21 @@ export async function processRssQueue(db, { extractClaims, limit = 3 } = {}) {
     await db.query(`UPDATE "RssItem" SET "status"='PROCESSING',"attempt_count"=$2,"updated_at"=$3 WHERE "id"=$1`, [item.id, attempts, now])
     summary.processed += 1
     try {
-      if (String(item.content_text || '').length < 80) {
+      let articleText = String(item.article_content_text || '').trim()
+      if (!articleText && item.url && item.article_fetch_status !== 'UNAVAILABLE') {
+        try {
+          const article = await fetchArticle(item.url)
+          articleText = article.text
+          await db.query(`UPDATE "RssItem" SET "article_content_text"=$2,"article_fetched_at"=$3,"article_fetch_status"='FETCHED',"article_fetch_error"=NULL,"updated_at"=$3 WHERE "id"=$1`, [item.id, articleText, now])
+        } catch (error) {
+          await db.query(`UPDATE "RssItem" SET "article_fetched_at"=$2,"article_fetch_status"='UNAVAILABLE',"article_fetch_error"=$3,"updated_at"=$2 WHERE "id"=$1`, [item.id, now, String(error?.message || error).slice(0, 500)])
+        }
+      }
+      const evidenceText = [String(item.content_text || '').trim(), articleText].filter(Boolean).join('\n\n')
+      if (evidenceText.length < 80) {
         await db.query(`UPDATE "RssItem" SET "status"='INSUFFICIENT_EVIDENCE',"last_error"='Feed item did not contain enough supplied text for extraction',"updated_at"=$2,"processed_at"=$2 WHERE "id"=$1`, [item.id, now]); summary.insufficient += 1; continue
       }
-      const extraction = await extractClaims({ item })
+      const extraction = await extractClaims({ item: { ...item, article_content_text: articleText, evidence_text: evidenceText } })
       const claims = Array.isArray(extraction?.payload?.claims) ? extraction.payload.claims : []
       const ingest = claims.length ? await extraction.ingest(extraction.payload) : { created: 0 }
       await db.query(`UPDATE "RssItem" SET "status"='COMPLETE',"extraction_provider"=$2,"extraction_json"=$3,"claim_count"=$4,"last_error"=NULL,"updated_at"=$5,"processed_at"=$5 WHERE "id"=$1`, [item.id, extraction.provider || null, JSON.stringify(extraction.payload), claims.length, now])

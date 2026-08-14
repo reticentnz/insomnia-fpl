@@ -5727,7 +5727,7 @@ function SignalsTab({
       {workspaceView === "SOURCES" && <>
       <section className="creator-feed-card rss-feed-card">
         <div className="creator-feed-heading">
-          <div><span className="eyebrow">RSS-ONLY INTELLIGENCE</span><h2>RSS feeds</h2><p>Only the text supplied by RSS or Atom is analyzed. Linked articles are never opened, scraped, or sent to the LLM. All extracted signals remain pending review.</p></div>
+          <div><span className="eyebrow">RSS + ARTICLE INTELLIGENCE</span><h2>RSS feeds</h2><p>RSS text and readable text from the linked article are analyzed when available. Pages that are blocked or unavailable fall back to the feed text. All extracted signals remain pending review.</p></div>
           <button className="ghost-btn" onClick={loadRssFeeds}>Refresh status</button>
         </div>
         <div className="creator-source-form">
@@ -5747,7 +5747,7 @@ function SignalsTab({
           <div className="creator-video-summary" aria-label="RSS item processing summary">
             <span><b>{rssFeeds.items.length}</b> items</span><span><b>{rssFeeds.items.filter((item) => item.status === "COMPLETE").length}</b> complete</span><span><b>{rssFeeds.items.filter((item) => item.status === "INSUFFICIENT_EVIDENCE").length}</b> insufficient evidence</span><span><b>{rssFeeds.items.filter((item) => item.status === "FAILED").length}</b> failed</span>
           </div>
-          <div className="creator-video-list">{rssFeeds.items.map((item) => <article key={item.id} className="creator-video-entry"><div className="creator-video-row"><span><b>{item.title}</b><small>{item.sourceName} · {item.publishedAt ? relativeTime(item.publishedAt) : "publish date unknown"}</small>{item.error && <small className="rss-item-error">{item.error}</small>}</span><span className={`creator-video-status status-${item.status.toLowerCase()}`}>{item.status.replaceAll("_", " ")}{item.claimCount ? ` · ${item.claimCount} claims` : ""}</span>{item.url && <a className="rss-item-link" href={item.url} target="_blank" rel="noreferrer">Source ↗</a>}</div></article>)}</div>
+          <div className="creator-video-list">{rssFeeds.items.map((item) => <article key={item.id} className="creator-video-entry"><div className="creator-video-row"><span><b>{item.title}</b><small>{item.sourceName} · {item.publishedAt ? relativeTime(item.publishedAt) : "publish date unknown"}{item.articleFetchStatus === "FETCHED" ? " · article text fetched" : item.articleFetchStatus === "UNAVAILABLE" ? " · article unavailable; used RSS text" : ""}</small>{item.error && <small className="rss-item-error">{item.error}</small>}</span><span className={`creator-video-status status-${item.status.toLowerCase()}`}>{item.status.replaceAll("_", " ")}{item.claimCount ? ` · ${item.claimCount} claims` : ""}</span>{item.url && <a className="rss-item-link" href={item.url} target="_blank" rel="noreferrer">Source ↗</a>}</div></article>)}</div>
         </>}
       </section>
       <section className="creator-feed-card">

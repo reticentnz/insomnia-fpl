@@ -1263,9 +1263,9 @@ function researchUsage(model,usage={},webSearchCalls=0,provider='openai'){
 }
 
 function rssExtractionPrompt(item) {
-  return `Extract only FPL-relevant, player-specific claims from this RSS or Atom item. The supplied feed content is the complete evidence: do not open, fetch, or infer anything from the linked article.
+  return `Extract only FPL-relevant, player-specific claims from this RSS or Atom item and its linked article text. The article text was fetched server-side from the publisher URL and is supplied below; do not open any additional links or infer anything beyond the supplied evidence.
 Return JSON with one property, "claims", containing at most 20 objects. Each object must contain: rawPlayerName, clubHint (string or null), positionHint (GK/DEF/MID/FWD or null), category (ROLE, ROTATION, INJURY, SET_PIECES, PENALTIES, PRESEASON, TACTICS, VALUE, STATS, TRANSFER, FPL_SELECTION, or OTHER), sentiment (POSITIVE, NEGATIVE, MIXED, or NEUTRAL), summary, evidenceText, timestampSeconds (null), timeHorizon (GW<number>, SHORT_TERM, MEDIUM_TERM, SEASON, or UNKNOWN), and confidence (0 to 1).
-Optional fields are depthRole (FIRST_CHOICE, ROTATION, BACKUP, OUT), startProbability, minutesIfStarting, substituteProbabilityWhenBenched, minutesIfSubstitute, numericClaims, and relatedMentions. Never infer numeric probabilities or minutes. Exclude claims not directly supported by the supplied feed content. Do not add facts from general knowledge.
+Optional fields are depthRole (FIRST_CHOICE, ROTATION, BACKUP, OUT), startProbability, minutesIfStarting, substituteProbabilityWhenBenched, minutesIfSubstitute, numericClaims, and relatedMentions. Never infer numeric probabilities or minutes. Exclude claims not directly supported by the supplied evidence. Do not add facts from general knowledge.
 
 Feed: ${item.source_name}
 Title: ${item.title}
@@ -1273,7 +1273,10 @@ Published: ${item.published_at || 'unknown'}
 Item URL (for attribution only; do not open): ${item.url || 'none'}
 
 Feed-supplied content:
-${item.content_text}`
+${item.content_text}
+
+Linked article text (may be unavailable):
+${item.article_content_text || '(not available)'}`
 }
 
 async function refreshRssFeeds() {
