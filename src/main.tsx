@@ -201,6 +201,11 @@ function signalCarriesRoleImpact(signal: PlayerSignal) {
     Boolean(value.depthRole);
 }
 
+function signalCarriesProjectionImpact(signal: PlayerSignal) {
+  const claimClass = signal.interpretation?.claimClass || signal.claimClass;
+  return signalCarriesRoleImpact(signal) || claimClass === "SET_PIECES" || claimClass === "PENALTIES";
+}
+
 const TOAST_DURATION_MS: Record<ToastTone, number> = {
   success: 4_000,
   info: 4_500,
@@ -1621,7 +1626,7 @@ function App() {
       const approvedCount = updates.filter((u) => u.status === "VERIFIED").length;
       const rejectedCount = updates.filter((u) => u.status === "REJECTED").length;
       // Both applying and removing a role signal change model inputs.
-      const roleMutation = updatedSignals.some(signalCarriesRoleImpact);
+      const roleMutation = updatedSignals.some(signalCarriesProjectionImpact);
       const refreshStarted = roleMutation ? await refreshForecastAfterSignalMutation() : false;
       const parts = [];
       if (approvedCount) parts.push(`${approvedCount} approved`);
@@ -5333,26 +5338,37 @@ function SignalsTab({
       });
       setEditingSignalId(null);
       loadSignals();
-      if (affectedModel || (updated.status === "VERIFIED" && signalCarriesRoleImpact(updated))) {
+      if (affectedModel || (updated.status === "VERIFIED" && signalCarriesProjectionImpact(updated))) {
         await onModelSignalMutation();
       }
     } finally { setInterpretationSaving(false); }
   }
 
   async function markSignalAsContext(signal: PlayerSignal) {
+    await saveContextualInterpretation(signal, signal.claimClass === "FPL_SELECTION" ? "FPL_SELECTION" : "VALUE_OPINION", "Context only");
+  }
+
+  async function saveContextualInterpretation(
+    signal: PlayerSignal,
+    claimClass: "SET_PIECES" | "PENALTIES" | "FPL_SELECTION" | "VALUE_OPINION",
+    label: string,
+    setPieceRole?: "SET_PIECES" | "PENALTIES" | "PENALTIES_AND_SET_PIECES",
+  ) {
     setInterpretationSaving(true);
     try {
       const affectedModel = isSignalAppliedToRole(playerMap.get(signal.playerId)?.roleProfile, signal.id);
       const updated = await revisePlayerSignalInterpretation(signal.id, {
-        claimClass: signal.claimClass === "FPL_SELECTION" ? "FPL_SELECTION" : "VALUE_OPINION",
+        claimClass,
         modelImpact: "NONE",
-        value: { note: signal.evidenceSummary },
-        rationale: "Marked by the manager as contextual evidence with no projection impact.",
+        value: { note: signal.evidenceSummary, ...(setPieceRole ? { setPieceRole } : {}) },
+        rationale: claimClass === "SET_PIECES" || claimClass === "PENALTIES"
+          ? `Marked by the manager as ${label.toLowerCase()} evidence with a conservative projection uplift.`
+          : `Marked by the manager as ${label.toLowerCase()} evidence with no projection impact.`,
         finalizeContext: true,
       });
       setEditingSignalId(null);
       loadSignals();
-      if (affectedModel || (updated.status === "VERIFIED" && signalCarriesRoleImpact(updated))) {
+      if (affectedModel || (updated.status === "VERIFIED" && signalCarriesProjectionImpact(updated))) {
         await onModelSignalMutation();
       }
     } finally { setInterpretationSaving(false); }
@@ -5403,7 +5419,16 @@ function SignalsTab({
     return options.sort((left, right) => right.value - left.value)[0];
   }
 
-  function handleReview(signal: PlayerSignal, status: "VERIFIED" | "REJECTED") {
+  async function handleReview(signal: PlayerSignal, status: "VERIFIED" | "REJECTED") {
+    const claimClass = signal.interpretation?.claimClass || signal.claimClass;
+    if (status === "VERIFIED" && claimClass === "SET_PIECES") {
+      await saveContextualInterpretation(signal, "SET_PIECES", "set-pieces", "SET_PIECES");
+      return;
+    }
+    if (status === "VERIFIED" && claimClass === "PENALTIES") {
+      await saveContextualInterpretation(signal, "PENALTIES", "penalty", "PENALTIES");
+      return;
+    }
     onReviewSignal(signal, status);
   }
 
@@ -5832,6 +5857,8 @@ function SignalsTab({
             const sourceTrust = classifySignalSource(signal.sourceType, signal.sourceUrl);
             const stagedStatus = stagedSignalReviews[signal.id];
             const effectiveStatus = stagedStatus || signal.status;
+            const setPieceRole = interpretation?.value?.setPieceRole || signal.value?.setPieceRole;
+            const setPieceImpact = setPieceRole === "SET_PIECES" || setPieceRole === "PENALTIES" || setPieceRole === "PENALTIES_AND_SET_PIECES";
 
             return (
               <article key={signal.id} className={`signal-card status-${effectiveStatus.toLowerCase()}${stagedStatus ? " is-staged" : ""}`}>
@@ -5890,7 +5917,7 @@ function SignalsTab({
                   >
                     <summary className="signal-interpretation-head">
                       <b>{contextOnly
-                        ? "Context only"
+                        ? setPieceImpact ? "Set-piece projection adjustment" : "Context only"
                         : needsInterpretation
                           ? "Needs interpretation"
                           : appliedToCurrentRole
@@ -5926,14 +5953,21 @@ function SignalsTab({
                         <span>{interpretation?.origin === "USER" ? "User-adjusted" : "Auto-interpreted"}</span>
                       </div>
                     )}
-                    {contextOnly && <small>This records creator context but cannot change player minutes or projections.</small>}
+                    {setPieceImpact && (
+                      <div className="signal-impact-preview">
+                        {setPieceRole !== "PENALTIES" && <span>Set pieces <b>+0.030 xA / 90</b></span>}
+                        {setPieceRole !== "SET_PIECES" && <span>Penalties <b>+0.045 xG / 90</b></span>}
+                        <span>Scales with expected minutes and fixture strength</span>
+                      </div>
+                    )}
+                    {contextOnly && <small>This does not change player minutes. Confirmed set-piece responsibility receives a conservative attacking projection uplift.</small>}
                     {needsInterpretation && <small>Choose an interpretation before this evidence can affect the model.</small>}
                     </div>
                   </details>
                   {editingSignalId === signal.id && (
                     <div className="signal-impact-editor">
-                      <b>Choose or adjust the impact</b>
-                      <p>These presets are editable interpretations, not claims that the source supplied exact percentages.</p>
+                      <b>Change interpretation</b>
+                      <p>Choose how this evidence should be recorded. Role choices affect minutes; confirmed set-piece choices add a conservative attacking uplift.</p>
                       <div className="signal-preset-grid">
                         <button disabled={interpretationSaving} onClick={() => saveInterpretation(signal, .88, "FIRST_CHOICE")}>First choice · 88%</button>
                         <button disabled={interpretationSaving} onClick={() => saveInterpretation(signal, .70, "ROTATION")}>Slight concern · 70%</button>
@@ -5941,6 +5975,11 @@ function SignalsTab({
                         <button disabled={interpretationSaving} onClick={() => saveInterpretation(signal, .25, "BACKUP")}>Likely substitute · 25%</button>
                         <button disabled={interpretationSaving} onClick={() => saveInterpretation(signal, .08, "BACKUP")}>Backup · 8%</button>
                         <button disabled={interpretationSaving} onClick={() => saveInterpretation(signal, 0, "OUT")}>Unavailable · 0%</button>
+                      </div>
+                      <div className="signal-context-presets">
+                        <button disabled={interpretationSaving} onClick={() => saveContextualInterpretation(signal, "SET_PIECES", "set-pieces", "SET_PIECES")}>Set pieces</button>
+                        <button disabled={interpretationSaving} onClick={() => saveContextualInterpretation(signal, "PENALTIES", "penalty", "PENALTIES")}>Penalties</button>
+                        <button disabled={interpretationSaving} onClick={() => saveContextualInterpretation(signal, "SET_PIECES", "penalties and set-pieces", "PENALTIES_AND_SET_PIECES")}>Penalties + set pieces</button>
                       </div>
                       <div className="signal-editor-actions">
                         <button className="ghost-btn" disabled={interpretationSaving} onClick={() => markSignalAsContext(signal)}>Context only</button>
@@ -5986,17 +6025,11 @@ function SignalsTab({
                   </div>
                 ) : signal.status === "PENDING" && (
                   <div className="signal-actions">
-                    {modelImpact === "ROLE" ? (
-                      <button className="dark-btn" disabled={applyingBatch} onClick={() => handleReview(signal, "VERIFIED")}>
-                        ✓ Approve model adjustment
-                      </button>
-                    ) : (
-                      <button className="dark-btn" disabled={interpretationSaving} onClick={() => setEditingSignalId(editingSignalId === signal.id ? null : signal.id)}>
-                        Interpret evidence
-                      </button>
-                    )}
+                    <button className="dark-btn" disabled={applyingBatch || interpretationSaving} onClick={() => void handleReview(signal, "VERIFIED")}>
+                      ✓ Accept interpretation
+                    </button>
                     <button className="ghost-btn" disabled={interpretationSaving} onClick={() => setEditingSignalId(editingSignalId === signal.id ? null : signal.id)}>
-                      {modelImpact === "ROLE" ? "Adjust impact" : "Options"}
+                      Change interpretation
                     </button>
                     <button
                       className="ghost-btn"

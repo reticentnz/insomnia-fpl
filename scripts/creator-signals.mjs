@@ -145,8 +145,12 @@ export function matchCreatorClaim(claim,catalog,aliases=[]){
   }
   const clubHint=normalizeEntityText(claim.clubHint),positionHint=String(claim.positionHint||'').toUpperCase()
   const priceHint=Number(claim.priceHint)
+  if(clubHint&&!catalog.some(player=>Math.max(...[player.club,player.clubName,player.teamName].map(value=>clubScore(claim.clubHint,value)))>=.82)){
+    return {status:'DISMISSED',player:null,confidence:1,candidates:[],reason:'club is outside the active FPL catalog'}
+  }
   const candidates=catalog.map(player=>{
-    const base=nameScore(claim.rawPlayerName,player.name)
+    const identityNames=[player.name,...(Array.isArray(player.identityNames)?player.identityNames:[])].filter(Boolean)
+    const base=Math.max(...identityNames.map(name=>nameScore(claim.rawPlayerName,name)))
     const bestClubScore=clubHint?Math.max(0,...[player.club,player.clubName,player.teamName].map(value=>clubScore(claim.clubHint,value))):0
     const clubMatches=bestClubScore>=.82
     const positionMatches=positionHint&&String(player.position||'').toUpperCase()===positionHint
@@ -163,7 +167,7 @@ export function matchCreatorClaim(claim,catalog,aliases=[]){
   const margin=!runnerUp?1:best.rankScore-runnerUp.rankScore
   const clubMatched=best?.reasons.includes('club matched')
   const positionMatched=best?.reasons.includes('position matched')
-  const strongContext=clubMatched&&best.confidence>=.65&&margin>=(positionMatched?.1:.12)
+  const strongContext=clubMatched&&best.confidence>=.62&&margin>=(positionMatched?.1:.12)
   if(best&&(strongContext||(best.confidence>=.72&&margin>=(clubHint?.1:.15))))return {status:'MATCHED',player:best.player,confidence:best.confidence,candidates}
   if(best&&best.confidence>=.5)return {status:'AMBIGUOUS',player:null,confidence:best.confidence,candidates}
   return {status:'UNRESOLVED',player:null,confidence:best?.confidence||0,candidates}

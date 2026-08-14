@@ -54,6 +54,8 @@ export type Player = {
   minutes: number;
   expectedMinutes?: number;
   roleProfile?: PlayerRoleProfile;
+  /** Confirmed responsibility from reviewed evidence; affects attacking rates, never availability. */
+  setPieceRole?: "SET_PIECES" | "PENALTIES" | "PENALTIES_AND_SET_PIECES";
   fixture: string;
   difficulty: number;
   projection: number;

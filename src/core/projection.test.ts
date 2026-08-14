@@ -35,6 +35,19 @@ describe('fixture strength method selection', () => {
     expect(official.strengthMethod).toBe('OFFICIAL_STRENGTH')
     expect(market.total).not.toBe(fallback.total)
   })
+
+  it('adds only a conservative attacking uplift for confirmed set-piece responsibility', () => {
+    const base: Player = { id: 2, name: 'Set Piece Test', club: 'TST', position: 'MID', price: 7, form: 0, ownership: 0, minutes: 90, expectedMinutes: 90, fixture: 'OPP (H)', difficulty: 3, projection: 5, colour: '#000', dataConfidence: 'HIGH', roleProfile: { startProbability: 1, substituteProbabilityWhenBenched: 0, minutesIfStarting: 90, minutesIfSubstitute: 0, confidence: 'HIGH', derivedFromSignalIds: [] } }
+    const fixture = { gameweek: 1, opponent: 'OPP', venue: 'H' as const, difficulty: 3 }
+    const penalties = projectFixture({ ...base, setPieceRole: 'PENALTIES' }, fixture)
+    const setPieces = projectFixture({ ...base, setPieceRole: 'SET_PIECES' }, fixture)
+    const both = projectFixture({ ...base, setPieceRole: 'PENALTIES_AND_SET_PIECES' }, fixture)
+    const baseline = projectFixture(base, fixture)
+    expect(penalties.total).toBeGreaterThan(baseline.total)
+    expect(setPieces.total).toBeGreaterThan(baseline.total)
+    expect(both.total - baseline.total).toBeCloseTo((penalties.total - baseline.total) + (setPieces.total - baseline.total), 6)
+    expect(both.total - baseline.total).toBeLessThan(.5)
+  })
 })
 
 describe('market clean-sheet probabilities', () => {

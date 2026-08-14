@@ -61,4 +61,11 @@ describe('canonical signal service', () => {
     const versions = await db.query(`SELECT "status" FROM "PlayerSignalInterpretation" WHERE "signal_id"='ambiguous' ORDER BY "created_at"`)
     expect(versions.rows.map(row=>row.status).sort()).toEqual(['APPROVED','SUPERSEDED'])
   })
+
+  it('can accept a set-pieces interpretation as contextual evidence', async () => {
+    const db = await seed()
+    const created = await createPlayerSignal(db, { id: 'set-pieces', playerId: 10, kind: 'SET_PIECES', value: { note: 'Takes corners' }, sourceType: 'YOUTUBE_TRANSCRIPT', evidenceSummary: 'Takes corners and free kicks', confidence: .7, observedAt: '2026-08-15T12:05:00Z', validUntil: '2026-08-22T12:05:00Z', status: 'PENDING' })
+    const updated = await revisePlayerSignalInterpretation(db, String(created.id), { claimClass: 'SET_PIECES', modelImpact: 'NONE', value: { note: created.evidenceSummary }, finalizeContext: true })
+    expect(updated).toMatchObject({ status: 'VERIFIED', interpretation: { claimClass: 'SET_PIECES', modelImpact: 'NONE', status: 'APPROVED' } })
+  })
 })

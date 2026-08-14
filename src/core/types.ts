@@ -39,6 +39,7 @@ export type ProjectionCatalogPlayer = {
   id: string
   fplId: number
   name: string
+  identityNames?: string[]
   team: { id: string; fplId: number; name: string; shortName: string }
   official: Record<string, unknown>
   teamStrength: Record<string, number | null>

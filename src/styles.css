@@ -5237,6 +5237,9 @@ h2 {
 .signal-preset-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 6px; }
 .signal-preset-grid button { padding: 7px 8px; border-radius: 7px; border: 1px solid rgba(148, 163, 184, .22); background: rgba(15, 23, 42, .75); color: #cbd5e1; cursor: pointer; font-size: 11px; }
 .signal-preset-grid button:hover { border-color: rgba(56, 189, 248, .5); color: #f8fafc; }
+.signal-context-presets { display:flex; flex-wrap:wrap; gap:6px; margin-top:8px; }
+.signal-context-presets button { padding:7px 10px; border-radius:7px; border:1px solid rgba(148,163,184,.22); background:rgba(30,41,59,.72); color:#cbd5e1; cursor:pointer; font-size:11px; }
+.signal-context-presets button:hover { border-color:rgba(52,211,153,.5); color:#f8fafc; }
 .signal-editor-actions { display: flex; gap: 6px; margin-top: 8px; }
 
 .signal-footer { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 6px; min-height:22px; }

@@ -3,7 +3,7 @@ import { expectedRoleMinutes, normalizeRoleProfile, type PlayerRoleProfile } fro
 import { scoringRules } from './scoring.ts'
 
 /** The calculation version recorded with every projection output. */
-export const MODEL_VERSION = 'role-aware-v2.2'
+export const MODEL_VERSION = 'role-aware-v2.3'
 
 /** Direct clean-sheet markets lead the estimate; the player/team model stabilizes thin niche markets. */
 export const MARKET_CLEAN_SHEET_WEIGHT = .75
@@ -119,8 +119,12 @@ function playerRates(player: Player) {
   const fallbackStrength = clamp(player.projection / (player.position === 'GK' || player.position === 'DEF' ? 4 : player.position === 'MID' ? 5.2 : 5.5), .65, 1.65)
   const observedGoals = stats?.expectedGoalsPer90 ?? (per90(stats?.expectedGoals, minutes) || per90(stats?.goals, minutes))
   const observedAssists = stats?.expectedAssistsPer90 ?? (per90(stats?.expectedAssists, minutes) || per90(stats?.assists, minutes))
-  const goalRate = minutes > 0 ? shrunkRate(observedGoals, prior.goals, minutes) : prior.goals * fallbackStrength
-  const assistRate = minutes > 0 ? shrunkRate(observedAssists, prior.assists, minutes) : prior.assists * fallbackStrength
+  // Historic xG/xA already captures some responsibilities. These are deliberately
+  // partial increments for newly confirmed ownership, not a full second estimate.
+  const setPieceGoalUplift = player.setPieceRole === 'PENALTIES' || player.setPieceRole === 'PENALTIES_AND_SET_PIECES' ? .045 : 0
+  const setPieceAssistUplift = player.setPieceRole === 'SET_PIECES' || player.setPieceRole === 'PENALTIES_AND_SET_PIECES' ? .030 : 0
+  const goalRate = (minutes > 0 ? shrunkRate(observedGoals, prior.goals, minutes) : prior.goals * fallbackStrength) + setPieceGoalUplift
+  const assistRate = (minutes > 0 ? shrunkRate(observedAssists, prior.assists, minutes) : prior.assists * fallbackStrength) + setPieceAssistUplift
   const xgcObserved = stats?.expectedGoalsConcededPer90 ?? per90(stats?.expectedGoalsConceded, minutes)
   const xgcRate = minutes > 0 ? shrunkRate(xgcObserved || prior.xgc, prior.xgc, minutes, 720) : prior.xgc
   const saveRate = minutes > 0 ? shrunkRate(stats?.savesPer90 ?? per90(stats?.saves, minutes), prior.saves, minutes) : prior.saves

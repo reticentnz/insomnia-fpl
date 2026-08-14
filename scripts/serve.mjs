@@ -789,6 +789,33 @@ function compactCandidates(candidates){
   }))
 }
 
+async function resolveCreatorAmbiguityWithLlm(claim,match){
+  if(match.status!=='AMBIGUOUS'||!Array.isArray(match.candidates)||!match.candidates.length)return match
+  const candidates=compactCandidates(match.candidates).slice(0,5)
+  const prompt=`Resolve one noisy YouTube transcript player name against the supplied current FPL catalog candidates only.
+Return JSON: {"playerId": number|null, "confidence": number, "reason": string}.
+Choose a player only when the name, club hint, position, price, and evidence make one supplied candidate clearly correct. If the club conflicts, the person is outside FPL, or there is genuine uncertainty, return playerId null. Never invent a player ID.
+
+Transcript name: ${claim.rawPlayerName}
+Club hint: ${claim.clubHint||'none'}
+Position hint: ${claim.positionHint||'none'}
+Price hint: ${claim.priceHint??'none'}
+Evidence: ${claim.evidenceText||claim.summary}
+Candidates: ${JSON.stringify(candidates)}`
+  try{
+    const llm=await callLLMProvider(prompt,{rawJson:true,maxOutputTokens:180})
+    await recordAiUsage({feature:'YOUTUBE_EXTRACTION',result:llm})
+    const parsed=JSON.parse(String(llm?.answer||'').trim().replace(/^```(?:json)?\s*/i,'').replace(/\s*```$/,''))
+    const confidence=Number(parsed?.confidence)
+    const candidate=candidates.find(item=>Number(item.playerId)===Number(parsed?.playerId))
+    if(candidate&&Number.isFinite(confidence)&&confidence>=.92){
+      const player=match.candidates.find(item=>Number(item.player?.id)===Number(candidate.playerId))?.player
+      if(player)return {status:'MATCHED',player,confidence:Math.min(1,confidence),candidates:match.candidates,reason:`LLM re-ranker: ${String(parsed.reason||'catalog-constrained high-confidence match').slice(0,300)}`}
+    }
+  }catch{}
+  return match
+}
+
 function validityDeadline(timeHorizon){
   const days={GW1:7,SHORT_TERM:14,MEDIUM_TERM:42,SEASON:120,UNKNOWN:14}[String(timeHorizon||'').toUpperCase()]||14
   return new Date(Date.now()+days*24*60*60*1000).toISOString()
@@ -839,7 +866,8 @@ async function processCreatorPayload(rawPayload){
   const contentId=`${payload.source.platform}:${payload.source.externalId}`
   const results=[]
   for(const claim of payload.claims){
-    const match=matchCreatorClaim(claim,data.players,aliases)
+    let match=matchCreatorClaim(claim,data.players,aliases)
+    match=await resolveCreatorAmbiguityWithLlm(claim,match)
     const resolvedPlayerId=match.player?.id||null
     const signalValue=Object.fromEntries(['startProbability','minutesIfStarting','substituteProbabilityWhenBenched','minutesIfSubstitute','depthRole','confidence'].filter(key=>claim[key]!=null).map(key=>[key,claim[key]]))
     const candidates=Array.isArray(match.candidates)&&match.candidates[0]?.player?compactCandidates(match.candidates):match.candidates||[]
@@ -851,7 +879,7 @@ async function processCreatorPayload(rawPayload){
     }
     results.push({id:claim.externalClaimId,rawPlayerName:claim.rawPlayerName,matchStatus:match.status,resolvedPlayerId,confidence:match.confidence,candidates,signalId:signalResult?.signal?.id||null,created:Boolean(signalResult?.created)})
   }
-  const unresolved=results.filter(row=>row.matchStatus!=='MATCHED').length
+  const unresolved=results.filter(row=>row.matchStatus==='AMBIGUOUS'||row.matchStatus==='UNRESOLVED').length
   return {contentId,created:results.filter(row=>row.created).length,matched:results.length-unresolved,unresolved,claims:results}
 }
 
@@ -938,7 +966,7 @@ async function refreshLiveData() {
     const signals=toCatalogRoleSignals(item)
     const roleProfile=resolvePlayerRole(baseRole(item),signals,{now:new Date(asOf),gameweek:currentGameweek||undefined})
     const expectedMinutes=roleProfile.startProbability*roleProfile.minutesIfStarting+(1-roleProfile.startProbability)*roleProfile.substituteProbabilityWhenBenched*roleProfile.minutesIfSubstitute
-    return {id:item.fplId,name:item.name,club:item.team.shortName,clubName:item.team.name,position:official.position,price:Number(official.price_tenths||0)/10,form:Number(official.form||0),ownership:Number(official.ownership_percent||0),minutes:availability,expectedMinutes,roleProfile,fixture:first?`${first.opponent.shortName} (${first.isHome?'H':'A'})`:'Blank',difficulty:first?.difficulty||3,projection:Number(official.ep_next||0),colour:colours[index%colours.length],status:String(official.status||'a'),chanceOfPlaying:official.chance_of_playing==null?undefined:Number(official.chance_of_playing),news:official.news||null,transfersIn:Number(official.transfers_in||0),transfersOut:Number(official.transfers_out||0),active:Boolean(official.active),dataConfidence:item.provenance.underlyingObservationId?'HIGH':'MEDIUM',upcomingFixtures:item.fixtures.map(fixture=>liveProjectionFixture(item,fixture)),stats:{minutes:Number(official.minutes||0),starts:Number(official.starts||0),totalPoints:Number(official.total_points||0),goals:Number(official.goals_scored||0),assists:Number(official.assists||0),cleanSheets:Number(official.clean_sheets||0),goalsConceded:Number(official.goals_conceded||0),saves:Number(official.saves||0),bonus:Number(official.bonus||0),bps:Number(official.bps||0),yellowCards:Number(official.yellow_cards||0),redCards:Number(official.red_cards||0),ownGoals:Number(official.own_goals||0),penaltiesMissed:Number(official.penalties_missed||0),penaltiesSaved:Number(official.penalties_saved||0),expectedGoals:Number(official.expected_goals||0),expectedAssists:Number(official.expected_assists||0),expectedGoalsConceded:Number(official.expected_goals_conceded||0)}}
+    return {id:item.fplId,name:item.name,identityNames:item.identityNames||[item.name],club:item.team.shortName,clubName:item.team.name,position:official.position,price:Number(official.price_tenths||0)/10,form:Number(official.form||0),ownership:Number(official.ownership_percent||0),minutes:availability,expectedMinutes,roleProfile,fixture:first?`${first.opponent.shortName} (${first.isHome?'H':'A'})`:'Blank',difficulty:first?.difficulty||3,projection:Number(official.ep_next||0),colour:colours[index%colours.length],status:String(official.status||'a'),chanceOfPlaying:official.chance_of_playing==null?undefined:Number(official.chance_of_playing),news:official.news||null,transfersIn:Number(official.transfers_in||0),transfersOut:Number(official.transfers_out||0),active:Boolean(official.active),dataConfidence:item.provenance.underlyingObservationId?'HIGH':'MEDIUM',upcomingFixtures:item.fixtures.map(fixture=>liveProjectionFixture(item,fixture)),stats:{minutes:Number(official.minutes||0),starts:Number(official.starts||0),totalPoints:Number(official.total_points||0),goals:Number(official.goals_scored||0),assists:Number(official.assists||0),cleanSheets:Number(official.clean_sheets||0),goalsConceded:Number(official.goals_conceded||0),saves:Number(official.saves||0),bonus:Number(official.bonus||0),bps:Number(official.bps||0),yellowCards:Number(official.yellow_cards||0),redCards:Number(official.red_cards||0),ownGoals:Number(official.own_goals||0),penaltiesMissed:Number(official.penalties_missed||0),penaltiesSaved:Number(official.penalties_saved||0),expectedGoals:Number(official.expected_goals||0),expectedAssists:Number(official.expected_assists||0),expectedGoalsConceded:Number(official.expected_goals_conceded||0)}}
   })
   return {capturedAt:catalog.freshness.official.observedAt||catalog.asOf,currentGameweek,deadline,modelVersion:MODEL_VERSION,players,freshness:catalog.freshness,inputHash:catalog.inputHash}
 }

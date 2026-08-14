@@ -159,6 +159,7 @@ export async function assembleProjectionInputCatalog(db: Database, options: {
     const underlying = underlyingByPlayer.get(player.id) || null
     return {
       id: player.id, fplId: Number(player.fpl_id), name: player.web_name,
+      identityNames: [...new Set([player.web_name, player.first_name, player.second_name, `${player.first_name || ''} ${player.second_name || ''}`].map(value => String(value || '').trim()).filter(Boolean))],
       team: { id: team.id, fplId: Number(team.fpl_id), name: team.name, shortName: team.short_name },
       official: { ...official, raw_payload_json: undefined },
       teamStrength: strength ? { strengthAttackHome: number(strength.strength_attack_home), strengthAttackAway: number(strength.strength_attack_away), strengthDefenceHome: number(strength.strength_defence_home), strengthDefenceAway: number(strength.strength_defence_away) } : { strengthAttackHome: null, strengthAttackAway: null, strengthDefenceHome: null, strengthDefenceAway: null },

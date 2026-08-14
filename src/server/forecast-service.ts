@@ -77,6 +77,15 @@ function toSignal(signal: Record<string, unknown>, fixture: ProjectionCatalogFix
   } as any
 }
 
+function setPieceRole(signals: Array<Record<string, unknown>>) {
+  const roles = signals.map(signal => (signal.value as Record<string, unknown> | undefined)?.setPieceRole)
+  if (roles.includes('PENALTIES_AND_SET_PIECES')) return 'PENALTIES_AND_SET_PIECES' as const
+  if (roles.includes('PENALTIES') && roles.includes('SET_PIECES')) return 'PENALTIES_AND_SET_PIECES' as const
+  if (roles.includes('PENALTIES')) return 'PENALTIES' as const
+  if (roles.includes('SET_PIECES')) return 'SET_PIECES' as const
+  return undefined
+}
+
 /**
  * Adapts the canonical catalogue at the calculation boundary only. The actual
  * component calculation remains the shared projection model used by live code.
@@ -94,6 +103,7 @@ export function projectCatalogFixture(player: ProjectionCatalogPlayer, fixture: 
     id: player.fplId, name: player.name, club: player.team.shortName, position, price: number(official.price_tenths) / 10,
     form: number(official.form), ownership: number(official.ownership_percent), minutes: number(official.minutes), fixture: `${fixture.opponent.shortName} (${fixture.isHome ? 'H' : 'A'})`, difficulty: fixture.difficulty || 3, projection: number(official.ep_next), colour: getTeamColor(player.team.shortName), status: String(official.status || 'a'), chanceOfPlaying: nullableNumber(official.chance_of_playing) ?? 100, active: Boolean(official.active), roleProfile: role, stats,
     upcomingFixtures: [{ gameweek: fixture.gameweekFplId || 0, opponent: fixture.opponent.shortName, venue: fixture.isHome ? 'H' : 'A', difficulty: fixture.difficulty || 3 }], dataConfidence: role.confidence,
+    setPieceRole: setPieceRole(player.roleSignals),
   }
   const ownAttack = Number(player.teamStrength[fixture.isHome ? 'strengthAttackHome' : 'strengthAttackAway'])
   const ownDefence = Number(player.teamStrength[fixture.isHome ? 'strengthDefenceHome' : 'strengthDefenceAway'])

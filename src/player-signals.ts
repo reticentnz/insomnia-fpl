@@ -44,6 +44,8 @@ export type RoleSignalValue = {
   substituteProbabilityWhenBenched?: number;
   minutesIfSubstitute?: number;
   depthRole?: "FIRST_CHOICE" | "ROTATION" | "BACKUP" | "OUT";
+  /** A manager-confirmed responsibility that adds a conservative attacking-rate uplift. */
+  setPieceRole?: "SET_PIECES" | "PENALTIES" | "PENALTIES_AND_SET_PIECES";
   note?: string;
 };
 

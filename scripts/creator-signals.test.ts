@@ -47,6 +47,16 @@ describe('creator signal ingestion helpers',()=>{
     expect(spursMatch.player?.id).toBe(12)
   })
 
+  it('matches full legal names and close caption variants only with strong club support',()=>{
+    const players=[
+      {id:1,name:'Virgil',identityNames:['Virgil van Dijk','van Dijk'],club:'LIV',clubName:'Liverpool',position:'DEF'},
+      {id:2,name:'Dubravka',club:'TOT',clubName:'Tottenham Hotspur',position:'GK'},
+    ]
+    expect(matchCreatorClaim({rawPlayerName:'Van Dijk',clubHint:'Liverpool'},players).player?.id).toBe(1)
+    expect(matchCreatorClaim({rawPlayerName:'Bravco',clubHint:'Spurs'},players).player?.id).toBe(2)
+    expect(matchCreatorClaim({rawPlayerName:'Johansson',clubHint:'Motherwell'},players)).toMatchObject({status:'DISMISSED',reason:'club is outside the active FPL catalog'})
+  })
+
   it('creates timestamped evidence and only carries explicit role values',()=>{
     const draft=signalDraftFromClaim({category:'VALUE',summary:'Cheap upside',timestampSeconds:69,confidence:.8,startProbability:null,minutesIfStarting:null,substituteProbabilityWhenBenched:null,minutesIfSubstitute:null,depthRole:null},10,{url:'https://www.youtube.com/watch?v=abc123'})
     expect(draft.kind).toBe('VALUE_OPINION')
