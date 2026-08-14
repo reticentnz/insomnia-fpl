@@ -749,8 +749,8 @@ async function refreshSystemPlayerCount(message) {
 async function adminStatusSnapshot() {
   const db = await getDb()
   const [runs, unresolved, manager, aiUsage, aiUsageByFeature, recentAiUsage] = await Promise.all([
-    db.query(`SELECT "id","source","status","started_at","finished_at","inserted_count","updated_count","unmatched_count","used_cache","error_summary"
-      FROM "FeedRun" ORDER BY "started_at" DESC LIMIT 12`),
+    db.query(`SELECT "id","source","status","started_at","finished_at","source_updated_at","payload_hash","request_count","inserted_count","updated_count","unmatched_count","used_cache","cache_captured_at","error_summary","metadata_json"
+      FROM "FeedRun" ORDER BY datetime("started_at") DESC, "id" DESC LIMIT 50`),
     db.query(`SELECT
       (SELECT COUNT(*) FROM "UnderlyingObservation" WHERE "match_status" != 'MATCHED' AND "feed_run_id"=(SELECT "id" FROM "FeedRun" WHERE "source"='UNDERLYING' AND "status" IN ('SUCCEEDED','PARTIAL') ORDER BY datetime("started_at") DESC,"id" DESC LIMIT 1)) AS unresolved_players,
       (SELECT COUNT(*) FROM "MarketFixtureObservation" WHERE "fixture_id" IS NULL AND "feed_run_id"=(SELECT "id" FROM "FeedRun" WHERE "source"='MARKET' AND "status" IN ('SUCCEEDED','PARTIAL') ORDER BY datetime("started_at") DESC,"id" DESC LIMIT 1)) AS unresolved_fixtures`),
@@ -764,7 +764,23 @@ async function adminStatusSnapshot() {
     schemaVersion: 1,
     authenticationRequired: Boolean(process.env.ADMIN_TOKEN),
     operations: publicAdminOperations(),
-    feedRuns: runs.rows.map(row => ({ id: row.id, source: row.source, status: row.status, startedAt: row.started_at, finishedAt: row.finished_at, insertedCount: Number(row.inserted_count), updatedCount: Number(row.updated_count), unmatchedCount: Number(row.unmatched_count), usedCache: Boolean(row.used_cache), error: row.error_summary })),
+    feedRuns: runs.rows.map(row => ({
+      id: row.id,
+      source: row.source,
+      status: row.status,
+      startedAt: row.started_at,
+      finishedAt: row.finished_at,
+      sourceUpdatedAt: row.source_updated_at,
+      payloadHash: row.payload_hash,
+      requestCount: Number(row.request_count || 0),
+      insertedCount: Number(row.inserted_count),
+      updatedCount: Number(row.updated_count),
+      unmatchedCount: Number(row.unmatched_count),
+      usedCache: Boolean(row.used_cache),
+      cacheCapturedAt: row.cache_captured_at,
+      error: row.error_summary,
+      metadata: parseJson(row.metadata_json, {}),
+    })),
     unresolved: { players: Number(unresolved.rows[0]?.unresolved_players || 0), fixtures: Number(unresolved.rows[0]?.unresolved_fixtures || 0) },
     manager: manager?.account ? { teamId: manager.account.teamId, teamName: manager.account.teamName, lastSynced: manager.account.lastSynced, playerCount: manager.squad?.length || 0 } : null,
     oddsConfigured: Boolean(String(process.env.ODDS_API_KEY || '').trim()),

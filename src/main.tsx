@@ -482,6 +482,9 @@ function AdminView({ system, forecast, horizon }: { system: SystemStatus | null;
   const [error, setError] = useState<string | null>(null);
   const [token, setToken] = useState(() => sessionStorage.getItem("fpl-admin-token") || "");
   const [starting, setStarting] = useState<string | null>(null);
+  const [feedSourceFilter, setFeedSourceFilter] = useState("ALL");
+  const [feedStatusFilter, setFeedStatusFilter] = useState("ALL");
+  const [expandedFeedRun, setExpandedFeedRun] = useState<string | null>(null);
   const load = useCallback(async () => {
     try { setStatus(await fetchAdminStatus()); setError(null); }
     catch (reason) { setError(reason instanceof Error ? reason.message : "Admin status unavailable"); }
@@ -501,6 +504,11 @@ function AdminView({ system, forecast, horizon }: { system: SystemStatus | null;
     finally { setStarting(null); }
   };
   const running = status?.operations.some(operation => operation.status === "RUNNING") || false;
+  const filteredFeedRuns = (status?.feedRuns || []).filter(run =>
+    (feedSourceFilter === "ALL" || run.source === feedSourceFilter)
+    && (feedStatusFilter === "ALL" || run.status === feedStatusFilter),
+  );
+  const feedSources = [...new Set((status?.feedRuns || []).map(run => run.source))];
   return <div className="admin-view">
     <ForecastReadinessPanel system={system} forecast={forecast} requestedHorizon={horizon} />
     <section className="admin-summary-grid">
@@ -551,12 +559,33 @@ function AdminView({ system, forecast, horizon }: { system: SystemStatus | null;
       })}
     </section>
     <section className="admin-feed-card">
-      <div className="admin-section-heading"><div><small>INGESTION AUDIT</small><h2>Recent feed runs</h2></div><button className="ghost-btn" onClick={() => void load()}>Refresh</button></div>
+      <div className="admin-section-heading admin-feed-heading"><div><small>INGESTION AUDIT</small><h2>Feed run history</h2><p className="admin-section-note">Showing the latest {status?.feedRuns.length || 0} runs. Expand a row for source freshness, cache, metadata, and errors.</p></div><button className="ghost-btn" onClick={() => void load()}>Refresh</button></div>
+      <div className="admin-feed-filters">
+        <label><span>Source</span><select value={feedSourceFilter} onChange={event => setFeedSourceFilter(event.target.value)}><option value="ALL">All sources</option>{feedSources.map(source => <option key={source} value={source}>{feedSourceLabel[source] || source.replaceAll("_", " ")}</option>)}</select></label>
+        <label><span>Status</span><select value={feedStatusFilter} onChange={event => setFeedStatusFilter(event.target.value)}><option value="ALL">All statuses</option>{["RUNNING", "SUCCEEDED", "PARTIAL", "FAILED"].map(value => <option key={value} value={value}>{value}</option>)}</select></label>
+        <span className="admin-feed-count">{filteredFeedRuns.length} matching run{filteredFeedRuns.length === 1 ? "" : "s"}</span>
+      </div>
       <div className="admin-feed-table" role="table">
         <div className="admin-feed-row admin-feed-header" role="row"><span>Source</span><span>Status</span><span>Started</span><span>Changes</span><span>Outcome</span></div>
-        {status?.feedRuns.length ? status.feedRuns.map(run => <div className="admin-feed-row" role="row" key={run.id} title={run.error || run.id}>
-          <b>{feedSourceLabel[run.source] || run.source.replaceAll("_", " ")}</b><span className={`feed-status feed-${run.status.toLowerCase()}`}>{run.status}</span><span>{formatOperationalTime(run.startedAt)}</span><span>{feedRunChanges(run)}</span><span>{feedRunOutcome(run)}{run.usedCache ? " · cache" : ""}</span>
-        </div>) : <p className="admin-empty">No feed runs recorded yet.</p>}
+        {filteredFeedRuns.length ? filteredFeedRuns.map(run => {
+          const expanded = expandedFeedRun === run.id;
+          const duration = run.finishedAt ? Math.max(0, (Date.parse(run.finishedAt) - Date.parse(run.startedAt)) / 1000) : null;
+          return <div className={`admin-feed-entry${expanded ? " is-expanded" : ""}`} key={run.id}>
+            <button className="admin-feed-row admin-feed-row-button" role="row" onClick={() => setExpandedFeedRun(expanded ? null : run.id)} aria-expanded={expanded} title={run.error || run.id}>
+              <b>{feedSourceLabel[run.source] || run.source.replaceAll("_", " ")}</b><span className={`feed-status feed-${run.status.toLowerCase()}`}>{run.status}</span><span>{formatOperationalTime(run.startedAt)}</span><span>{feedRunChanges(run)}</span><span>{feedRunOutcome(run)}{run.usedCache ? " · cache" : ""}</span>
+            </button>
+            {expanded && <div className="admin-feed-details">
+              <div><small>Run ID</small><code>{run.id}</code></div>
+              <div><small>Duration</small><span>{duration == null ? "Still running" : duration < 60 ? `${duration.toFixed(1)}s` : `${Math.floor(duration / 60)}m ${(duration % 60).toFixed(0)}s`}</span></div>
+              <div><small>Source data</small><span>{run.sourceUpdatedAt ? formatOperationalTime(run.sourceUpdatedAt) : "Not reported"}</span></div>
+              <div><small>Requests</small><span>{run.requestCount}</span></div>
+              <div><small>Cache</small><span>{run.usedCache ? `Used${run.cacheCapturedAt ? ` · captured ${formatOperationalTime(run.cacheCapturedAt)}` : ""}` : "Not used"}</span></div>
+              <div><small>Payload</small><code>{run.payloadHash ? run.payloadHash.slice(0, 12) : "Not recorded"}</code></div>
+              {Object.keys(run.metadata).length > 0 && <div className="admin-feed-detail-wide"><small>Metadata</small><code>{JSON.stringify(run.metadata)}</code></div>}
+              {run.error && <div className="admin-feed-detail-wide admin-feed-error"><small>Error</small><span>{run.error}</span></div>}
+            </div>}
+          </div>;
+        }) : <p className="admin-empty">No feed runs match these filters.</p>}
       </div>
     </section>
   </div>;

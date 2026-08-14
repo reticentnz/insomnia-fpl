@@ -90,8 +90,18 @@ body {
 .admin-feed-card { border-radius: var(--radius-lg); padding: 20px; }
 .admin-section-heading { display: flex; justify-content: space-between; align-items: center; margin-bottom: 16px; }
 .admin-section-heading h2 { font-family: var(--font-heading); font-size: 19px; margin-top: 2px; }
+.admin-feed-heading { align-items: flex-start; }
+.admin-section-note { color: var(--text-muted); font-size: 11px; margin-top: 4px; }
+.admin-feed-filters { display: flex; align-items: end; gap: 10px; margin-bottom: 12px; }
+.admin-feed-filters label { display: grid; gap: 4px; }
+.admin-feed-filters label span { color: var(--text-dim); font-size: 9px; font-weight: 800; letter-spacing: .08em; text-transform: uppercase; }
+.admin-feed-filters select { min-width: 150px; background: var(--bg-input); color: var(--text-main); border: 1px solid var(--border-subtle); border-radius: var(--radius-sm); padding: 8px 10px; font: inherit; font-size: 11px; }
+.admin-feed-count { margin-left: auto; color: var(--text-dim); font-size: 10px; padding-bottom: 9px; }
 .admin-feed-table { display: grid; }
 .admin-feed-row { display: grid; grid-template-columns: 1.1fr .8fr 1.1fr 1.4fr 1fr; gap: 12px; align-items: center; min-height: 46px; padding: 8px 10px; border-top: 1px solid var(--border-subtle); font-size: 11px; color: var(--text-muted); }
+.admin-feed-row-button { width: 100%; background: transparent; color: inherit; border-left: 0; border-right: 0; border-bottom: 0; text-align: left; }
+.admin-feed-row-button:hover { background: rgba(148,163,184,.06); }
+.admin-feed-entry.is-expanded .admin-feed-row-button { border-bottom-color: transparent; background: rgba(148,163,184,.05); }
 .admin-feed-row b { color: var(--text-main); font-size: 11px; }
 .admin-feed-header { min-height: 30px; border: 0; color: var(--text-dim); font-size: 9px; font-weight: 800; text-transform: uppercase; letter-spacing: .08em; }
 .feed-status { width: fit-content; border-radius: var(--radius-full); padding: 3px 7px; font-size: 9px; font-weight: 800; }
@@ -100,6 +110,13 @@ body {
 .feed-failed { color: #fda4af; background: rgba(244,63,94,.12); }
 .feed-partial { color: var(--accent-gold); background: rgba(251,191,36,.12); }
 .admin-empty { padding: 24px 10px; color: var(--text-muted); font-size: 12px; }
+.admin-feed-details { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 10px 16px; padding: 12px 10px 16px; border-top: 1px solid var(--border-subtle); background: rgba(15,23,42,.2); }
+.admin-feed-details > div { min-width: 0; display: grid; gap: 3px; }
+.admin-feed-details small { color: var(--text-dim); font-size: 9px; font-weight: 800; letter-spacing: .08em; text-transform: uppercase; }
+.admin-feed-details span, .admin-feed-details code { color: var(--text-muted); font-size: 10px; overflow-wrap: anywhere; }
+.admin-feed-details code { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
+.admin-feed-detail-wide { grid-column: 1 / -1; }
+.admin-feed-error span { color: #fda4af; }
 .ai-usage-note { color: var(--text-dim); font-size: 11px; }
 .ai-usage-summary { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px; }
 .ai-usage-summary > div, .ai-usage-breakdown > div { padding: 12px; border: 1px solid var(--border-subtle); border-radius: var(--radius-sm); background: rgba(15, 23, 42, .25); }
@@ -113,11 +130,17 @@ body {
   .ai-usage-summary, .ai-usage-breakdown { grid-template-columns: 1fr; }
   .admin-feed-row { grid-template-columns: 1fr .8fr 1fr; }
   .admin-feed-row > :nth-child(4), .admin-feed-row > :nth-child(5) { display: none; }
+  .admin-feed-details { grid-template-columns: repeat(2, minmax(0, 1fr)); }
 }
 @media (max-width: 700px) {
   .admin-actions-grid, .admin-summary-grid { grid-template-columns: 1fr; }
   .admin-token-card { align-items: stretch; flex-direction: column; }
   .admin-token-card input { width: 100%; }
+  .admin-feed-filters { align-items: stretch; flex-wrap: wrap; }
+  .admin-feed-filters label { flex: 1; }
+  .admin-feed-filters select { width: 100%; min-width: 0; }
+  .admin-feed-count { width: 100%; margin-left: 0; padding-bottom: 0; }
+  .admin-feed-details { grid-template-columns: 1fr; }
 }
 
 button {

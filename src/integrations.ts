@@ -1055,7 +1055,23 @@ export async function triggerForecastRecompute(): Promise<ForecastRecomputeResul
 }
 
 export type AdminOperation = { id: string; status: 'IDLE' | 'RUNNING' | 'SUCCEEDED' | 'FAILED'; startedAt: string | null; finishedAt: string | null; message: string | null; error: string | null };
-export type AdminFeedRun = { id: string; source: string; status: string; startedAt: string; finishedAt: string | null; insertedCount: number; updatedCount: number; unmatchedCount: number; usedCache: boolean; error: string | null };
+export type AdminFeedRun = {
+  id: string;
+  source: string;
+  status: string;
+  startedAt: string;
+  finishedAt: string | null;
+  sourceUpdatedAt: string | null;
+  payloadHash: string | null;
+  requestCount: number;
+  insertedCount: number;
+  updatedCount: number;
+  unmatchedCount: number;
+  usedCache: boolean;
+  cacheCapturedAt: string | null;
+  error: string | null;
+  metadata: Record<string, unknown>;
+};
 export type ScheduledRefresh = { enabled: boolean; available: boolean; intervalHours: number; lastRefreshedAt: string | null; nextRefreshAt: string | null };
 export type AdminStatus = {
   authenticationRequired: boolean;
