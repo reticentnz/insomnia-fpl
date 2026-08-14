@@ -905,6 +905,25 @@ async function liveData() {
   return refreshLiveData()
 }
 
+function liveProjectionFixture(item, fixture) {
+  const ownAttack = Number(item.teamStrength[fixture.isHome ? 'strengthAttackHome' : 'strengthAttackAway'])
+  const ownDefence = Number(item.teamStrength[fixture.isHome ? 'strengthDefenceHome' : 'strengthDefenceAway'])
+  const opponentAttack = Number(fixture.opponent.teamStrength[fixture.isHome ? 'strengthAttackAway' : 'strengthAttackHome'])
+  const opponentDefence = Number(fixture.opponent.teamStrength[fixture.isHome ? 'strengthDefenceAway' : 'strengthDefenceHome'])
+  const marketAttack = fixture.market ? (fixture.isHome ? fixture.market.homeExpectedGoals : fixture.market.awayExpectedGoals) / 1.4 : null
+  const marketDefence = fixture.market ? (fixture.isHome ? fixture.market.awayExpectedGoals : fixture.market.homeExpectedGoals) / 1.4 : null
+  const officialComplete = [ownAttack, ownDefence, opponentAttack, opponentDefence].every(value => Number.isFinite(value) && value > 0)
+  const strength = marketAttack != null && marketDefence != null
+    ? { method: 'MARKET_XG', attackMultiplier: marketAttack, defenceMultiplier: marketDefence }
+    : officialComplete
+      ? { method: 'OFFICIAL_STRENGTH', attackMultiplier: ownAttack / 1000 * (2 - opponentDefence / 1000), defenceMultiplier: opponentAttack / 1000 * (2 - ownDefence / 1000) }
+      : undefined
+  const marketCleanSheetProbability = fixture.market
+    ? (fixture.isHome ? fixture.market.homeCleanSheetProbability : fixture.market.awayCleanSheetProbability) ?? undefined
+    : undefined
+  return { gameweek: fixture.gameweekFplId || 0, opponent: fixture.opponent.shortName, venue: fixture.isHome ? 'H' : 'A', difficulty: fixture.difficulty || 3, marketCleanSheetProbability, strength }
+}
+
 async function refreshLiveData() {
   const db=await getDb(),asOf=new Date().toISOString()
   const catalog=await assembleProjectionInputCatalog(db,{asOf})
@@ -917,7 +936,7 @@ async function refreshLiveData() {
     const signals=toCatalogRoleSignals(item)
     const roleProfile=resolvePlayerRole(baseRole(item),signals,{now:new Date(asOf),gameweek:currentGameweek||undefined})
     const expectedMinutes=roleProfile.startProbability*roleProfile.minutesIfStarting+(1-roleProfile.startProbability)*roleProfile.substituteProbabilityWhenBenched*roleProfile.minutesIfSubstitute
-    return {id:item.fplId,name:item.name,club:item.team.shortName,clubName:item.team.name,position:official.position,price:Number(official.price_tenths||0)/10,form:Number(official.form||0),ownership:Number(official.ownership_percent||0),minutes:availability,expectedMinutes,roleProfile,fixture:first?`${first.opponent.shortName} (${first.isHome?'H':'A'})`:'Blank',difficulty:first?.difficulty||3,projection:Number(official.ep_next||0),colour:colours[index%colours.length],status:String(official.status||'a'),chanceOfPlaying:official.chance_of_playing==null?undefined:Number(official.chance_of_playing),news:official.news||null,transfersIn:Number(official.transfers_in||0),transfersOut:Number(official.transfers_out||0),active:Boolean(official.active),dataConfidence:item.provenance.underlyingObservationId?'HIGH':'MEDIUM',upcomingFixtures:item.fixtures.map(fixture=>({gameweek:fixture.gameweekFplId||0,opponent:fixture.opponent.shortName,venue:fixture.isHome?'H':'A',difficulty:fixture.difficulty||3})),stats:{minutes:Number(official.minutes||0),starts:Number(official.starts||0),totalPoints:Number(official.total_points||0),goals:Number(official.goals_scored||0),assists:Number(official.assists||0),cleanSheets:Number(official.clean_sheets||0),goalsConceded:Number(official.goals_conceded||0),saves:Number(official.saves||0),bonus:Number(official.bonus||0),bps:Number(official.bps||0),yellowCards:Number(official.yellow_cards||0),redCards:Number(official.red_cards||0),ownGoals:Number(official.own_goals||0),penaltiesMissed:Number(official.penalties_missed||0),penaltiesSaved:Number(official.penalties_saved||0),expectedGoals:Number(official.expected_goals||0),expectedAssists:Number(official.expected_assists||0),expectedGoalsConceded:Number(official.expected_goals_conceded||0)}}
+    return {id:item.fplId,name:item.name,club:item.team.shortName,clubName:item.team.name,position:official.position,price:Number(official.price_tenths||0)/10,form:Number(official.form||0),ownership:Number(official.ownership_percent||0),minutes:availability,expectedMinutes,roleProfile,fixture:first?`${first.opponent.shortName} (${first.isHome?'H':'A'})`:'Blank',difficulty:first?.difficulty||3,projection:Number(official.ep_next||0),colour:colours[index%colours.length],status:String(official.status||'a'),chanceOfPlaying:official.chance_of_playing==null?undefined:Number(official.chance_of_playing),news:official.news||null,transfersIn:Number(official.transfers_in||0),transfersOut:Number(official.transfers_out||0),active:Boolean(official.active),dataConfidence:item.provenance.underlyingObservationId?'HIGH':'MEDIUM',upcomingFixtures:item.fixtures.map(fixture=>liveProjectionFixture(item,fixture)),stats:{minutes:Number(official.minutes||0),starts:Number(official.starts||0),totalPoints:Number(official.total_points||0),goals:Number(official.goals_scored||0),assists:Number(official.assists||0),cleanSheets:Number(official.clean_sheets||0),goalsConceded:Number(official.goals_conceded||0),saves:Number(official.saves||0),bonus:Number(official.bonus||0),bps:Number(official.bps||0),yellowCards:Number(official.yellow_cards||0),redCards:Number(official.red_cards||0),ownGoals:Number(official.own_goals||0),penaltiesMissed:Number(official.penalties_missed||0),penaltiesSaved:Number(official.penalties_saved||0),expectedGoals:Number(official.expected_goals||0),expectedAssists:Number(official.expected_assists||0),expectedGoalsConceded:Number(official.expected_goals_conceded||0)}}
   })
   return {capturedAt:catalog.freshness.official.observedAt||catalog.asOf,currentGameweek,deadline,modelVersion:MODEL_VERSION,players,freshness:catalog.freshness,inputHash:catalog.inputHash}
 }

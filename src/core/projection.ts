@@ -3,7 +3,10 @@ import { expectedRoleMinutes, normalizeRoleProfile, type PlayerRoleProfile } fro
 import { scoringRules } from './scoring.ts'
 
 /** The calculation version recorded with every projection output. */
-export const MODEL_VERSION = 'role-aware-v2.1'
+export const MODEL_VERSION = 'role-aware-v2.2'
+
+/** Direct clean-sheet markets lead the estimate; the player/team model stabilizes thin niche markets. */
+export const MARKET_CLEAN_SHEET_WEIGHT = .75
 
 /** Shared fixture-level role maths. The three states are exhaustive and mutually exclusive. */
 export type FixtureRoleProfile = {
@@ -129,6 +132,18 @@ function playerRates(player: Player) {
   return { goalRate, assistRate, xgcRate, saveRate, bonusRate, cardRate, defensiveRate, minutes }
 }
 
+function fixtureDefenceRates(player: Player, fixture: FixtureItem) {
+  const rates = playerRates(player)
+  const { defence } = fixtureFactors(fixture)
+  const modelLambda = rates.xgcRate * defence
+  const modelCleanSheetProbability = Math.exp(-modelLambda)
+  const marketProbability = fixture.marketCleanSheetProbability
+  const cleanSheetProbability = marketProbability == null
+    ? modelCleanSheetProbability
+    : MARKET_CLEAN_SHEET_WEIGHT * clamp(marketProbability, .01, .99) + (1 - MARKET_CLEAN_SHEET_WEIGHT) * modelCleanSheetProbability
+  return { cleanSheetProbability, goalsConcededRate: -Math.log(clamp(cleanSheetProbability, .01, .99)) }
+}
+
 /**
  * 2026/27 removed the tackled BPS penalty, reduced CBI reward, and improved
  * goalkeeper save BPS. Until 2026/27 match data can calibrate those changes,
@@ -145,8 +160,9 @@ export function bonusAdjustment2026(position: Position, defensiveActionsPer90: n
 /** Rates used by the seeded outcome simulator. This is deliberately derived from the same shrunk-rate model as expected value. */
 export function fixtureRateModel(player: Player, fixture: FixtureItem): FixtureRateModel {
   const rates = playerRates(player), { attack, defence } = fixtureFactors(fixture), minutes = Math.max(1, rates.minutes)
+  const defensive = fixtureDefenceRates(player, fixture)
   return {
-    goalRate: rates.goalRate * attack, assistRate: rates.assistRate * attack, xgcRate: rates.xgcRate * defence,
+    goalRate: rates.goalRate * attack, assistRate: rates.assistRate * attack, xgcRate: defensive.goalsConcededRate,
     saveRate: rates.saveRate / Math.max(defence, .75), bonusRate: rates.bonusRate * attack, cardRate: rates.cardRate,
     defensiveRate: rates.defensiveRate,
     penaltySaveRate: per90(player.stats?.penaltiesSaved, minutes), penaltyMissRate: per90(player.stats?.penaltiesMissed, minutes), ownGoalRate: per90(player.stats?.ownGoals, minutes),
@@ -156,10 +172,11 @@ export function fixtureRateModel(player: Player, fixture: FixtureItem): FixtureR
 function oneFixtureAtMinutes(player: Player, fixture: FixtureItem, mins: number): Omit<FixtureProjection, 'roleProbabilities' | 'strengthMethod'> {
   const rates = playerRates(player), minuteShare = mins / 90, playProbability = mins > 0 ? 1 : 0, sixtyProbability = mins >= 60 ? 1 : 0
   const { attack, defence } = fixtureFactors(fixture)
+  const defensive = fixtureDefenceRates(player, fixture)
   const goals = rates.goalRate * minuteShare * attack * scoringRules.goal[player.position], assists = rates.assistRate * minuteShare * attack * scoringRules.assist
-  const appearance = playProbability + sixtyProbability, cleanSheetProbability = Math.exp(-rates.xgcRate * defence)
+  const appearance = playProbability + sixtyProbability, cleanSheetProbability = defensive.cleanSheetProbability
   const cleanSheet = cleanSheetProbability * sixtyProbability * scoringRules.cleanSheet[player.position]
-  const concededLambda = rates.xgcRate * defence * minuteShare
+  const concededLambda = defensive.goalsConcededRate * minuteShare
   const goalsConceded = player.position === 'GK' || player.position === 'DEF' ? -poissonFloorExpectation(concededLambda, 2) : 0
   const saves = player.position === 'GK' ? poissonFloorExpectation(rates.saveRate * minuteShare / Math.max(defence, .75), 3) : 0
   const penalties = minuteShare * (per90(player.stats?.penaltiesSaved, rates.minutes) * scoringRules.penaltySave + per90(player.stats?.penaltiesMissed, rates.minutes) * scoringRules.penaltyMiss + per90(player.stats?.ownGoals, rates.minutes) * scoringRules.ownGoal)

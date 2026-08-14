@@ -27,6 +27,8 @@ export type ProjectionCatalogFixture = {
     id: string
     homeExpectedGoals: number
     awayExpectedGoals: number
+    homeCleanSheetProbability: number | null
+    awayCleanSheetProbability: number | null
     derivationMethod: string
     capturedAt: string
     ageMs: number

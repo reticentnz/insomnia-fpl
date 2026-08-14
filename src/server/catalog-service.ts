@@ -148,6 +148,8 @@ export async function assembleProjectionInputCatalog(db: Database, options: {
           id: market.id,
           homeExpectedGoals: Number(market.home_expected_goals),
           awayExpectedGoals: Number(market.away_expected_goals),
+          homeCleanSheetProbability: market.home_clean_sheet_probability == null ? null : Number(market.home_clean_sheet_probability),
+          awayCleanSheetProbability: market.away_clean_sheet_probability == null ? null : Number(market.away_clean_sheet_probability),
           derivationMethod: String(market.derivation_method),
           capturedAt: String(market.captured_at),
           ageMs: Math.max(0, Date.parse(asOf) - Date.parse(String(market.captured_at))),

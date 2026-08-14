@@ -7,6 +7,8 @@ export type FixtureItem = {
   opponent: string;
   venue: "H" | "A";
   difficulty: number;
+  /** De-vigged market probability that the player's team keeps a clean sheet. */
+  marketCleanSheetProbability?: number;
   strength?: { method: "MARKET_XG" | "OFFICIAL_STRENGTH"; attackMultiplier: number; defenceMultiplier: number };
 };
 export type PlayerStats = {

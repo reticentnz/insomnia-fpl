@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { bonusAdjustment2026, fixtureExpectedMinutes, fixtureRoleStates, projectFixture, projectPlayer, selectStrengthMethod } from './projection.ts'
+import { bonusAdjustment2026, fixtureExpectedMinutes, fixtureRateModel, fixtureRoleStates, MARKET_CLEAN_SHEET_WEIGHT, projectFixture, projectPlayer, selectStrengthMethod } from './projection.ts'
 import type { Player } from '../domain.ts'
 
 describe('fixture role states', () => {
@@ -34,6 +34,39 @@ describe('fixture strength method selection', () => {
     expect(market.strengthMethod).toBe('MARKET_XG')
     expect(official.strengthMethod).toBe('OFFICIAL_STRENGTH')
     expect(market.total).not.toBe(fallback.total)
+  })
+})
+
+describe('market clean-sheet probabilities', () => {
+  const player = (position: 'GK' | 'DEF' | 'MID' | 'FWD'): Player => ({
+    id: 7, name: 'Clean Sheet Test', club: 'TST', position, price: 5, form: 0, ownership: 0,
+    minutes: 0, expectedMinutes: 90, fixture: 'OPP (H)', difficulty: 3, projection: 5,
+    colour: '#000', dataConfidence: 'HIGH',
+    roleProfile: { startProbability: 1, substituteProbabilityWhenBenched: 0, minutesIfStarting: 90, minutesIfSubstitute: 0, confidence: 'HIGH', derivedFromSignalIds: [] },
+  })
+
+  it('makes the direct market the primary clean-sheet input for defenders', () => {
+    const baseline = projectFixture(player('DEF'), { gameweek: 1, opponent: 'OPP', venue: 'H', difficulty: 3 })
+    const market = projectFixture(player('DEF'), { gameweek: 1, opponent: 'OPP', venue: 'H', difficulty: 3, marketCleanSheetProbability: .61 })
+    const expectedProbability = MARKET_CLEAN_SHEET_WEIGHT * .61 + (1 - MARKET_CLEAN_SHEET_WEIGHT) * baseline.cleanSheetProbability
+    expect(market.cleanSheetProbability).toBeCloseTo(expectedProbability, 8)
+    expect(market.cleanSheet).toBeCloseTo(expectedProbability * 4, 8)
+    expect(market.cleanSheet).toBeGreaterThan(baseline.cleanSheet)
+  })
+
+  it('awards midfielders one clean-sheet point and forwards none', () => {
+    const fixture = { gameweek: 1, opponent: 'OPP', venue: 'H' as const, difficulty: 3, marketCleanSheetProbability: .61 }
+    const midfielder = projectFixture(player('MID'), fixture)
+    const forward = projectFixture(player('FWD'), fixture)
+    expect(midfielder.cleanSheet).toBeCloseTo(midfielder.cleanSheetProbability, 8)
+    expect(forward.cleanSheet).toBe(0)
+  })
+
+  it('uses the blended clean-sheet probability in the simulation rate', () => {
+    const fixture = { gameweek: 1, opponent: 'OPP', venue: 'H' as const, difficulty: 3, marketCleanSheetProbability: .61 }
+    const projected = projectFixture(player('DEF'), fixture)
+    const rates = fixtureRateModel(player('DEF'), fixture)
+    expect(Math.exp(-rates.xgcRate)).toBeCloseTo(projected.cleanSheetProbability, 8)
   })
 })
 

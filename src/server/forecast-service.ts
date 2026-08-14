@@ -2,7 +2,7 @@ import { createHash, randomUUID } from 'node:crypto'
 import { canonicalJson, sanitizeError } from '../../scripts/feed-run.mjs'
 import { projectionBreakdown, MODEL_VERSION } from '../model.ts'
 import { resolvePlayerRole, type PlayerRoleProfile } from '../player-signals.ts'
-import { fixtureRateModel, fixtureRoleStates, projectFixture } from '../core/projection.ts'
+import { fixtureRateModel, fixtureRoleStates, MARKET_CLEAN_SHEET_WEIGHT, projectFixture } from '../core/projection.ts'
 import { SIMULATION_COUNT, SIMULATION_SEED_VERSION, simulateFixtureOutcomes } from '../core/uncertainty.ts'
 import type { ProjectionCatalogFixture, ProjectionCatalogPlayer, ProjectionInputCatalog } from '../core/types.ts'
 import { assembleProjectionInputCatalog } from './catalog-service.ts'
@@ -107,7 +107,10 @@ export function projectCatalogFixture(player: ProjectionCatalogPlayer, fixture: 
     : officialComplete
       ? { method: 'OFFICIAL_STRENGTH' as const, attackMultiplier: ownAttack / 1000 * (2 - opponentDefence / 1000), defenceMultiplier: opponentAttack / 1000 * (2 - ownDefence / 1000) }
       : undefined
-  const fixtureInput = { gameweek: fixture.gameweekFplId || 0, opponent: fixture.opponent.shortName, venue: fixture.isHome ? 'H' as const : 'A' as const, difficulty: fixture.difficulty || 3, strength }
+  const marketCleanSheetProbability = fixture.market
+    ? (fixture.isHome ? fixture.market.homeCleanSheetProbability : fixture.market.awayCleanSheetProbability) ?? undefined
+    : undefined
+  const fixtureInput = { gameweek: fixture.gameweekFplId || 0, opponent: fixture.opponent.shortName, venue: fixture.isHome ? 'H' as const : 'A' as const, difficulty: fixture.difficulty || 3, marketCleanSheetProbability, strength }
   const breakdown = projectionBreakdown(modelPlayer, 1)
   const components = projectFixture(modelPlayer, fixtureInput)
   const states = fixtureRoleStates(role)
@@ -175,7 +178,7 @@ export async function createForecastRun(db: Database, options: CreateForecastRun
   const createdAt = iso(options.createdAt)
   const maxGameweeks = options.maxGameweeks ?? DEFAULT_MAX_GAMEWEEKS
   if (!Number.isInteger(maxGameweeks) || maxGameweeks <= 0) throw new Error('maxGameweeks must be a positive integer')
-  const config = { priorVersion: MODEL_VERSION, priorMinutes: 540, bonusPrior: 'bps-2026-27-v1', simulationCount: SIMULATION_COUNT, seedVersion: SIMULATION_SEED_VERSION, ...options.config }
+  const config = { priorVersion: MODEL_VERSION, priorMinutes: 540, bonusPrior: 'bps-2026-27-v1', marketCleanSheetWeight: MARKET_CLEAN_SHEET_WEIGHT, simulationCount: SIMULATION_COUNT, seedVersion: SIMULATION_SEED_VERSION, ...options.config }
   let catalog: ProjectionInputCatalog
   let target: Awaited<ReturnType<typeof targetGameweek>>
   let officialFeedRunId: string | null
