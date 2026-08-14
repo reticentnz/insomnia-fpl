@@ -4127,7 +4127,7 @@ h2 {
 
 .patch-grid {
   display: grid;
-  grid-template-columns: repeat(4, 1fr);
+  grid-template-columns: repeat(5, minmax(0, 1fr));
   gap: 14px;
 }
 
@@ -4176,6 +4176,58 @@ h2 {
 .patch-card-value.highlight-cyan {
   color: #38bdf8;
   text-shadow: 0 0 12px rgba(56, 189, 248, 0.25);
+}
+
+.patch-card-value.highlight-rank {
+  color: #a78bfa;
+  text-shadow: 0 0 12px rgba(167, 139, 250, 0.25);
+}
+
+.rank-card {
+  min-width: 0;
+}
+
+.rank-movement,
+.rank-history-row em {
+  font-style: normal;
+  font-size: 11px;
+  font-weight: 800;
+  white-space: nowrap;
+}
+
+.rank-movement.up,
+.rank-history-row em.up {
+  color: var(--accent-emerald, #00ff87);
+}
+
+.rank-movement.down,
+.rank-history-row em.down {
+  color: #f87171;
+}
+
+.rank-history-list {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  margin-top: 7px;
+  padding-top: 7px;
+  border-top: 1px solid rgba(255, 255, 255, 0.07);
+}
+
+.rank-history-row {
+  display: grid;
+  grid-template-columns: 30px 1fr auto;
+  gap: 5px;
+  align-items: baseline;
+  color: var(--text-muted, #94a3b8);
+  font-family: var(--font-mono, monospace);
+  font-size: 10px;
+}
+
+.rank-history-row b {
+  color: #e2e8f0;
+  font-weight: 700;
+  text-align: right;
 }
 
 .patch-card-unit {
@@ -4245,6 +4297,12 @@ h2 {
 @media (max-width: 900px) {
   .patch-grid {
     grid-template-columns: repeat(2, 1fr);
+  }
+}
+
+@media (min-width: 901px) and (max-width: 1250px) {
+  .patch-grid {
+    grid-template-columns: repeat(3, 1fr);
   }
 }
 

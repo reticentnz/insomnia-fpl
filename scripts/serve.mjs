@@ -36,7 +36,7 @@ const FPL_SEASON = process.env.FPL_SEASON || '2026/27'
 
 import { getDb } from './db.mjs'
 import { migrateDatabase } from './db-migrate.mjs'
-import { fetchManagerPayload, getCurrentManager, importManagerPayload, linkManagerAccount, unlinkCurrentManager, updateManagerAssumptions } from './manager-service.mjs'
+import { fetchManagerPayload, fetchManagerRankHistory, getCurrentManager, importManagerPayload, linkManagerAccount, unlinkCurrentManager, updateManagerAssumptions } from './manager-service.mjs'
 import { createPlan, getActivePlan, selectPlan } from './plan-service.mjs'
 import { createRecommendationSet } from './recommendation-service.mjs'
 import { evaluateDecision, listDecisions, recordDecision } from './decision-journal-service.mjs'
@@ -2188,6 +2188,18 @@ function startServerOnAvailablePort(targetPort) {
         sendJson(res, manager.account ? 200 : 404, manager)
       } catch (error) {
         sendJson(res, 400, { error: error instanceof Error ? error.message : 'Manager state unavailable' })
+      }
+      return
+    }
+
+    if (request === '/api/manager/rank-history' && req.method === 'GET') {
+      try {
+        const params = new URL(req.url || '/', `http://${host}`).searchParams
+        const teamId = params.get('teamId')
+        if (!teamId) throw new Error('teamId is required')
+        sendJson(res, 200, { history: await fetchManagerRankHistory({ teamId }) })
+      } catch (error) {
+        sendJson(res, 400, { error: error instanceof Error ? error.message : 'Manager rank history unavailable' })
       }
       return
     }

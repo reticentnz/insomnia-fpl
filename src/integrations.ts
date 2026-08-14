@@ -322,6 +322,12 @@ export interface FplAccount {
   };
 }
 
+export interface FplRankHistoryEntry {
+  gameweek: number;
+  rank: number;
+  totalPoints: number;
+}
+
 export type UserPreferences = {
   userName: string;
   selectedIds: number[];
@@ -475,6 +481,15 @@ export async function fetchFplAccount(teamId: number, gameweek?: number): Promis
     squadAvailable: data.importStatus?.squadAvailable !== false,
     notice: typeof data.importStatus?.message === 'string' ? data.importStatus.message : undefined,
   }
+}
+
+export async function fetchFplRankHistory(teamId: number): Promise<FplRankHistoryEntry[]> {
+  const response = await fetch(`/api/manager/rank-history?teamId=${encodeURIComponent(teamId)}`)
+  const data = await response.json().catch(() => ({}))
+  if (!response.ok) throw new Error(apiErrorMessage(data, `FPL rank history unavailable: HTTP ${response.status}`))
+  return Array.isArray(data.history) ? data.history.map((entry: any) => ({
+    gameweek: Number(entry.gameweek), rank: Number(entry.rank), totalPoints: Number(entry.totalPoints) || 0,
+  })).filter((entry: FplRankHistoryEntry) => Number.isInteger(entry.gameweek) && entry.gameweek > 0 && Number.isInteger(entry.rank) && entry.rank > 0) : []
 }
 
 export async function getUserProfile(): Promise<{ account: FplAccount | null; selectedIds: number[] | null; planId?: string | null; parentPlanId?: string | null; sellingPrices?: Record<number, number | null>; preferences?: UserPreferences; snapshotMetadata?: { officialSnapshotId: string; snapshotSeason: string; officialPlayerCount: number; managerAccountId: string } | null }> {

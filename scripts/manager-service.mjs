@@ -98,6 +98,18 @@ export async function fetchManagerPayload({ teamId, gameweek, fetchJson = offici
   }
 }
 
+export async function fetchManagerRankHistory({ teamId, fetchJson = officialJson } = {}) {
+  const entryId = integer(teamId, 'teamId', { minimum: 1 })
+  const payload = await fetchJson(`entry/${entryId}/history/`)
+  return (Array.isArray(payload?.current) ? payload.current : [])
+    .map((row) => ({
+      gameweek: integer(row.event, 'history.event', { minimum: 1 }),
+      rank: integer(row.rank, 'history.rank', { minimum: 1 }),
+      totalPoints: integer(row.total_points ?? 0, 'history.total_points', { minimum: 0 }),
+    }))
+    .sort((a, b) => a.gameweek - b.gameweek)
+}
+
 export async function linkManagerAccount(db, {
   entry,
   gameweek,

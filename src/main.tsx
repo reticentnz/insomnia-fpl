@@ -57,6 +57,7 @@ import {
   parseTeamId,
   fetchLLMExplanation,
   fetchFplAccount,
+  fetchFplRankHistory,
   getUserProfile,
   saveUserProfile,
   saveUserPreferences,
@@ -74,6 +75,7 @@ import {
   fetchPlayerSignals,
   fetchLeagueDetails,
   type FplAccount,
+  type FplRankHistoryEntry,
   type FplLeagueSummary,
   type LeagueDetailsResponse,
   type LeagueRival,
@@ -636,6 +638,7 @@ function App() {
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [importing, setImporting] = useState(false);
   const [fplAccount, setFplAccount] = useState<FplAccount | null>(null);
+  const [rankHistory, setRankHistory] = useState<FplRankHistoryEntry[]>([]);
   const [activePlanId, setActivePlanId] = useState<string | null>(null);
   const [activePlanParentId, setActivePlanParentId] = useState<string | null>(null);
   const [officialSellingPrices, setOfficialSellingPrices] = useState<Record<number, number | null>>({});
@@ -1878,6 +1881,18 @@ function App() {
     setToast({ message: "Season FPL account unlinked.", tone: "success" });
   };
   useEffect(() => {
+    if (!fplAccount) {
+      setRankHistory([]);
+      return;
+    }
+    let active = true;
+    fetchFplRankHistory(fplAccount.teamId)
+      .then((history) => { if (active) setRankHistory(history); })
+      .catch(() => { if (active) setRankHistory([]); });
+    return () => { active = false; };
+  }, [fplAccount?.teamId]);
+
+  useEffect(() => {
     let active = true;
     const refresh = () => fetchSystemStatus().then((status) => { if (active) setSystemStatus(status); });
     void refresh();
@@ -2140,6 +2155,7 @@ function App() {
         {(tab === "My Team" || tab === "Transfers") && (
           <FplAccountPatch
             account={fplAccount}
+            rankHistory={rankHistory}
             onSync={() => syncAccount()}
             isSyncing={syncingAccount}
             onChangeAccount={() => {
@@ -3810,11 +3826,13 @@ function SquadEditor({
 }
 function FplAccountPatch({
   account,
+  rankHistory,
   onSync,
   isSyncing,
   onChangeAccount,
 }: {
   account: FplAccount | null;
+  rankHistory: FplRankHistoryEntry[];
   onSync: () => void;
   isSyncing: boolean;
   onChangeAccount: () => void;
@@ -3853,6 +3871,10 @@ function FplAccountPatch({
         return `${Math.floor(diffSec / 3600)}h ago`;
       })()
     : "";
+  const latestRank = rankHistory.at(-1)?.rank ?? account.overallRank;
+  const previousRank = rankHistory.length > 1 ? rankHistory.at(-2)?.rank ?? null : null;
+  const weeklyMovement = latestRank != null && previousRank != null ? previousRank - latestRank : null;
+  const recentRankHistory = rankHistory.slice(-5).reverse();
 
   return (
     <div className="fpl-account-patch">
@@ -3925,6 +3947,38 @@ function FplAccountPatch({
           <span className="patch-card-sub">
             GW{account.currentGameweek}: {account.eventTransfers} made {account.transfersCost > 0 ? `(-${account.transfersCost}pts)` : '(0 hit)'}
           </span>
+        </div>
+
+        <div className="patch-card rank-card">
+          <span className="patch-card-label">WORLD RANK</span>
+          <div className="patch-card-val-group">
+            <span className="patch-card-value highlight-rank">
+              {latestRank == null ? "—" : `#${latestRank.toLocaleString()}`}
+            </span>
+            {weeklyMovement !== null && weeklyMovement !== 0 && (
+              <span className={`rank-movement ${weeklyMovement > 0 ? "up" : "down"}`}>
+                {weeklyMovement > 0 ? "▲" : "▼"} {Math.abs(weeklyMovement).toLocaleString()}
+              </span>
+            )}
+          </div>
+          <span className="patch-card-sub">
+            {weeklyMovement === null ? "Weekly movement after GW1" : weeklyMovement === 0 ? "No change this week" : `${weeklyMovement > 0 ? "Up" : "Down"} this gameweek`}
+          </span>
+          {recentRankHistory.length > 0 && (
+            <div className="rank-history-list" aria-label="Weekly worldwide rank history">
+              {recentRankHistory.map((entry, index) => {
+                const older = rankHistory[rankHistory.length - index - 2];
+                const movement = older ? older.rank - entry.rank : null;
+                return (
+                  <div className="rank-history-row" key={entry.gameweek}>
+                    <span>GW{entry.gameweek}</span>
+                    <b>#{entry.rank.toLocaleString()}</b>
+                    {movement !== null && movement !== 0 && <em className={movement > 0 ? "up" : "down"}>{movement > 0 ? "▲" : "▼"}{Math.abs(movement).toLocaleString()}</em>}
+                  </div>
+                );
+              })}
+            </div>
+          )}
         </div>
       </div>
     </div>
