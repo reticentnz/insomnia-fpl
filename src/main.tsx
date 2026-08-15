@@ -4667,14 +4667,6 @@ function EvidencePanel({
                           {xPts.toFixed(1)} xPts over {horizon} GWs
             </span>
           )}
-          {signalCount > 0 && (
-            <span
-              className={`player-signal-count${unreadSignalCount > 0 ? " unread" : ""}`}
-              title={`${signalCount} active signal${signalCount === 1 ? "" : "s"}${unreadSignalCount ? `, ${unreadSignalCount} new` : ""}`}
-            >
-              {signalCount}{unreadSignalCount > 0 ? <i aria-hidden="true" /> : null}
-            </span>
-          )}
                       <span
                         className={`pill ${
                           effectiveStatus === "VERIFIED"

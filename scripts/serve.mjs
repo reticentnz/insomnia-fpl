@@ -940,14 +940,25 @@ async function creatorSignalPublicationDate(db, signal) {
   return result.rows[0]?.published_at||null
 }
 
+async function recoverPriorRoleInterpretation(db, signal) {
+  if(signal.interpretation?.modelImpact==='ROLE')return signal
+  const result=await db.query(`SELECT "claim_class","value_json","rationale","confidence" FROM "PlayerSignalInterpretation" WHERE "signal_id"=$1 AND "model_impact"='ROLE' ORDER BY rowid DESC LIMIT 1`,[signal.id])
+  const row=result.rows[0]
+  if(!row)return signal
+  return {...signal,claimClass:row.claim_class||signal.claimClass,value:parseJson(row.value_json,signal.value),interpretation:{...signal.interpretation,claimClass:row.claim_class||signal.claimClass,modelImpact:'ROLE',value:parseJson(row.value_json,signal.value),rationale:row.rationale||signal.interpretation?.rationale,confidence:Number(row.confidence??signal.interpretation?.confidence??signal.confidence)}}
+}
+
 async function reprocessRemoteSignal(db, signal, { includeVerified = false } = {}) {
   if(signal.status!=='PENDING'&&!includeVerified)return {signal,changed:false,reason:'not_pending'}
+  const originalModelImpact=signal.interpretation?.modelImpact||'NONE'
+  signal=await recoverPriorRoleInterpretation(db,signal)
   const roleKinds=new Set(['EXPECTED_ROLE','DEPTH_CHART','TACTICAL_ROLE','PRESEASON_MINUTES','INJURY'])
   const roleClasses=new Set(['REAL_WORLD_ROLE','ROTATION','INJURY','AVAILABILITY'])
   const text=`${signal.evidenceSummary||''} ${signal.evidenceText||''}`
-  const roleEvidence=/\b(?:first[ -]?choice|regular starter|starting (?:xi|line[- ]?up|striker|keeper)|number one|no real competition|nailed|set to start|likely to start|expected to start|not expected to|regular starts?|rotation|rotat(?:e|ion)|one of two|compete? for minutes|competition for minutes|may not start|unavailable|ruled out|will miss|out for|back[ -]?up|third[ -]?choice)\b/i.test(text)
+  const roleEvidence=/\b(?:first[ -]?choice|regular starter|starting (?:xi|line[- ]?up|striker|keeper)|number one|no real competition|nailed|assured of (?:his|her|their) place|set to start|likely to start|expects? (?:him|her|them) to start|expected to start|will start|won't start|not expected to|regular starts?|rotation|rotat(?:e|ion)|one of two|compete? for minutes|competition for minutes|may not start|unavailable|ruled out|will miss|out for|back[ -]?up|third[ -]?choice)\b/i.test(text)
+  const conditionalOpinion=/\b(?:would pick if|if .*likely to start|should be avoided|could kill .*pick)\b/i.test(text)
   const unavailableEvidence=/\b(?:ruled out|unavailable|will miss|going to miss|set to miss|out for (?:weeks|months)|miss the start of the season)\b/i.test(text)
-  const roleAllowed=roleKinds.has(signal.kind)&&roleClasses.has(signal.claimClass)&&roleEvidence&&(signal.kind!=='INJURY'||unavailableEvidence)
+  const roleAllowed=roleKinds.has(signal.kind)&&roleClasses.has(signal.claimClass)&&roleEvidence&&!conditionalOpinion&&(signal.kind!=='INJURY'||unavailableEvidence)
   const recoveredSourceDate=await creatorSignalPublicationDate(db,signal)
   if(recoveredSourceDate&&!signal.sourceDate){
     await db.query(`UPDATE "PlayerSignal" SET "source_date"=$2,"updated_at"=$3 WHERE "id"=$1`,[signal.id,recoveredSourceDate,new Date().toISOString()])
@@ -956,7 +967,11 @@ async function reprocessRemoteSignal(db, signal, { includeVerified = false } = {
   const sourceDate=signal.sourceDate?Date.parse(signal.sourceDate):NaN
   const maxAgeDays=signal.kind==='INJURY'?10:14
   const fresh=Number.isFinite(sourceDate)&&(Date.now()-sourceDate)>=-86400000&&(Date.now()-sourceDate)<=maxAgeDays*86400000
-  if(roleAllowed&&fresh)return {signal,changed:false,reason:'role_evidence_is_current'}
+  if(roleAllowed&&fresh){
+    if(originalModelImpact==='ROLE')return {signal,changed:false,reason:'role_evidence_is_current'}
+    const restored=await revisePlayerSignalInterpretation(db,signal.id,{claimClass:signal.claimClass,modelImpact:'ROLE',value:signal.value,rationale:'Recovered prior role interpretation and passed current evidence/freshness checks.',confidence:signal.interpretation?.confidence,finalizeContext:false})
+    return {signal:restored,changed:true,reason:'role_restored_after_audit'}
+  }
   const safeKinds=new Set(['VALUE_OPINION','TRANSFER_OPINION','STATISTICAL_CLAIM','PERFORMANCE_FORECAST'])
   const finalize=safeKinds.has(signal.kind)||['VALUE_OPINION','STATISTICAL_CONTEXT','FPL_SELECTION','CREATOR_RATING'].includes(signal.claimClass)
   const updated=await revisePlayerSignalInterpretation(db,signal.id,{modelImpact:'NONE',value:safeContextValue(signal),rationale:'Remote reprocess: unsupported, ambiguous, or stale role evidence was retained as context only.',finalizeContext:finalize})
@@ -2067,7 +2082,7 @@ function startServerOnAvailablePort(targetPort) {
           const includeVerified=payload.includeVerified===true
           const available=await listPlayerSignals(db,{status:requestedIds.length?null:includeVerified?null:'PENDING',limit:500})
           const candidates=(requestedIds.length?available.filter(signal=>requestedIds.includes(signal.id)):available)
-            .filter(signal=>includeVerified?signal.interpretation.modelImpact==='ROLE':signal.status==='PENDING')
+            .filter(signal=>includeVerified?signal.interpretation.modelImpact==='ROLE'||signal.status==='PENDING':signal.status==='PENDING')
           const results=[]
           for(const signal of candidates)results.push(await reprocessRemoteSignal(db,signal,{includeVerified}))
           sendJson(res,200,{schemaVersion:1,action,includeVerified,processed:results.length,changed:results.filter(result=>result.changed).length,results})
