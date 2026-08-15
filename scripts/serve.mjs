@@ -860,7 +860,12 @@ function validityDeadline(timeHorizon){
 
 async function createSignalForCreatorClaim(db,claimRow,source,gameweek){
   const signalValue=parseJson(claimRow.signalValue,{})
-  const draft=signalDraftFromClaim({...claimRow,...signalValue,numericClaims:parseJson(claimRow.numericClaims,[]),relatedMentions:parseJson(claimRow.relatedMentions,[])},Number(claimRow.resolvedPlayerId),source)
+  const rawDraft=signalDraftFromClaim({...claimRow,...signalValue,numericClaims:parseJson(claimRow.numericClaims,[]),relatedMentions:parseJson(claimRow.relatedMentions,[])},Number(claimRow.resolvedPlayerId),source)
+  const recencyDays={INJURY:10,ROLE:14,ROTATION:14,TACTICS:14,PRESEASON:14}
+  const publishedAt=rawDraft.sourceDate?Date.parse(rawDraft.sourceDate):NaN
+  const ageDays=Number.isFinite(publishedAt)?(Date.now()-publishedAt)/86400000:Infinity
+  const roleIsFresh=rawDraft.modelImpact!=='ROLE'||(Number.isFinite(publishedAt)&&ageDays>=-1&&ageDays<=(recencyDays[claimRow.category]||14))
+  const draft=roleIsFresh?rawDraft:{...rawDraft,modelImpact:'NONE',value:{note:rawDraft.value.note},interpretationRationale:'The source date is missing or stale for a role-changing claim; retained as context only.'}
   const confidence=Math.max(0,Math.min(1,Number(draft.confidence)||.65))
   const status=shouldAutoApproveCreatorContext(draft)?'VERIFIED':'PENDING'
   const observedAt=new Date().toISOString()
@@ -869,7 +874,7 @@ async function createSignalForCreatorClaim(db,claimRow,source,gameweek){
   if(existing.some(signal=>signal.id===id))return {signal:existing.find(signal=>signal.id===id),created:false}
   const horizonMatch=String(claimRow.timeHorizon||'').toUpperCase().match(/^GW\s*(\d+)$/)
   const applicableGameweek=horizonMatch?Number(horizonMatch[1]):null
-  const signal=await createPlayerSignal(db,{id,playerId:draft.playerId,gameweek:applicableGameweek,kind:draft.kind,value:draft.value,sourceType:draft.sourceType,sourceUrl:draft.sourceUrl,evidenceSummary:draft.evidenceSummary,evidenceText:draft.evidenceText,claimClass:draft.claimClass,modelImpact:draft.modelImpact,interpretationRationale:draft.interpretationRationale,interpretationConfidence:draft.interpretationConfidence,confidence,observedAt,validUntil:validityDeadline(claimRow.timeHorizon),status,actorType:'INGESTION'})
+  const signal=await createPlayerSignal(db,{id,playerId:draft.playerId,gameweek:applicableGameweek,kind:draft.kind,value:draft.value,sourceType:draft.sourceType,sourceUrl:draft.sourceUrl,evidenceSummary:draft.evidenceSummary,evidenceText:draft.evidenceText,claimClass:draft.claimClass,modelImpact:draft.modelImpact,interpretationRationale:draft.interpretationRationale,interpretationConfidence:draft.interpretationConfidence,confidence,observedAt,validUntil:validityDeadline(claimRow.timeHorizon),status,actorType:'INGESTION',sourceDate:draft.sourceDate})
   if(draft.claimClass==='PERFORMANCE_FORECAST'&&draft.value.forecastMetric&&draft.value.forecastDirection&&draft.value.forecastProbability!=null){
     await db.query(`INSERT INTO "CreatorForecastOutcome" ("signal_id","creator","external_source_id","target_metric","direction","probability","horizon","observed_at") VALUES ($1,$2,$3,$4,$5,$6,$7,$8) ON CONFLICT ("signal_id") DO NOTHING`,[
       String(signal.id),source.creator||'Unknown creator',source.externalId||'',draft.value.forecastMetric,draft.value.forecastDirection,Number(draft.value.forecastProbability),draft.value.forecastHorizon||claimRow.timeHorizon||'UNKNOWN',observedAt,
@@ -2004,8 +2009,13 @@ function startServerOnAvailablePort(targetPort) {
           type:'PLAYER_EVENT', id:claim.id, actionable:true, suggestedAction:'RESOLVE_OR_DISMISS', state:'ACTION_REQUIRED',
           event:claim,
         }))
-        const findings=[...feed.findings.map(signal=>({...signal,type:'SIGNAL'})),...claimFindings].slice(0,Math.min(500,Math.max(1,Number(params.get('limit'))||100)))
-        sendJson(res,200,{...feed,count:findings.length,actionableCount:findings.filter(item=>item.actionable).length,signalCount:feed.findings.length,playerEventCount:claimFindings.length,findings},{cacheControl:'private, no-store',etag:true})
+        const limit=Math.min(500,Math.max(1,Number(params.get('limit'))||100))
+        const findings=[]
+        for(let index=0;findings.length<limit&&(index<feed.findings.length||index<claimFindings.length);index++){
+          if(feed.findings[index])findings.push({...feed.findings[index],type:'SIGNAL'})
+          if(claimFindings[index]&&findings.length<limit)findings.push(claimFindings[index])
+        }
+        sendJson(res,200,{...feed,count:findings.length,actionableCount:findings.filter(item=>item.actionable).length,signalCount:findings.filter(item=>item.type==='SIGNAL').length,playerEventCount:findings.filter(item=>item.type==='PLAYER_EVENT').length,availableSignalCount:feed.findings.length,availablePlayerEventCount:claimFindings.length,findings},{cacheControl:'private, no-store',etag:true})
       }catch(error){sendJson(res,400,{error:error instanceof Error?error.message:'Unable to read remote signals'})}
       return
     }

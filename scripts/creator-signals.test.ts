@@ -64,6 +64,22 @@ describe('creator signal ingestion helpers',()=>{
     expect(draft.sourceUrl).toBe('https://www.youtube.com/watch?v=abc123&t=69s')
   })
 
+  it('strips unsupported role adjustments from transfer and statistical claims',()=>{
+    const transfer=signalDraftFromClaim({category:'TRANSFER',summary:'Signed as a star first-choice signing.',depthRole:'FIRST_CHOICE',startProbability:.88},10,{})
+    const stats=signalDraftFromClaim({category:'STATS',summary:'Showed defensive talent in a youth tournament.',depthRole:'BACKUP',startProbability:.15},10,{})
+    expect(transfer).toMatchObject({modelImpact:'NONE',value:{note:'Signed as a star first-choice signing.'}})
+    expect(transfer.value).not.toHaveProperty('depthRole')
+    expect(stats).toMatchObject({modelImpact:'NONE',value:{note:'Showed defensive talent in a youth tournament.'}})
+    expect(stats.value).not.toHaveProperty('depthRole')
+  })
+
+  it('keeps vague injury wording contextual but preserves explicit unavailability',()=>{
+    const vague=signalDraftFromClaim({category:'INJURY',summary:'Had a minor issue last season.',depthRole:'OUT',startProbability:0},10,{})
+    const explicit=signalDraftFromClaim({category:'INJURY',summary:'Will miss the start of the season.',depthRole:'OUT',startProbability:0},10,{})
+    expect(vague).toMatchObject({modelImpact:'NONE',value:{note:'Had a minor issue last season.'}})
+    expect(explicit).toMatchObject({modelImpact:'ROLE',value:{depthRole:'OUT',startProbability:0}})
+  })
+
   it('turns an LLM role interpretation into a reviewable calibrated adjustment',()=>{
     const payload=normalizeCreatorPayload({source:{url:'https://youtu.be/abc'},claims:[{rawPlayerName:'Foden',category:'ROTATION',summary:'Cherki may compete for minutes.',suggestedInterpretation:{role:'ROTATION_HIGH',confidence:.72,rationale:'Material competition for attacking midfield minutes.'}}]})
     const draft=signalDraftFromClaim(payload.claims[0],10,payload.source)

@@ -101,6 +101,9 @@ function inferSuggestedInterpretation(category, text){
   return null
 }
 const autoApprovedContextClasses=new Set(['FPL_SELECTION','CREATOR_RATING','VALUE_OPINION','STATISTICAL_CONTEXT'])
+const roleCapableCategories=new Set(['ROLE','ROTATION','TACTICS','PRESEASON','INJURY'])
+const roleEvidencePattern=/\b(?:first[ -]?choice|regular starter|starting (?:xi|line[- ]?up|striker|keeper)|number one|no real competition|nailed|set to start|likely to start|expected to start|not expected to|regular starts?|rotation|rotat(?:e|ion)|one of two|compete? for minutes|competition for minutes|may not start|unavailable|ruled out|will miss|out for|back[ -]?up|third[ -]?choice)\b/i
+const unavailableEvidencePattern=/\b(?:ruled out|unavailable|will miss|going to miss|set to miss|out for (?:weeks|months)|miss the start of the season)\b/i
 
 export function shouldAutoApproveCreatorContext(draft){
   return draft?.modelImpact==='NONE'&&autoApprovedContextClasses.has(draft.claimClass)
@@ -204,13 +207,19 @@ export function matchCreatorClaim(claim,catalog,aliases=[]){
 export function signalDraftFromClaim(claim,playerId,source,defaultConfidence=.65){
   const value={note:claim.summary}
   const inferredRole=claim.suggestedInterpretation?.role&&interpretationRoleValues[claim.suggestedInterpretation.role]
+  const category=String(claim.category||'OTHER').toUpperCase()
+  const evidenceText=`${claim.summary||''} ${claim.evidenceText||''}`
+  const roleEvidence=roleEvidencePattern.test(evidenceText)
+  const injuryEvidence=unavailableEvidencePattern.test(evidenceText)
+  const allowRole=roleCapableCategories.has(category)&&roleEvidence&&(category!=='INJURY'||injuryEvidence)
   for(const key of ['startProbability','minutesIfStarting','substituteProbabilityWhenBenched','minutesIfSubstitute','depthRole']){
+    if(!allowRole)continue
     if(claim[key]!==null&&claim[key]!==undefined)value[key]=claim[key]
   }
-  if(!Object.keys(value).some(key=>key!=='note')&&inferredRole)Object.assign(value,inferredRole)
+  if(allowRole&&!Object.keys(value).some(key=>key!=='note')&&inferredRole)Object.assign(value,inferredRole)
   const categoryKinds={ROLE:'EXPECTED_ROLE',ROTATION:'DEPTH_CHART',INJURY:'INJURY',SET_PIECES:'SET_PIECES',PENALTIES:'PENALTIES',PRESEASON:'PRESEASON_MINUTES',TACTICS:'TACTICAL_ROLE',VALUE:'VALUE_OPINION',STATS:'STATISTICAL_CLAIM',TRANSFER:'TRANSFER_OPINION',FPL_SELECTION:'VALUE_OPINION',PERFORMANCE_FORECAST:'PERFORMANCE_FORECAST',OTHER:'VALUE_OPINION'}
   const claimClasses={ROLE:'REAL_WORLD_ROLE',ROTATION:'ROTATION',INJURY:'INJURY',SET_PIECES:'SET_PIECES',PENALTIES:'PENALTIES',PRESEASON:'REAL_WORLD_ROLE',TACTICS:'REAL_WORLD_ROLE',VALUE:'VALUE_OPINION',STATS:'STATISTICAL_CONTEXT',TRANSFER:'VALUE_OPINION',FPL_SELECTION:'FPL_SELECTION',PERFORMANCE_FORECAST:'PERFORMANCE_FORECAST',OTHER:'UNKNOWN'}
-  const modelImpact=['startProbability','minutesIfStarting','substituteProbabilityWhenBenched','minutesIfSubstitute','depthRole'].some(key=>value[key]!=null)?'ROLE':'NONE'
+  const modelImpact=allowRole&&['startProbability','minutesIfStarting','substituteProbabilityWhenBenched','minutesIfSubstitute','depthRole'].some(key=>value[key]!=null)?'ROLE':'NONE'
   if(claim.category==='PERFORMANCE_FORECAST'){
     for(const key of ['forecastMetric','forecastDirection','forecastProbability','forecastHorizon'])if(claim[key]!=null)value[key]=claim[key]
   }
@@ -227,6 +236,7 @@ export function signalDraftFromClaim(claim,playerId,source,defaultConfidence=.65
       : 'Creator context only; no projection adjustment proposed.',
     interpretationConfidence:inferredRole?(claim.suggestedInterpretation.confidence??claim.confidence??defaultConfidence):(claim.confidence??defaultConfidence),
     confidence:claim.confidence??defaultConfidence,
+    sourceDate:source.publishedAt||null,
   }
 }
 
