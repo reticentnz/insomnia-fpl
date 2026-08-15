@@ -932,6 +932,14 @@ function safeContextValue(signal) {
   return Object.fromEntries(['note','forecastMetric','forecastDirection','forecastProbability','forecastHorizon'].filter(key=>value[key]!=null).map(key=>[key,value[key]]))
 }
 
+async function creatorSignalPublicationDate(db, signal) {
+  if(signal.sourceDate)return signal.sourceDate
+  const match=String(signal.id||'').match(/^creator:(YOUTUBE|RSS):([^:]+):/)
+  if(!match)return null
+  const result=await db.query(`SELECT "published_at" FROM "CreatorVideo" WHERE "id"=$1 UNION ALL SELECT "published_at" FROM "RssItem" WHERE "id"=$1 LIMIT 1`,[match[2]])
+  return result.rows[0]?.published_at||null
+}
+
 async function reprocessRemoteSignal(db, signal, { includeVerified = false } = {}) {
   if(signal.status!=='PENDING'&&!includeVerified)return {signal,changed:false,reason:'not_pending'}
   const roleKinds=new Set(['EXPECTED_ROLE','DEPTH_CHART','TACTICAL_ROLE','PRESEASON_MINUTES','INJURY'])
@@ -940,6 +948,11 @@ async function reprocessRemoteSignal(db, signal, { includeVerified = false } = {
   const roleEvidence=/\b(?:first[ -]?choice|regular starter|starting (?:xi|line[- ]?up|striker|keeper)|number one|no real competition|nailed|set to start|likely to start|expected to start|not expected to|regular starts?|rotation|rotat(?:e|ion)|one of two|compete? for minutes|competition for minutes|may not start|unavailable|ruled out|will miss|out for|back[ -]?up|third[ -]?choice)\b/i.test(text)
   const unavailableEvidence=/\b(?:ruled out|unavailable|will miss|going to miss|set to miss|out for (?:weeks|months)|miss the start of the season)\b/i.test(text)
   const roleAllowed=roleKinds.has(signal.kind)&&roleClasses.has(signal.claimClass)&&roleEvidence&&(signal.kind!=='INJURY'||unavailableEvidence)
+  const recoveredSourceDate=await creatorSignalPublicationDate(db,signal)
+  if(recoveredSourceDate&&!signal.sourceDate){
+    await db.query(`UPDATE "PlayerSignal" SET "source_date"=$2,"updated_at"=$3 WHERE "id"=$1`,[signal.id,recoveredSourceDate,new Date().toISOString()])
+    signal={...signal,sourceDate:recoveredSourceDate}
+  }
   const sourceDate=signal.sourceDate?Date.parse(signal.sourceDate):NaN
   const maxAgeDays=signal.kind==='INJURY'?10:14
   const fresh=Number.isFinite(sourceDate)&&(Date.now()-sourceDate)>=-86400000&&(Date.now()-sourceDate)<=maxAgeDays*86400000
