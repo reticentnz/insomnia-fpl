@@ -4,6 +4,7 @@ type Database = { query(sql: string, params?: unknown[]): Promise<{ rows: any[] 
 type SignalRecord = Awaited<ReturnType<typeof listPlayerSignals>>[number]
 
 export type RemoteSignalFinding = SignalRecord & {
+  type: 'SIGNAL'
   actionable: boolean
   suggestedAction: 'APPROVE' | 'REJECT' | null
   state: 'ACTION_REQUIRED' | 'ACTIVE' | 'CLOSED'
@@ -12,6 +13,7 @@ export type RemoteSignalFinding = SignalRecord & {
 function finding(signal: SignalRecord): RemoteSignalFinding {
   const actionable = signal.status === 'PENDING'
   return {
+    type: 'SIGNAL',
     ...signal,
     actionable,
     suggestedAction: actionable ? 'APPROVE' : null,

@@ -895,12 +895,31 @@ async function saveUnmatchedCreatorClaim(db,claim,source,match,candidates){
 function creatorClaimView(row){
   const source=parseJson(row.source_json,{})
   const claim=parseJson(row.claim_json,{})
-  return {id:row.id,rawPlayerName:row.raw_player_name,clubHint:row.club_hint,positionHint:row.position_hint,category:row.category,sentiment:row.sentiment,summary:row.summary,matchStatus:row.match_status,matchConfidence:Number(row.match_confidence||0),matchCandidates:parseJson(row.candidates_json,[]),creator:source.creator||'Unknown creator',contentTitle:source.title||'Untitled source',contentUrl:source.url||'',timestampSeconds:row.timestamp_seconds==null?null:Number(row.timestamp_seconds),signalId:row.signal_id||null,forecastMetric:claim.forecastMetric||null,forecastDirection:claim.forecastDirection||null,forecastProbability:claim.forecastProbability==null?null:Number(claim.forecastProbability),forecastHorizon:claim.forecastHorizon||claim.timeHorizon||null}
+  return {id:row.id,rawPlayerName:row.raw_player_name,clubHint:row.club_hint,positionHint:row.position_hint,category:row.category,sentiment:row.sentiment,summary:row.summary,matchStatus:row.match_status,matchConfidence:Number(row.match_confidence||0),matchCandidates:parseJson(row.candidates_json,[]),creator:source.creator||'Unknown creator',contentTitle:source.title||'Untitled source',contentUrl:source.url||'',timestampSeconds:row.timestamp_seconds==null?null:Number(row.timestamp_seconds),createdAt:row.created_at||null,signalId:row.signal_id||null,forecastMetric:claim.forecastMetric||null,forecastDirection:claim.forecastDirection||null,forecastProbability:claim.forecastProbability==null?null:Number(claim.forecastProbability),forecastHorizon:claim.forecastHorizon||claim.timeHorizon||null}
 }
 
 async function unresolvedCreatorClaims(db,limit=200){
   const result=await db.query(`SELECT * FROM "CreatorClaim" WHERE "match_status" IN ('AMBIGUOUS','UNRESOLVED') ORDER BY datetime("created_at") DESC LIMIT $1`,[Math.max(1,Math.min(500,Number(limit)||200))])
   return result.rows.map(creatorClaimView)
+}
+
+async function resolveCreatorClaim(db, id, { playerId, rememberAlias = true } = {}) {
+  const claimResult=await db.query(`SELECT * FROM "CreatorClaim" WHERE "id"=$1 LIMIT 1`,[id])
+  const row=claimResult.rows[0]
+  if(!row)throw new Error('Creator claim not found')
+  const fplId=Number(playerId)
+  if(!Number.isInteger(fplId)||fplId<=0)throw new Error('playerId is required')
+  const playerResult=await db.query(`SELECT "id","fpl_id" FROM "Player" WHERE "fpl_id"=$1 ORDER BY "season" DESC LIMIT 1`,[fplId])
+  const player=playerResult.rows[0]
+  if(!player)throw new Error('Player not found')
+  const now=new Date().toISOString(),claim=parseJson(row.claim_json,{}),source=parseJson(row.source_json,{})
+  const signalValue=Object.fromEntries(['startProbability','minutesIfStarting','substituteProbabilityWhenBenched','minutesIfSubstitute','depthRole','forecastMetric','forecastDirection','forecastProbability','forecastHorizon','confidence'].filter(key=>claim[key]!=null).map(key=>[key,claim[key]]))
+  const result=await createSignalForCreatorClaim(db,{...claim,id,externalClaimId:id,resolvedPlayerId:Number(player.fpl_id),signalValue},source,null)
+  if(rememberAlias&&normalizeEntityText(row.raw_player_name)){
+    await db.query(`INSERT INTO "PlayerAlias" ("id","alias","normalized_alias","player_id","source","created_at","updated_at") VALUES ($1,$2,$3,$4,'USER',$5,$5) ON CONFLICT ("normalized_alias") DO UPDATE SET "player_id"=excluded."player_id","alias"=excluded."alias","updated_at"=excluded."updated_at"`,[randomUUID(),row.raw_player_name,normalizeEntityText(row.raw_player_name),player.id,now])
+  }
+  await db.query(`UPDATE "CreatorClaim" SET "match_status"='RESOLVED',"resolved_player_id"=$2,"signal_id"=$3,"updated_at"=$4 WHERE "id"=$1`,[id,player.id,String(result.signal.id),now])
+  return {claimId:id,signal:result.signal,rememberedAlias:rememberAlias}
 }
 
 async function processCreatorPayload(rawPayload){
@@ -1974,11 +1993,19 @@ function startServerOnAvailablePort(targetPort) {
       if(!requireRemoteToken(req,res))return
       try{
         const params=new URL(req.url||'/',`http://${host}`).searchParams
-        const feed=await getRemoteSignalFeed(await getDb(),{
+        const db=await getDb()
+        const feed=await getRemoteSignalFeed(db,{
           status:params.get('status'), playerId:params.get('playerId'), since:params.get('since'),
           actionableOnly:['1','true','yes'].includes((params.get('actionableOnly')||'').toLowerCase()), limit:params.get('limit')||100,
         })
-        sendJson(res,200,feed,{cacheControl:'private, no-store',etag:true})
+        const claims=await unresolvedCreatorClaims(db,params.get('limit')||100)
+        const since=params.get('since')?Date.parse(params.get('since')):NaN
+        const claimFindings=claims.filter(claim=>!Number.isFinite(since)||!claim.createdAt||Date.parse(claim.createdAt)>since).map(claim=>({
+          type:'PLAYER_EVENT', id:claim.id, actionable:true, suggestedAction:'RESOLVE_OR_DISMISS', state:'ACTION_REQUIRED',
+          event:claim,
+        }))
+        const findings=[...feed.findings.map(signal=>({...signal,type:'SIGNAL'})),...claimFindings].slice(0,Math.min(500,Math.max(1,Number(params.get('limit'))||100)))
+        sendJson(res,200,{...feed,count:findings.length,actionableCount:findings.filter(item=>item.actionable).length,signalCount:feed.findings.length,playerEventCount:claimFindings.length,findings},{cacheControl:'private, no-store',etag:true})
       }catch(error){sendJson(res,400,{error:error instanceof Error?error.message:'Unable to read remote signals'})}
       return
     }
@@ -1988,12 +2015,26 @@ function startServerOnAvailablePort(targetPort) {
       try{
         const payload=await readRequestBody(req)
         const action=String(payload.action||'').toLowerCase()
+        const db=await getDb()
+        if(action==='dismiss_claim'){
+          const claimId=String(payload.claimId||'')
+          if(!claimId)throw new Error('claimId is required')
+          const result=await db.query(`UPDATE "CreatorClaim" SET "match_status"='DISMISSED',"updated_at"=$2 WHERE "id"=$1`,[claimId,new Date().toISOString()])
+          if(!result.changes)throw new Error('Creator claim not found')
+          sendJson(res,200,{schemaVersion:1,action,claimId,status:'DISMISSED'})
+          return
+        }
+        if(action==='resolve_claim'){
+          const result=await resolveCreatorClaim(db,String(payload.claimId||''),{playerId:payload.playerId,rememberAlias:payload.rememberAlias!==false})
+          sendJson(res,200,{schemaVersion:1,action,...result,recompute:await triggerForecastRecompute()})
+          return
+        }
         const actionStatus={approve:'VERIFIED',approve_signal:'VERIFIED',reject:'REJECTED',reject_signal:'REJECTED',expire:'EXPIRED',expire_signal:'EXPIRED'}[action]
         const ids=[...(Array.isArray(payload.signalIds)?payload.signalIds:[]),...(payload.signalId?[payload.signalId]:[])].map(String).filter(Boolean).slice(0,50)
         if(!actionStatus)throw new Error('action must be approve, reject, or expire')
         if(!ids.length)throw new Error('signalId or signalIds is required')
         const status=/** @type {'VERIFIED'|'REJECTED'|'EXPIRED'} */ (actionStatus)
-        const signals=await updatePlayerSignalStatuses(await getDb(),ids.map(id=>({id,status})),{actorType:'REMOTE_API',reason:String(payload.reason||`Remote action: ${action}`)})
+        const signals=await updatePlayerSignalStatuses(db,ids.map(id=>({id,status})),{actorType:'REMOTE_API',reason:String(payload.reason||`Remote action: ${action}`)})
         const recompute=status==='VERIFIED'?await triggerForecastRecompute():null
         sendJson(res,200,{schemaVersion:1,action,signals,count:signals.length,recompute})
       }catch(error){sendJson(res,400,{error:error instanceof Error?error.message:'Unable to action remote signals'})}
