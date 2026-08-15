@@ -832,6 +832,10 @@ function App() {
     });
     return counts;
   }, [playerSignals, seenSignalIds]);
+  const pendingSignalCount = useMemo(
+    () => playerSignals.filter((signal) => signal.status === "PENDING" && Date.parse(signal.validUntil) >= Date.now()).length,
+    [playerSignals],
+  );
   const handleSelectPlayer = useCallback((player: Player) => {
     const next = new Set(seenSignalIds);
     activePlayerSignals(playerSignals, player.id).forEach((signal) => next.add(String(signal.id)));
@@ -2113,6 +2117,11 @@ function App() {
               <span className="nav-label">{label}</span>
               {label === "Transfers" && topTransfers.length > 0 && (
                 <span className="nav-badge">{topTransfers.length}</span>
+              )}
+              {label === "Signals" && pendingSignalCount > 0 && (
+                <span className="nav-badge" aria-label={`${pendingSignalCount} pending signals`}>
+                  {pendingSignalCount}
+                </span>
               )}
             </button>
           ))}
