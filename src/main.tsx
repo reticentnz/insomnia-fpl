@@ -301,6 +301,111 @@ function activePlayerSignals(signals: PlayerSignal[], playerId: number, now = Da
   );
 }
 
+function playerNewsRelativeTime(iso: string) {
+  const timestamp = Date.parse(iso);
+  if (!Number.isFinite(timestamp)) return "Unknown time";
+  const minutes = Math.max(0, Math.round((Date.now() - timestamp) / 60000));
+  if (minutes < 2) return "Just now";
+  if (minutes < 60) return `${minutes}m ago`;
+  const hours = Math.round(minutes / 60);
+  if (hours < 24) return `${hours}h ago`;
+  const days = Math.round(hours / 24);
+  return `${days}d ago`;
+}
+
+function playerNewsSourceLabel(sourceType: string) {
+  return sourceType === "YOUTUBE_TRANSCRIPT" ? "YouTube" :
+    sourceType === "LLM_RESEARCH" ? "Research" :
+    sourceType === "PREDICTED_LINEUP" ? "Predicted lineup" :
+    sourceType === "MANUAL_OVERRIDE" ? "Manual" :
+    sourceType === "OFFICIAL_FPL" ? "Official FPL" :
+    sourceType === "OFFICIAL_CLUB" ? "Official club" :
+    sourceType === "JOURNALIST" ? "Journalist" :
+    sourceType === "SCRAPE" ? "News" : "Signal";
+}
+
+function playerNewsSourceClass(sourceType: string) {
+  const normalized = sourceType.toLowerCase();
+  if (normalized.includes("youtube")) return "source-badge youtube";
+  if (normalized.includes("journalist")) return "source-badge journalist";
+  if (normalized.includes("official")) return "source-badge official";
+  if (normalized.includes("lineup")) return "source-badge lineup";
+  if (normalized.includes("scrape")) return "source-badge scrape";
+  if (normalized.includes("manual")) return "source-badge manual";
+  return "source-badge llm";
+}
+
+function PlayerNewsFeed({
+  squad,
+  signals,
+  unreadSignalCounts,
+  onSelectPlayer,
+  onOpenSignals,
+}: {
+  squad: Player[];
+  signals: PlayerSignal[];
+  unreadSignalCounts: Record<number, number>;
+  onSelectPlayer: (player: Player) => void;
+  onOpenSignals: () => void;
+}) {
+  const squadById = new Map(squad.map((player) => [player.id, player]));
+  const items = signals
+    .filter((signal) => squadById.has(signal.playerId))
+    .filter((signal) => signal.status === "PENDING" || signal.status === "VERIFIED")
+    .filter((signal) => Date.parse(signal.validUntil) >= Date.now())
+    .sort((a, b) => Date.parse(b.observedAt) - Date.parse(a.observedAt));
+  const unread = items.filter((signal) => !readSeenSignalIds().has(String(signal.id))).length;
+
+  return (
+    <section className="panel player-news-panel">
+      <div className="panel-head player-news-heading">
+        <div>
+          <h2>Player News</h2>
+          <p>Recent signals for players in your squad</p>
+        </div>
+        <div className="player-news-heading-actions">
+          {unread > 0 && <span className="pill amber">{unread} new</span>}
+          <button className="text-btn" onClick={onOpenSignals}>View all <ArrowRight size={14} /></button>
+        </div>
+      </div>
+      {items.length === 0 ? (
+        <div className="player-news-empty">
+          <p>No current player news for your squad.</p>
+          <button className="ghost-btn" onClick={onOpenSignals}>Open Signals</button>
+        </div>
+      ) : (
+        <div className="player-news-feed">
+          {items.map((signal) => {
+            const player = squadById.get(signal.playerId)!;
+            const isUnread = !readSeenSignalIds().has(String(signal.id));
+            const roleImpact = signal.interpretation?.modelImpact === "ROLE"
+              || typeof signal.value?.startProbability === "number"
+              || Boolean(signal.value?.depthRole);
+            return (
+              <article className={`player-news-item${isUnread ? " unread" : ""}`} key={signal.id}>
+                <div className="player-news-item-marker" aria-hidden="true" />
+                <div className="player-news-item-content">
+                  <div className="player-news-item-meta">
+                    <span className={playerNewsSourceClass(signal.sourceType)}>{playerNewsSourceLabel(signal.sourceType)}</span>
+                    <span>{playerNewsRelativeTime(signal.observedAt)}</span>
+                    {signal.status === "PENDING" && <span className="player-news-status pending">Needs review</span>}
+                    {signal.status === "VERIFIED" && roleImpact && <span className="player-news-status applied">Model signal</span>}
+                  </div>
+                  <button className="player-news-player" onClick={() => onSelectPlayer(player)}>
+                    <b>{player.name}</b><span>{player.position} · {player.club}</span>
+                  </button>
+                  <p>{signal.evidenceSummary}</p>
+                  {signal.sourceUrl && <a href={signal.sourceUrl} target="_blank" rel="noreferrer" onClick={(event) => event.stopPropagation()}>Read source ↗</a>}
+                </div>
+              </article>
+            );
+          })}
+        </div>
+      )}
+    </section>
+  );
+}
+
 function PlayerChip({
   p,
   sub = false,
@@ -2271,6 +2376,8 @@ function App() {
             leagueName={canonicalRecommendation?.league?.leagueName}
             signalCounts={signalCounts}
             unreadSignalCounts={unreadSignalCounts}
+            playerSignals={playerSignals}
+            onOpenSignals={() => setTab("Signals")}
           />
         ) : tab === "Leagues" ? (
           <LeaguesView
@@ -4817,6 +4924,8 @@ function MyTeamV2({
   leagueName,
   signalCounts,
   unreadSignalCounts,
+  playerSignals,
+  onOpenSignals,
 }: {
   squad: Player[];
   xi: Player[];
@@ -4858,6 +4967,8 @@ function MyTeamV2({
   leagueName?: string | null;
   signalCounts: Record<number, number>;
   unreadSignalCounts: Record<number, number>;
+  playerSignals: PlayerSignal[];
+  onOpenSignals: () => void;
 }) {
   const starters = new Set(xi.map((p) => p.id));
   const bench = benchOrder(horizon, squad, xi);
@@ -5166,6 +5277,13 @@ function MyTeamV2({
           </div>
         </div>
       </section>
+      <PlayerNewsFeed
+        squad={squad}
+        signals={playerSignals}
+        unreadSignalCounts={unreadSignalCounts}
+        onSelectPlayer={onSelectPlayer}
+        onOpenSignals={onOpenSignals}
+      />
       <EvidencePanel
         squad={squad}
         horizon={horizon}
