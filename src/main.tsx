@@ -348,15 +348,29 @@ function PlayerNewsFeed({
   onSelectPlayer: (player: Player) => void;
   onOpenSignals: () => void;
 }) {
+  const [expandedGroups, setExpandedGroups] = useState<Set<string>>(new Set());
   const squadById = new Map(squad.map((player) => [player.id, player]));
   const seenIds = readSeenSignalIds();
-  const items = signals
+  const grouped = new Map<string, PlayerSignal[]>();
+  signals
     .filter((signal) => squadById.has(signal.playerId))
     .filter((signal) => signal.status === "PENDING" || signal.status === "VERIFIED")
     .filter((signal) => Date.parse(signal.validUntil) >= Date.now())
-    .sort((a, b) => Date.parse(b.observedAt) - Date.parse(a.observedAt))
+    .forEach((signal) => {
+      // A source URL is the stable identity of a video/article. Without one,
+      // keep the signal standalone rather than incorrectly merging unrelated news.
+      const sourceKey = signal.sourceUrl ? signal.sourceUrl.split(/[?#]/, 1)[0] : String(signal.id);
+      const key = `${signal.playerId}|${signal.sourceType}|${sourceKey}`;
+      grouped.set(key, [...(grouped.get(key) || []), signal]);
+    });
+  const items = Array.from(grouped.entries())
+    .map(([key, group]) => ({
+      key,
+      signals: group.sort((a, b) => Date.parse(b.observedAt) - Date.parse(a.observedAt)),
+    }))
+    .sort((a, b) => Date.parse(b.signals[0].observedAt) - Date.parse(a.signals[0].observedAt))
     .slice(0, 10);
-  const unread = items.filter((signal) => !seenIds.has(String(signal.id))).length;
+  const unread = items.filter(({ signals: group }) => group.some((signal) => !seenIds.has(String(signal.id)))).length;
 
   return (
     <section className="panel player-news-panel">
@@ -377,26 +391,44 @@ function PlayerNewsFeed({
         </div>
       ) : (
         <div className="player-news-feed">
-          {items.map((signal) => {
+          {items.map(({ key, signals: group }) => {
+            const signal = group[0];
             const player = squadById.get(signal.playerId)!;
-            const isUnread = !seenIds.has(String(signal.id));
-            const roleImpact = signal.interpretation?.modelImpact === "ROLE"
-              || typeof signal.value?.startProbability === "number"
-              || Boolean(signal.value?.depthRole);
+            const isUnread = group.some((item) => !seenIds.has(String(item.id)));
+            const roleImpact = group.some((item) => item.interpretation?.modelImpact === "ROLE"
+              || typeof item.value?.startProbability === "number"
+              || Boolean(item.value?.depthRole));
+            const hasMultiple = group.length > 1;
+            const expanded = expandedGroups.has(key);
             return (
-              <article className={`player-news-item${isUnread ? " unread" : ""}`} key={signal.id}>
+              <article className={`player-news-item${isUnread ? " unread" : ""}`} key={key}>
                 <div className="player-news-item-marker" aria-hidden="true" />
                 <div className="player-news-item-content">
                   <div className="player-news-item-meta">
-                    <span className="player-news-player-name">{player.name}</span>
+                    <button className="player-news-player-name" onClick={() => onSelectPlayer(player)}>{player.name}</button>
                     <span>{playerNewsRelativeTime(signal.observedAt)}</span>
                     <span className={playerNewsSourceClass(signal.sourceType)}>{playerNewsSourceLabel(signal.sourceType)}</span>
-                    {signal.status === "PENDING" && <span className="player-news-status pending">Review</span>}
+                    {hasMultiple && <button className="player-news-count" onClick={() => setExpandedGroups((current) => {
+                      const next = new Set(current);
+                      if (next.has(key)) next.delete(key); else next.add(key);
+                      return next;
+                    })}>{group.length} updates {expanded ? "⌃" : "⌄"}</button>}
+                    {group.some((item) => item.status === "PENDING") && <span className="player-news-status pending">Review</span>}
                     {signal.status === "VERIFIED" && roleImpact && <span className="player-news-status applied">Affects model</span>}
                   </div>
-                  <button className="player-news-headline" onClick={() => onSelectPlayer(player)}>
+                  <button className="player-news-headline" onClick={() => hasMultiple ? setExpandedGroups((current) => {
+                    const next = new Set(current);
+                    if (next.has(key)) next.delete(key); else next.add(key);
+                    return next;
+                  }) : onSelectPlayer(player)}>
                     {signal.evidenceSummary || `${player.name}: ${signal.kind.replace(/_/g, " ").toLowerCase()}`}
                   </button>
+                  {expanded && (
+                    <div className="player-news-details">
+                      {group.map((item) => <p key={item.id}>{item.evidenceSummary}</p>)}
+                      {signal.sourceUrl && <a href={signal.sourceUrl} target="_blank" rel="noreferrer">Open source ↗</a>}
+                    </div>
+                  )}
                 </div>
               </article>
             );

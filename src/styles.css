@@ -5282,13 +5282,20 @@ h2 {
 .player-news-item.unread .player-news-item-marker { background: #38bdf8; box-shadow: 0 0 0 3px rgba(56,189,248,.12); }
 .player-news-item-content { min-width: 0; flex: 1; }
 .player-news-item-meta { display: flex; align-items: center; flex-wrap: wrap; gap: 7px; color: #64748b; font-size: 10px; }
-.player-news-player-name { color: #e2e8f0; font-size: 11px; font-weight: 700; }
+.player-news-player-name { padding: 0; border: 0; background: transparent; color: #e2e8f0; cursor: pointer; font: inherit; font-size: 11px; font-weight: 700; }
+.player-news-player-name:hover { color: #7dd3fc; }
 .player-news-item-meta .source-badge { padding: 2px 6px; font-size: 9px; }
 .player-news-status { padding: 2px 6px; border-radius: 99px; font-size: 9px; font-weight: 800; letter-spacing: .04em; text-transform: uppercase; }
 .player-news-status.pending { color: #fbbf24; background: rgba(245,158,11,.12); }
 .player-news-status.applied { color: #34d399; background: rgba(16,185,129,.1); }
+.player-news-count { padding: 2px 6px; border: 1px solid rgba(148,163,184,.18); border-radius: 99px; background: rgba(148,163,184,.08); color: #94a3b8; cursor: pointer; font: inherit; font-size: 9px; }
+.player-news-count:hover { border-color: rgba(56,189,248,.4); color: #7dd3fc; }
 .player-news-headline { display: block; width: 100%; margin: 3px 0 0; padding: 0; border: 0; background: transparent; color: #cbd5e1; cursor: pointer; font: inherit; font-size: 13px; line-height: 1.35; text-align: left; }
 .player-news-headline:hover { color: #7dd3fc; }
+.player-news-details { display: grid; gap: 4px; margin-top: 8px; padding: 8px 10px; border-left: 2px solid rgba(56,189,248,.24); background: rgba(15,23,42,.32); }
+.player-news-details p { margin: 0; color: #94a3b8; font-size: 12px; line-height: 1.4; }
+.player-news-details a { color: #60a5fa; font-size: 11px; text-decoration: none; }
+.player-news-details a:hover { text-decoration: underline; }
 .player-news-empty { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin: 0 20px 16px; padding: 18px; border: 1px dashed rgba(148,163,184,.18); border-radius: 10px; color: #64748b; }
 .player-news-empty p { margin: 0; font-size: 13px; }
 @media (max-width: 620px) { .player-news-heading { align-items: flex-start; flex-direction: column; gap: 10px; } .player-news-heading-actions { width: 100%; justify-content: space-between; } }
