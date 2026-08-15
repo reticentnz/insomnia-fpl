@@ -6172,7 +6172,7 @@ function SignalsTab({
                         <span>Scales with expected minutes and fixture strength</span>
                       </div>
                     )}
-                    {contextOnly && <small>This does not change player minutes. Confirmed set-piece responsibility receives a conservative attacking projection uplift.</small>}
+                      {contextOnly && <small>{setPieceImpact ? "This does not change player minutes. Confirmed set-piece responsibility receives a conservative attacking projection uplift." : "This does not change player minutes or projections. It is retained as supporting context only."}</small>}
                     {needsInterpretation && <small>Choose an interpretation before this evidence can affect the model.</small>}
                     </div>
                   </details>

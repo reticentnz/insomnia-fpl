@@ -932,8 +932,8 @@ function safeContextValue(signal) {
   return Object.fromEntries(['note','forecastMetric','forecastDirection','forecastProbability','forecastHorizon'].filter(key=>value[key]!=null).map(key=>[key,value[key]]))
 }
 
-async function reprocessRemoteSignal(db, signal) {
-  if(signal.status!=='PENDING')return {signal,changed:false,reason:'not_pending'}
+async function reprocessRemoteSignal(db, signal, { includeVerified = false } = {}) {
+  if(signal.status!=='PENDING'&&!includeVerified)return {signal,changed:false,reason:'not_pending'}
   const roleKinds=new Set(['EXPECTED_ROLE','DEPTH_CHART','TACTICAL_ROLE','PRESEASON_MINUTES','INJURY'])
   const roleClasses=new Set(['REAL_WORLD_ROLE','ROTATION','INJURY','AVAILABILITY'])
   const text=`${signal.evidenceSummary||''} ${signal.evidenceText||''}`
@@ -2051,11 +2051,13 @@ function startServerOnAvailablePort(targetPort) {
         const db=await getDb()
         if(action==='reprocess'){
           const requestedIds=[...(Array.isArray(payload.signalIds)?payload.signalIds:[]),...(payload.signalId?[payload.signalId]:[])].map(String).filter(Boolean).slice(0,500)
-          const available=await listPlayerSignals(db,{status:requestedIds.length?null:'PENDING',limit:500})
-          const candidates=requestedIds.length?available.filter(signal=>requestedIds.includes(signal.id)):available
+          const includeVerified=payload.includeVerified===true
+          const available=await listPlayerSignals(db,{status:requestedIds.length?null:includeVerified?null:'PENDING',limit:500})
+          const candidates=(requestedIds.length?available.filter(signal=>requestedIds.includes(signal.id)):available)
+            .filter(signal=>includeVerified?signal.interpretation.modelImpact==='ROLE':signal.status==='PENDING')
           const results=[]
-          for(const signal of candidates)results.push(await reprocessRemoteSignal(db,signal))
-          sendJson(res,200,{schemaVersion:1,action,processed:results.length,changed:results.filter(result=>result.changed).length,results})
+          for(const signal of candidates)results.push(await reprocessRemoteSignal(db,signal,{includeVerified}))
+          sendJson(res,200,{schemaVersion:1,action,includeVerified,processed:results.length,changed:results.filter(result=>result.changed).length,results})
           return
         }
         if(action==='dismiss_claim'){
