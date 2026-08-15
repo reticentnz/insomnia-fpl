@@ -349,19 +349,21 @@ function PlayerNewsFeed({
   onOpenSignals: () => void;
 }) {
   const squadById = new Map(squad.map((player) => [player.id, player]));
+  const seenIds = readSeenSignalIds();
   const items = signals
     .filter((signal) => squadById.has(signal.playerId))
     .filter((signal) => signal.status === "PENDING" || signal.status === "VERIFIED")
     .filter((signal) => Date.parse(signal.validUntil) >= Date.now())
-    .sort((a, b) => Date.parse(b.observedAt) - Date.parse(a.observedAt));
-  const unread = items.filter((signal) => !readSeenSignalIds().has(String(signal.id))).length;
+    .sort((a, b) => Date.parse(b.observedAt) - Date.parse(a.observedAt))
+    .slice(0, 10);
+  const unread = items.filter((signal) => !seenIds.has(String(signal.id))).length;
 
   return (
     <section className="panel player-news-panel">
       <div className="panel-head player-news-heading">
         <div>
-          <h2>Player News</h2>
-          <p>Recent signals for players in your squad</p>
+          <h2>Latest Player News</h2>
+          <p>The newest headlines affecting your squad</p>
         </div>
         <div className="player-news-heading-actions">
           {unread > 0 && <span className="pill amber">{unread} new</span>}
@@ -377,7 +379,7 @@ function PlayerNewsFeed({
         <div className="player-news-feed">
           {items.map((signal) => {
             const player = squadById.get(signal.playerId)!;
-            const isUnread = !readSeenSignalIds().has(String(signal.id));
+            const isUnread = !seenIds.has(String(signal.id));
             const roleImpact = signal.interpretation?.modelImpact === "ROLE"
               || typeof signal.value?.startProbability === "number"
               || Boolean(signal.value?.depthRole);
@@ -386,16 +388,15 @@ function PlayerNewsFeed({
                 <div className="player-news-item-marker" aria-hidden="true" />
                 <div className="player-news-item-content">
                   <div className="player-news-item-meta">
-                    <span className={playerNewsSourceClass(signal.sourceType)}>{playerNewsSourceLabel(signal.sourceType)}</span>
+                    <span className="player-news-player-name">{player.name}</span>
                     <span>{playerNewsRelativeTime(signal.observedAt)}</span>
-                    {signal.status === "PENDING" && <span className="player-news-status pending">Needs review</span>}
-                    {signal.status === "VERIFIED" && roleImpact && <span className="player-news-status applied">Model signal</span>}
+                    <span className={playerNewsSourceClass(signal.sourceType)}>{playerNewsSourceLabel(signal.sourceType)}</span>
+                    {signal.status === "PENDING" && <span className="player-news-status pending">Review</span>}
+                    {signal.status === "VERIFIED" && roleImpact && <span className="player-news-status applied">Affects model</span>}
                   </div>
-                  <button className="player-news-player" onClick={() => onSelectPlayer(player)}>
-                    <b>{player.name}</b><span>{player.position} · {player.club}</span>
+                  <button className="player-news-headline" onClick={() => onSelectPlayer(player)}>
+                    {signal.evidenceSummary || `${player.name}: ${signal.kind.replace(/_/g, " ").toLowerCase()}`}
                   </button>
-                  <p>{signal.evidenceSummary}</p>
-                  {signal.sourceUrl && <a href={signal.sourceUrl} target="_blank" rel="noreferrer" onClick={(event) => event.stopPropagation()}>Read source ↗</a>}
                 </div>
               </article>
             );
