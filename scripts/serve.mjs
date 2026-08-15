@@ -927,6 +927,29 @@ async function resolveCreatorClaim(db, id, { playerId, rememberAlias = true } = 
   return {claimId:id,signal:result.signal,rememberedAlias:rememberAlias}
 }
 
+function safeContextValue(signal) {
+  const value=signal?.value&&typeof signal.value==='object'?signal.value:{}
+  return Object.fromEntries(['note','forecastMetric','forecastDirection','forecastProbability','forecastHorizon'].filter(key=>value[key]!=null).map(key=>[key,value[key]]))
+}
+
+async function reprocessRemoteSignal(db, signal) {
+  if(signal.status!=='PENDING')return {signal,changed:false,reason:'not_pending'}
+  const roleKinds=new Set(['EXPECTED_ROLE','DEPTH_CHART','TACTICAL_ROLE','PRESEASON_MINUTES','INJURY'])
+  const roleClasses=new Set(['REAL_WORLD_ROLE','ROTATION','INJURY','AVAILABILITY'])
+  const text=`${signal.evidenceSummary||''} ${signal.evidenceText||''}`
+  const roleEvidence=/\b(?:first[ -]?choice|regular starter|starting (?:xi|line[- ]?up|striker|keeper)|number one|no real competition|nailed|set to start|likely to start|expected to start|not expected to|regular starts?|rotation|rotat(?:e|ion)|one of two|compete? for minutes|competition for minutes|may not start|unavailable|ruled out|will miss|out for|back[ -]?up|third[ -]?choice)\b/i.test(text)
+  const unavailableEvidence=/\b(?:ruled out|unavailable|will miss|going to miss|set to miss|out for (?:weeks|months)|miss the start of the season)\b/i.test(text)
+  const roleAllowed=roleKinds.has(signal.kind)&&roleClasses.has(signal.claimClass)&&roleEvidence&&(signal.kind!=='INJURY'||unavailableEvidence)
+  const sourceDate=signal.sourceDate?Date.parse(signal.sourceDate):NaN
+  const maxAgeDays=signal.kind==='INJURY'?10:14
+  const fresh=Number.isFinite(sourceDate)&&(Date.now()-sourceDate)>=-86400000&&(Date.now()-sourceDate)<=maxAgeDays*86400000
+  if(roleAllowed&&fresh)return {signal,changed:false,reason:'role_evidence_is_current'}
+  const safeKinds=new Set(['VALUE_OPINION','TRANSFER_OPINION','STATISTICAL_CLAIM','PERFORMANCE_FORECAST'])
+  const finalize=safeKinds.has(signal.kind)||['VALUE_OPINION','STATISTICAL_CONTEXT','FPL_SELECTION','CREATOR_RATING'].includes(signal.claimClass)
+  const updated=await revisePlayerSignalInterpretation(db,signal.id,{modelImpact:'NONE',value:safeContextValue(signal),rationale:'Remote reprocess: unsupported, ambiguous, or stale role evidence was retained as context only.',finalizeContext:finalize})
+  return {signal:updated,changed:true,reason:finalize?'context_finalized':'role_downgraded_pending'}
+}
+
 async function processCreatorPayload(rawPayload){
   const payload=normalizeCreatorPayload(rawPayload),db=await getDb(),data=await liveData()
   const aliases=await creatorAliases(db)
@@ -2026,6 +2049,15 @@ function startServerOnAvailablePort(targetPort) {
         const payload=await readRequestBody(req)
         const action=String(payload.action||'').toLowerCase()
         const db=await getDb()
+        if(action==='reprocess'){
+          const requestedIds=[...(Array.isArray(payload.signalIds)?payload.signalIds:[]),...(payload.signalId?[payload.signalId]:[])].map(String).filter(Boolean).slice(0,500)
+          const available=await listPlayerSignals(db,{status:requestedIds.length?null:'PENDING',limit:500})
+          const candidates=requestedIds.length?available.filter(signal=>requestedIds.includes(signal.id)):available
+          const results=[]
+          for(const signal of candidates)results.push(await reprocessRemoteSignal(db,signal))
+          sendJson(res,200,{schemaVersion:1,action,processed:results.length,changed:results.filter(result=>result.changed).length,results})
+          return
+        }
         if(action==='dismiss_claim'){
           const claimId=String(payload.claimId||'')
           if(!claimId)throw new Error('claimId is required')
