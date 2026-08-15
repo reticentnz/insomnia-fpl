@@ -88,6 +88,20 @@ describe('canonical HTTP API smoke', () => {
     expect(updatedResponse.status).toBe(200)
     expect((await updatedResponse.json()).signal.status).toBe('REJECTED')
 
+    const remoteUnauthorized = await fetch(`${baseUrl}/api/remote/signals`)
+    expect(remoteUnauthorized.status).toBe(401)
+    const pendingResponse = await fetch(`${baseUrl}/api/player-signals`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ playerId: 11, kind: 'INJURY', evidenceSummary: 'Remote review fixture', confidence: .7 }) })
+    expect(pendingResponse.status).toBe(201)
+    const pending = (await pendingResponse.json()).signal
+    const remoteFeedResponse = await fetch(`${baseUrl}/api/remote/signals?actionableOnly=true`, { headers: { authorization: 'Bearer fixture-admin-token' } })
+    expect(remoteFeedResponse.status).toBe(200)
+    const remoteFeed = await remoteFeedResponse.json()
+    expect(remoteFeed).toMatchObject({ schemaVersion: 1, actionableCount: 1 })
+    expect(remoteFeed.findings[0]).toMatchObject({ id: pending.id, actionable: true, suggestedAction: 'APPROVE', state: 'ACTION_REQUIRED' })
+    const remoteActionResponse = await fetch(`${baseUrl}/api/remote/actions`, { method: 'POST', headers: { 'content-type': 'application/json', authorization: 'Bearer fixture-admin-token' }, body: JSON.stringify({ action: 'reject', signalId: pending.id, reason: 'Remote test review' }) })
+    expect(remoteActionResponse.status).toBe(200)
+    expect((await remoteActionResponse.json()).signals[0]).toMatchObject({ id: pending.id, status: 'REJECTED' })
+
     const testKey = 'test-provider-key-not-for-production-9x7z'
     const savedKey = await fetch(`${baseUrl}/api/ai-config`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ provider: 'openai', apiKey: testKey }) })
     expect(savedKey.status).toBe(200)

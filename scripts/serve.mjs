@@ -48,6 +48,7 @@ import { CatalogueCache, catalogueCacheKey, catalogueRequestKey } from '../src/s
 import { ConcurrencyLimiter, TtlCache } from '../src/server/upstream-control.ts'
 import { HttpRequestError, MAX_JSON_BODY_BYTES, readJsonBody, sanitizeError } from '../src/server/http-security.mjs'
 import { createPlayerSignal, deletePlayerSignal, listPlayerSignals, revisePlayerSignalInterpretation, updatePlayerSignalStatuses } from '../src/server/signal-service.ts'
+import { getRemoteSignalFeed } from '../src/server/remote-signal-service.ts'
 import { failFeedRun, latestSuccessfulFeedRun, startFeedRun, succeedFeedRun } from './feed-run.mjs'
 import { nextIngestSchedule, parseIngestIntervalHours } from '../src/server/ingest-scheduler.ts'
 import { addCreatorSource, deleteCreatorSource, getCreatorVideoDetail, listCreatorSources, pollCreatorSources, processCreatorQueue, retryCreatorVideo, setCreatorSourceEnabled, transcriptForPrompt } from './creator-feed-service.mjs'
@@ -723,6 +724,22 @@ function requireAdminToken(req, res) {
   const expected = process.env.ADMIN_TOKEN || ''
   if (!expected) return true
   if (!tokenMatches(bearerToken(req), expected)) { sendJson(res, 401, { error: 'Invalid admin token' }); return false }
+  return true
+}
+
+// Remote integrations must fail closed. The local admin UI remains usable
+// without a token, but an automation endpoint must never become unauthenticated
+// because ADMIN_TOKEN was omitted from the environment.
+function requireRemoteToken(req, res) {
+  const expected = process.env.ADMIN_TOKEN || ''
+  if (!expected) {
+    sendJson(res, 503, { error: 'Remote signal API is disabled until ADMIN_TOKEN is configured' })
+    return false
+  }
+  if (!tokenMatches(bearerToken(req), expected)) {
+    sendJson(res, 401, { error: 'Invalid admin token' })
+    return false
+  }
   return true
 }
 
@@ -1950,6 +1967,36 @@ function startServerOnAvailablePort(targetPort) {
       } catch (err) {
         sendJson(res, 500, { error: err.message })
       }
+      return
+    }
+
+    if(request==='/api/remote/signals'&&req.method==='GET'){
+      if(!requireRemoteToken(req,res))return
+      try{
+        const params=new URL(req.url||'/',`http://${host}`).searchParams
+        const feed=await getRemoteSignalFeed(await getDb(),{
+          status:params.get('status'), playerId:params.get('playerId'), since:params.get('since'),
+          actionableOnly:['1','true','yes'].includes((params.get('actionableOnly')||'').toLowerCase()), limit:params.get('limit')||100,
+        })
+        sendJson(res,200,feed,{cacheControl:'private, no-store',etag:true})
+      }catch(error){sendJson(res,400,{error:error instanceof Error?error.message:'Unable to read remote signals'})}
+      return
+    }
+
+    if(request==='/api/remote/actions'&&req.method==='POST'){
+      if(!requireRemoteToken(req,res))return
+      try{
+        const payload=await readRequestBody(req)
+        const action=String(payload.action||'').toLowerCase()
+        const actionStatus={approve:'VERIFIED',approve_signal:'VERIFIED',reject:'REJECTED',reject_signal:'REJECTED',expire:'EXPIRED',expire_signal:'EXPIRED'}[action]
+        const ids=[...(Array.isArray(payload.signalIds)?payload.signalIds:[]),...(payload.signalId?[payload.signalId]:[])].map(String).filter(Boolean).slice(0,50)
+        if(!actionStatus)throw new Error('action must be approve, reject, or expire')
+        if(!ids.length)throw new Error('signalId or signalIds is required')
+        const status=/** @type {'VERIFIED'|'REJECTED'|'EXPIRED'} */ (actionStatus)
+        const signals=await updatePlayerSignalStatuses(await getDb(),ids.map(id=>({id,status})),{actorType:'REMOTE_API',reason:String(payload.reason||`Remote action: ${action}`)})
+        const recompute=status==='VERIFIED'?await triggerForecastRecompute():null
+        sendJson(res,200,{schemaVersion:1,action,signals,count:signals.length,recompute})
+      }catch(error){sendJson(res,400,{error:error instanceof Error?error.message:'Unable to action remote signals'})}
       return
     }
 
