@@ -335,6 +335,12 @@ function playerNewsSourceClass(sourceType: string) {
   return "source-badge llm";
 }
 
+function playerNewsSourceName(signal: PlayerSignal) {
+  if (signal.sourceName) return signal.sourceName;
+  if (!signal.sourceUrl) return null;
+  try { return new URL(signal.sourceUrl).hostname.replace(/^www\./, ""); } catch { return null; }
+}
+
 function PlayerNewsFeed({
   squad,
   signals,
@@ -408,6 +414,7 @@ function PlayerNewsFeed({
                     <button className="player-news-player-name" onClick={() => onSelectPlayer(player)}>{player.name}</button>
                     <span>{playerNewsRelativeTime(signal.observedAt)}</span>
                     <span className={playerNewsSourceClass(signal.sourceType)}>{playerNewsSourceLabel(signal.sourceType)}</span>
+                    {playerNewsSourceName(signal) && <span className="player-news-source-name">{playerNewsSourceName(signal)}</span>}
                     {hasMultiple && <button className="player-news-count" onClick={() => setExpandedGroups((current) => {
                       const next = new Set(current);
                       if (next.has(key)) next.delete(key); else next.add(key);

@@ -63,6 +63,7 @@ export type PlayerSignal = {
   value: RoleSignalValue;
   sourceType: SignalSourceType;
   sourceUrl?: string | null;
+  sourceName?: string | null;
   evidenceSummary: string;
   evidenceText?: string;
   claimClass?: SignalClaimClass;
