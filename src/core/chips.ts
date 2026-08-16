@@ -1,5 +1,6 @@
 import { selectLineup, type Lineup, type StoredForecast } from './lineup.ts'
 import { evaluateSimultaneousTransfers, type EconomicsPlayer } from './transfers.ts'
+import { combineSampleStreams, deriveQuantileGain, summarizeSampleDistribution } from './uncertainty.ts'
 
 export type Chip = 'TC' | 'BB' | 'FH' | 'WC'
 export type ChipEstimate = {
@@ -40,10 +41,74 @@ export function evaluateChipCounterfactual(args: {
   if (baseline.starters.length !== 11) return unavailable(args.chip, baseline, 'Required baseline forecasts are absent')
   if (args.chip === 'TC') {
     const captain = baselineRows.find(row => row.playerId === baseline.captainId)
+    const vice = baselineRows.find(row => row.playerId === baseline.viceCaptainId)
     if (!captain) return unavailable('TC', baseline, 'A captain forecast is required')
+    if (captain.samples && baseline.samples) {
+      const count = baseline.samples.length
+      const tcGainStream = new Array<number>(count)
+      for (let i = 0; i < count; i++) {
+        const capMinutes = captain.minuteSamples ? (captain.minuteSamples[i] ?? 0) : 90
+        if (capMinutes > 0) {
+          tcGainStream[i] = captain.samples[i] ?? 0
+        } else if (vice && vice.samples) {
+          const viceMinutes = vice.minuteSamples ? (vice.minuteSamples[i] ?? 0) : 90
+          tcGainStream[i] = viceMinutes > 0 ? (vice.samples[i] ?? 0) : 0
+        } else {
+          tcGainStream[i] = 0
+        }
+      }
+      const gainSummary = summarizeSampleDistribution(tcGainStream)
+      const totalStream = combineSampleStreams([baseline.samples, tcGainStream])
+      const totalSummary = summarizeSampleDistribution(totalStream)
+      return {
+        chip: 'TC', available: true, baseline, captainId: captain.playerId,
+        expectedPoints: totalSummary.mean,
+        gain: gainSummary.mean,
+        p10Gain: gainSummary.p10,
+        p50Gain: gainSummary.p50,
+        p90Gain: gainSummary.p90,
+      }
+    }
     return { chip: 'TC', available: true, baseline, captainId: captain.playerId, expectedPoints: baseline.expectedPoints + captain.meanPoints, gain: captain.meanPoints, p10Gain: captain.p10Points, p50Gain: captain.p50Points, p90Gain: captain.p90Points }
   }
   if (args.chip === 'BB') {
+    const all15Rows = baselineRows.filter(row => args.baselineSquad.some(player => String(player.id) === row.playerId))
+    if (all15Rows.length !== 15) return unavailable('BB', baseline, 'All 15 squad forecasts are required')
+    const captain = all15Rows.find(row => row.playerId === baseline.captainId)
+    const vice = all15Rows.find(row => row.playerId === baseline.viceCaptainId)
+    const allHaveSamples = all15Rows.every(row => row.samples && row.samples.length > 0) && baseline.samples
+    if (allHaveSamples && baseline.samples) {
+      const count = baseline.samples.length
+      const all15Stream = new Array<number>(count).fill(0)
+      for (const row of all15Rows) {
+        for (let i = 0; i < count; i++) {
+          all15Stream[i] += row.samples![i] ?? 0
+        }
+      }
+      if (captain && captain.samples) {
+        for (let i = 0; i < count; i++) {
+          const capMins = captain.minuteSamples ? (captain.minuteSamples[i] ?? 0) : 90
+          if (capMins > 0) {
+            all15Stream[i] += captain.samples[i] ?? 0
+          } else if (vice && vice.samples) {
+            const viceMins = vice.minuteSamples ? (vice.minuteSamples[i] ?? 0) : 90
+            if (viceMins > 0) {
+              all15Stream[i] += vice.samples[i] ?? 0
+            }
+          }
+        }
+      }
+      const gainDist = deriveQuantileGain(all15Stream, baseline.samples)
+      const totalSummary = summarizeSampleDistribution(all15Stream)
+      return {
+        chip: 'BB', available: true, baseline,
+        expectedPoints: totalSummary.mean,
+        gain: gainDist.gain,
+        p10Gain: gainDist.p10Gain,
+        p50Gain: gainDist.p50Gain,
+        p90Gain: gainDist.p90Gain,
+      }
+    }
     const bench = baselineRows.filter(row => baseline.bench.includes(row.playerId))
     if (bench.length !== 4) return unavailable('BB', baseline, 'All four bench forecasts are required')
     return { chip: 'BB', available: true, baseline, expectedPoints: baseline.expectedPoints + sum(bench, 'meanPoints'), gain: sum(bench, 'meanPoints'), p10Gain: sum(bench, 'p10Points'), p50Gain: sum(bench, 'p50Points'), p90Gain: sum(bench, 'p90Points') }
@@ -59,6 +124,26 @@ export function evaluateChipCounterfactual(args: {
   // are both over the same selected horizon, so the squad persists by design.
   const baselineTotal = weeks.reduce((total, gameweekId) => total + selectLineup(args.forecasts.filter(row => row.gameweekId === gameweekId && args.baselineSquad.some(player => String(player.id) === row.playerId))).expectedPoints, 0)
   const expectedTotal = weeks.reduce((total, gameweekId) => total + selectLineup(args.forecasts.filter(row => row.gameweekId === gameweekId && optimisation.squad.some(player => String(player.id) === row.playerId))).expectedPoints, 0)
+
+  const changedLineups = weeks.map(gw => selectLineup(args.forecasts.filter(row => row.gameweekId === gw && optimisation.squad.some(player => String(player.id) === row.playerId))))
+  const unchangedLineups = weeks.map(gw => selectLineup(args.forecasts.filter(row => row.gameweekId === gw && args.baselineSquad.some(player => String(player.id) === row.playerId))))
+  const allChangedHaveSamples = changedLineups.every(l => l.samples && l.samples.length > 0)
+  const allUnchangedHaveSamples = unchangedLineups.every(l => l.samples && l.samples.length > 0)
+  if (allChangedHaveSamples && allUnchangedHaveSamples) {
+    const changedStreams = combineSampleStreams(changedLineups.map(l => l.samples!))
+    const unchangedStreams = combineSampleStreams(unchangedLineups.map(l => l.samples!))
+    const gainDist = deriveQuantileGain(changedStreams, unchangedStreams)
+    return {
+      chip: args.chip, available: true, baseline,
+      expectedPoints: expectedTotal,
+      gain: expectedTotal - baselineTotal,
+      p10Gain: gainDist.p10Gain,
+      p50Gain: gainDist.p50Gain,
+      p90Gain: gainDist.p90Gain,
+      squadIds: optimisation.squad.map(player => String(player.id)),
+    }
+  }
+
   const quantileGain = (key: 'p10Points' | 'p50Points' | 'p90Points') => weeks.reduce((total, gameweekId) => {
     const changed = selectLineup(args.forecasts.filter(row => row.gameweekId === gameweekId && optimisation.squad.some(player => String(player.id) === row.playerId)))
     const unchanged = selectLineup(args.forecasts.filter(row => row.gameweekId === gameweekId && args.baselineSquad.some(player => String(player.id) === row.playerId)))

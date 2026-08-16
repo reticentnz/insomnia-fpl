@@ -3,12 +3,19 @@ import { canonicalJson } from './feed-run.mjs'
 import { boundedTransferSearch } from '../src/core/optimizer.ts'
 import { evaluateChipCounterfactual } from '../src/core/chips.ts'
 
+import { combineSampleStreams, simulateFromStoredForecast, summarizeSampleDistribution } from '../src/core/uncertainty.ts'
+
 const parse = value => { try { return JSON.parse(value || '{}') } catch { return {} } }
 const asNumber = value => value == null ? null : Number(value)
 
 async function forecastPlayers(db, forecastRunId, horizon, { aggregate = true } = {}) {
   const rows = await db.query(
-    `SELECT forecast."player_id", forecast."mean_points", forecast."standard_deviation", forecast."p10_points", forecast."p50_points", forecast."p90_points", forecast."start_probability", forecast."no_show_probability",
+    `SELECT forecast."player_id", forecast."fixture_id", forecast."forecast_run_id",
+      forecast."mean_points", forecast."standard_deviation", forecast."p10_points", forecast."p50_points", forecast."p90_points",
+      forecast."start_probability", forecast."substitute_probability", forecast."no_show_probability",
+      forecast."expected_minutes", forecast."goal_points", forecast."assist_points", forecast."clean_sheet_points",
+      forecast."goals_conceded_points", forecast."save_points", forecast."penalty_points", forecast."defensive_contribution_points",
+      forecast."bonus_points", forecast."card_points", forecast."role_source_json", run."model_version",
       player."fpl_id", player_observation."position", player_observation."team_id", player_observation."active", player_observation."price_tenths",
       fixture_observation."gameweek_id", gameweek."fpl_id" AS gameweek_fpl_id
      FROM "PlayerFixtureForecast" forecast
@@ -27,19 +34,126 @@ async function forecastPlayers(db, forecastRunId, horizon, { aggregate = true } 
   const gameweeks = [...new Set(rows.rows.map(row => row.gameweek_id))].slice(0, horizon)
   const allowed = new Set(gameweeks)
   const selectedRows = rows.rows.filter(row => allowed.has(row.gameweek_id))
-  if (!aggregate) return selectedRows.map(row => ({ playerId: String(row.player_id), fplId: Number(row.fpl_id), gameweekId: String(row.gameweek_id), position: row.position, teamId: row.team_id, active: Boolean(row.active), purchasePriceTenths: asNumber(row.price_tenths), meanPoints: Number(row.mean_points), standardDeviation: Number(row.standard_deviation), p10Points: Number(row.p10_points), p50Points: Number(row.p50_points), p90Points: Number(row.p90_points), startProbability: Number(row.start_probability), noShowProbability: Number(row.no_show_probability) }))
-  const grouped = new Map()
-  for (const row of selectedRows) {
-    const id = String(row.player_id), previous = grouped.get(id) || { playerId: id, fplId: Number(row.fpl_id), gameweekId: 'horizon', position: row.position, teamId: row.team_id, active: Boolean(row.active), purchasePriceTenths: asNumber(row.price_tenths), meanPoints: 0, standardDeviationSquared: 0, p10Points: 0, p50Points: 0, p90Points: 0, startProbability: 0, noShowProbability: 0 }
-    previous.meanPoints += Number(row.mean_points); previous.standardDeviationSquared += Number(row.standard_deviation) ** 2
-    previous.p10Points += Number(row.p10_points); previous.p50Points += Number(row.p50_points); previous.p90Points += Number(row.p90_points)
-    previous.startProbability += Number(row.start_probability); previous.noShowProbability += Number(row.no_show_probability)
-    grouped.set(id, previous)
+
+  const simulatedRows = selectedRows.map(row => {
+    const sim = simulateFromStoredForecast(row)
+    return { ...row, _sim: sim }
+  })
+
+  if (!aggregate) {
+    const byPlayerGw = new Map()
+    for (const row of simulatedRows) {
+      const key = `${row.player_id}:${row.gameweek_id}`
+      const prev = byPlayerGw.get(key) || {
+        playerId: String(row.player_id),
+        fplId: Number(row.fpl_id),
+        gameweekId: String(row.gameweek_id),
+        position: row.position,
+        teamId: row.team_id,
+        active: Boolean(row.active),
+        purchasePriceTenths: asNumber(row.price_tenths),
+        startProbabilities: [],
+        noShowProbabilities: [],
+        meanPoints: 0,
+        variance: 0,
+        streams: [],
+        minuteStreams: [],
+        samplesAvailable: true,
+      }
+      prev.startProbabilities.push(Number(row.start_probability))
+      prev.noShowProbabilities.push(Number(row.no_show_probability))
+      prev.meanPoints += Number(row.mean_points)
+      prev.variance += Number(row.standard_deviation) ** 2
+      if (row._sim) {
+        prev.streams.push(row._sim.samples)
+        if (row._sim.minuteSamples) prev.minuteStreams.push(row._sim.minuteSamples)
+      } else prev.samplesAvailable = false
+      byPlayerGw.set(key, prev)
+    }
+    return [...byPlayerGw.values()].map(item => {
+      const combinedSamples = item.samplesAvailable ? combineSampleStreams(item.streams) : undefined
+      const combinedMinutes = item.samplesAvailable && item.minuteStreams.length ? combineSampleStreams(item.minuteStreams) : undefined
+      const standardDeviation = Math.sqrt(item.variance)
+      const percentileDistance = 1.2815515655446004 * standardDeviation
+      const summary = combinedSamples ? summarizeSampleDistribution(combinedSamples, combinedMinutes) : { mean: item.meanPoints, standardDeviation, p10: item.meanPoints - percentileDistance, p50: item.meanPoints, p90: item.meanPoints + percentileDistance }
+      const startProbability = 1 - item.startProbabilities.reduce((acc, p) => acc * (1 - p), 1)
+      const noShowProbability = item.noShowProbabilities.reduce((acc, p) => acc * p, 1)
+      return {
+        playerId: item.playerId,
+        fplId: item.fplId,
+        gameweekId: item.gameweekId,
+        position: item.position,
+        teamId: item.teamId,
+        active: item.active,
+        purchasePriceTenths: item.purchasePriceTenths,
+        meanPoints: summary.mean,
+        standardDeviation: summary.standardDeviation,
+        p10Points: summary.p10,
+        p50Points: summary.p50,
+        p90Points: summary.p90,
+        startProbability,
+        noShowProbability,
+        samples: combinedSamples,
+        minuteSamples: combinedMinutes,
+      }
+    })
   }
-  return [...grouped.values()].map(row => {
-    const standardDeviation = Math.sqrt(row.standardDeviationSquared)
+
+  const byPlayer = new Map()
+  for (const row of simulatedRows) {
+    const id = String(row.player_id)
+    const prev = byPlayer.get(id) || {
+      playerId: id,
+      fplId: Number(row.fpl_id),
+      gameweekId: 'horizon',
+      position: row.position,
+      teamId: row.team_id,
+      active: Boolean(row.active),
+      purchasePriceTenths: asNumber(row.price_tenths),
+      startProbabilities: [],
+        noShowProbabilities: [],
+      meanPoints: 0,
+      variance: 0,
+      streams: [],
+      minuteStreams: [],
+      samplesAvailable: true,
+    }
+    prev.startProbabilities.push(Number(row.start_probability))
+    prev.noShowProbabilities.push(Number(row.no_show_probability))
+    prev.meanPoints += Number(row.mean_points)
+    prev.variance += Number(row.standard_deviation) ** 2
+    if (row._sim) {
+      prev.streams.push(row._sim.samples)
+      if (row._sim.minuteSamples) prev.minuteStreams.push(row._sim.minuteSamples)
+    } else prev.samplesAvailable = false
+    byPlayer.set(id, prev)
+  }
+  return [...byPlayer.values()].map(item => {
+    const combinedSamples = item.samplesAvailable ? combineSampleStreams(item.streams) : undefined
+    const combinedMinutes = item.samplesAvailable && item.minuteStreams.length ? combineSampleStreams(item.minuteStreams) : undefined
+    const standardDeviation = Math.sqrt(item.variance)
     const percentileDistance = 1.2815515655446004 * standardDeviation
-    return { ...row, standardDeviation, p10Points: row.meanPoints - percentileDistance, p50Points: row.meanPoints, p90Points: row.meanPoints + percentileDistance, startProbability: Math.min(1, row.startProbability), noShowProbability: Math.min(1, row.noShowProbability) }
+    const summary = combinedSamples ? summarizeSampleDistribution(combinedSamples, combinedMinutes) : { mean: item.meanPoints, standardDeviation, p10: item.meanPoints - percentileDistance, p50: item.meanPoints, p90: item.meanPoints + percentileDistance }
+    const startProbability = 1 - item.startProbabilities.reduce((acc, p) => acc * (1 - p), 1)
+    const noShowProbability = item.noShowProbabilities.reduce((acc, p) => acc * p, 1)
+    return {
+      playerId: item.playerId,
+      fplId: item.fplId,
+      gameweekId: item.gameweekId,
+      position: item.position,
+      teamId: item.teamId,
+      active: item.active,
+      purchasePriceTenths: item.purchasePriceTenths,
+      meanPoints: summary.mean,
+      standardDeviation: summary.standardDeviation,
+      p10Points: summary.p10,
+      p50Points: summary.p50,
+      p90Points: summary.p90,
+      startProbability,
+      noShowProbability,
+      samples: combinedSamples,
+      minuteSamples: combinedMinutes,
+    }
   })
 }
 

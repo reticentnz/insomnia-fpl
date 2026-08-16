@@ -10,6 +10,41 @@ const iso = (value: unknown) => value == null ? null : String(value)
 const number = (value: unknown) => value == null ? null : Number(value)
 const json = (value: unknown) => { try { return JSON.parse(String(value || '{}')) } catch { return {} } }
 const unique = (values: string[]) => [...new Set(values)].sort()
+const roleValueKeys = ['startProbability', 'minutesIfStarting', 'substituteProbabilityWhenBenched', 'minutesIfSubstitute', 'depthRole']
+const contextOnlyClaimClasses = new Set(['FPL_SELECTION', 'CREATOR_RATING', 'VALUE_OPINION', 'STATISTICAL_CONTEXT', 'PERFORMANCE_FORECAST', 'UNKNOWN'])
+const hasRoleValue = (value: unknown) => {
+  const record = value && typeof value === 'object' ? value as Record<string, unknown> : {}
+  return roleValueKeys.some(key => record[key] !== null && record[key] !== undefined)
+}
+const stripRoleValue = (value: unknown, keepSetPieceRole: boolean) => {
+  const record = value && typeof value === 'object' && !Array.isArray(value) ? { ...(value as Record<string, unknown>) } : {}
+  for (const key of roleValueKeys) delete record[key]
+  if (!keepSetPieceRole) delete record.setPieceRole
+  return record
+}
+
+function effectiveSignalProjectionValue(signal: any) {
+  const hasInterpretation = signal.interpretation_id != null
+  const rawValue = json(signal.value_json)
+  if (!hasInterpretation) {
+    // Every migrated signal should have an interpretation. Treat an orphaned
+    // raw value as context-only rather than allowing it to alter projections.
+    return { value: stripRoleValue(rawValue, false), modelImpact: 'NONE', interpretationStatus: null, interpretationConfidence: null, claimClass: signal.claim_class || 'UNKNOWN' }
+  }
+  const value = json(signal.interpretation_value_json)
+  const claimClass = signal.interpretation_claim_class || signal.claim_class || 'UNKNOWN'
+  const modelImpact = signal.interpretation_model_impact || (hasRoleValue(value) ? 'ROLE' : 'NONE')
+  const approved = signal.interpretation_status === 'APPROVED'
+  const roleApproved = approved && modelImpact === 'ROLE' && !contextOnlyClaimClasses.has(claimClass)
+  const keepSetPieceRole = approved && modelImpact === 'NONE' && ['SET_PIECES', 'PENALTIES'].includes(claimClass)
+  return {
+    value: roleApproved ? value : stripRoleValue(value, keepSetPieceRole),
+    modelImpact: roleApproved ? modelImpact : 'NONE',
+    interpretationStatus: signal.interpretation_status || null,
+    interpretationConfidence: signal.interpretation_confidence == null ? null : Number(signal.interpretation_confidence),
+    claimClass,
+  }
+}
 
 function parseAsOf(asOf: string | Date | undefined) {
   const value = asOf instanceof Date ? asOf.toISOString() : asOf || new Date().toISOString()
@@ -121,9 +156,18 @@ export async function assembleProjectionInputCatalog(db: Database, options: {
   for (const row of markets) if (!marketByFixture.has(row.fixture_id)) marketByFixture.set(row.fixture_id, row)
 
   const signals = (await db.query(
-    `SELECT * FROM "PlayerSignal" WHERE datetime("observed_at") <= datetime($1) AND datetime("valid_until") > datetime($1) AND "status"='VERIFIED'
-       AND ("gameweek_id" IS NULL OR "gameweek_id" IN (SELECT "id" FROM "Gameweek" WHERE "season"=$2))
-     ORDER BY "player_id", "kind", CASE WHEN "source_type" IN ('MANUAL_OVERRIDE', 'MANUAL', 'USER') THEN 0 ELSE 1 END, "observed_at" DESC, "id" DESC`, [asOf, season],
+    `SELECT signal.*, interpretation."id" AS "interpretation_id", interpretation."origin" AS "interpretation_origin",
+        interpretation."claim_class" AS "interpretation_claim_class", interpretation."model_impact" AS "interpretation_model_impact",
+        interpretation."value_json" AS "interpretation_value_json", interpretation."confidence" AS "interpretation_confidence",
+        interpretation."status" AS "interpretation_status"
+       FROM "PlayerSignal" signal
+       LEFT JOIN "PlayerSignalInterpretation" interpretation ON interpretation."id"=(
+         SELECT candidate."id" FROM "PlayerSignalInterpretation" candidate
+         WHERE candidate."signal_id"=signal."id" ORDER BY candidate.rowid DESC LIMIT 1
+       )
+       WHERE datetime(signal."observed_at") <= datetime($1) AND datetime(signal."valid_until") > datetime($1) AND signal."status"='VERIFIED'
+         AND (signal."gameweek_id" IS NULL OR signal."gameweek_id" IN (SELECT "id" FROM "Gameweek" WHERE "season"=$2))
+       ORDER BY signal."player_id", signal."kind", CASE WHEN signal."source_type" IN ('MANUAL_OVERRIDE', 'MANUAL', 'USER') THEN 0 ELSE 1 END, signal."observed_at" DESC, signal."id" DESC`, [asOf, season],
   )).rows
   const signalsByPlayer = new Map<string, any[]>()
   for (const signal of signals) signalsByPlayer.set(signal.player_id, [...(signalsByPlayer.get(signal.player_id) || []), signal])
@@ -164,7 +208,19 @@ export async function assembleProjectionInputCatalog(db: Database, options: {
       official: { ...official, raw_payload_json: undefined },
       teamStrength: strength ? { strengthAttackHome: number(strength.strength_attack_home), strengthAttackAway: number(strength.strength_attack_away), strengthDefenceHome: number(strength.strength_defence_home), strengthDefenceAway: number(strength.strength_defence_away) } : { strengthAttackHome: null, strengthAttackAway: null, strengthDefenceHome: null, strengthDefenceAway: null },
       fixtures, underlying: underlying && { ...underlying, raw_payload_json: undefined },
-      roleSignals: roleSignals.map(signal => ({ id: signal.id, kind: signal.kind, value: json(signal.value_json), sourceType: signal.source_type, sourceUrl: signal.source_url, evidenceSummary: signal.evidence_summary, confidence: Number(signal.confidence), gameweekId: signal.gameweek_id, observedAt: signal.observed_at, validUntil: signal.valid_until, manualOverride: ['MANUAL_OVERRIDE', 'MANUAL', 'USER'].includes(signal.source_type) })),
+      roleSignals: roleSignals.map(signal => {
+        const interpretation = effectiveSignalProjectionValue(signal)
+        const sourceConfidence = Number(signal.confidence)
+        const interpretationConfidence = Number(interpretation.interpretationConfidence)
+        const confidence = interpretation.modelImpact === 'ROLE' && Number.isFinite(interpretationConfidence) ? Math.min(sourceConfidence, interpretationConfidence) : sourceConfidence
+        return {
+          id: signal.id, kind: signal.kind, value: interpretation.value, sourceType: signal.source_type, sourceUrl: signal.source_url,
+          sourceDate: signal.source_date || null, evidenceSummary: signal.evidence_summary, confidence, gameweekId: signal.gameweek_id,
+          observedAt: signal.observed_at, validUntil: signal.valid_until, modelImpact: interpretation.modelImpact,
+          interpretationStatus: interpretation.interpretationStatus, interpretationConfidence: interpretation.interpretationConfidence,
+          claimClass: interpretation.claimClass, manualOverride: ['MANUAL_OVERRIDE', 'MANUAL', 'USER'].includes(signal.source_type),
+        }
+      }),
       provenance: { officialObservationId: official.id, underlyingObservationId: underlying?.id || null, eligibleSignalIds: playerSignals.map(signal => signal.id), manualOverrideSignalIds: manualSignals.map(signal => signal.id), excluded: { underlying: [], signals: [] } },
     }
   })

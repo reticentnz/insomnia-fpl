@@ -3,7 +3,7 @@ import { canonicalJson, sanitizeError } from '../../scripts/feed-run.mjs'
 import { projectionBreakdown, MODEL_VERSION } from '../model.ts'
 import { resolvePlayerRole, type PlayerRoleProfile } from '../player-signals.ts'
 import { fixtureRateModel, fixtureRoleStates, MARKET_CLEAN_SHEET_WEIGHT, projectFixture } from '../core/projection.ts'
-import { SIMULATION_COUNT, SIMULATION_SEED_VERSION, simulateFixtureOutcomes } from '../core/uncertainty.ts'
+import { combineSampleStreams, SIMULATION_COUNT, SIMULATION_ENGINE_VERSION, SIMULATION_SEED_VERSION, simulateFixtureOutcomes, simulateFromStoredForecast, summarizeSampleDistribution } from '../core/uncertainty.ts'
 import type { ProjectionCatalogFixture, ProjectionCatalogPlayer, ProjectionInputCatalog } from '../core/types.ts'
 import { assembleProjectionInputCatalog } from './catalog-service.ts'
 import { getTeamColor, type Player } from '../domain.ts'
@@ -73,7 +73,11 @@ function toSignal(signal: Record<string, unknown>, fixture: ProjectionCatalogFix
   return {
     id: String(signal.id), playerId: 0, gameweek: signal.gameweekId === fixture.gameweekId ? fixture.gameweekFplId : null,
     kind: signal.kind, value: signal.value, sourceType: signal.manualOverride ? 'MANUAL_OVERRIDE' : signal.sourceType,
-    sourceUrl: signal.sourceUrl, evidenceSummary: signal.evidenceSummary || '', confidence: Number(signal.confidence ?? 1), observedAt: signal.observedAt, validUntil: signal.validUntil, status: 'VERIFIED',
+    sourceUrl: signal.sourceUrl, sourceDate: signal.sourceDate || null, evidenceSummary: signal.evidenceSummary || '', confidence: Number(signal.confidence ?? 1), observedAt: signal.observedAt, validUntil: signal.validUntil, status: 'VERIFIED',
+    interpretation: {
+      id: null, origin: 'AUTO', claimClass: signal.claimClass || 'UNKNOWN', modelImpact: signal.modelImpact || 'NONE', value: signal.value || {},
+      rationale: '', confidence: Number(signal.interpretationConfidence ?? signal.confidence ?? 1), status: signal.interpretationStatus || 'APPROVED',
+    },
   } as any
 }
 
@@ -125,14 +129,17 @@ export function projectCatalogFixture(player: ProjectionCatalogPlayer, fixture: 
   const components = projectFixture(modelPlayer, fixtureInput)
   const states = fixtureRoleStates(role)
   const rates = fixtureRateModel(modelPlayer, fixtureInput)
-  const outcome = simulateFixtureOutcomes({
+  const simulationInput = {
+    engineVersion: SIMULATION_ENGINE_VERSION,
     seed: `${context?.forecastRunId || 'preview'}:${player.id}:${fixture.id}:${context?.modelVersion || MODEL_VERSION}:${SIMULATION_SEED_VERSION}`,
     position, role: { ...states, minutesIfStarting: role.minutesIfStarting, minutesIfSubstitute: role.minutesIfSubstitute },
     goalRate: rates.goalRate, assistRate: rates.assistRate, teamGoalsConcededRate: rates.xgcRate, saveRate: rates.saveRate,
     yellowCardRate: rates.cardRate, redCardRate: number(official.red_cards) * 90 / Math.max(1, number(official.minutes)),
     penaltySaveRate: rates.penaltySaveRate, penaltyMissRate: rates.penaltyMissRate, ownGoalRate: rates.ownGoalRate,
     defensiveActionRate: rates.defensiveRate, bonusRate: rates.bonusRate,
-  })
+    samples: SIMULATION_COUNT,
+  }
+  const outcome = simulateFixtureOutcomes(simulationInput)
   const mean = outcome.mean
   return {
     playerId: player.id, fixtureId: fixture.id, expectedMinutes: components.expectedMinutes,
@@ -142,7 +149,7 @@ export function projectCatalogFixture(player: ProjectionCatalogPlayer, fixture: 
     bonusPoints: components.bonus, cardPoints: components.cards, meanPoints: mean,
     standardDeviation: outcome.standardDeviation, p10Points: outcome.p10, p50Points: outcome.p50, p90Points: outcome.p90,
     ...states, minutesConfidence: breakdown.minutesConfidence, strengthMethod: components.strengthMethod,
-    roleSource: { derivedSignalIds: role.derivedFromSignalIds }, inputProvenance: player.provenance,
+    roleSource: { derivedSignalIds: role.derivedFromSignalIds, simulationInput }, inputProvenance: player.provenance,
   }
 }
 
@@ -234,21 +241,33 @@ export async function latestForecastSummary(db: Database, { horizon = 1 }: { hor
   if (![1, 3, 5].includes(Number(horizon))) throw new Error('horizon must be 1, 3, or 5')
   const run = (await db.query(`SELECT * FROM "ForecastRun" WHERE "status"='SUCCEEDED' ORDER BY datetime("created_at") DESC, "id" DESC LIMIT 1`)).rows[0]
   if (!run) return null
-  const rows = (await db.query(`SELECT forecast.*, player."fpl_id", gameweek."fpl_id" AS "gameweek_fpl_id"
+  const rows = (await db.query(`SELECT forecast.*, player."fpl_id", gameweek."fpl_id" AS "gameweek_fpl_id", player_obs."position"
     FROM "PlayerFixtureForecast" forecast
     JOIN "Player" player ON player."id"=forecast."player_id"
     JOIN "FixtureObservation" fixture ON fixture."fixture_id"=forecast."fixture_id"
     JOIN "Gameweek" gameweek ON gameweek."id"=fixture."gameweek_id"
+    JOIN "PlayerObservation" player_obs ON player_obs."player_id"=forecast."player_id"
     WHERE forecast."forecast_run_id"=$1 AND datetime(fixture."observed_at")<=datetime($2)
       AND NOT EXISTS (SELECT 1 FROM "FixtureObservation" newer WHERE newer."fixture_id"=fixture."fixture_id" AND datetime(newer."observed_at")<=datetime($2) AND (datetime(newer."observed_at")>datetime(fixture."observed_at") OR (newer."observed_at"=fixture."observed_at" AND newer."id">fixture."id")))
+      AND datetime(player_obs."observed_at")<=datetime($2)
+      AND NOT EXISTS (SELECT 1 FROM "PlayerObservation" newer_obs WHERE newer_obs."player_id"=player_obs."player_id" AND datetime(newer_obs."observed_at")<=datetime($2) AND (datetime(newer_obs."observed_at")>datetime(player_obs."observed_at") OR (newer_obs."observed_at"=player_obs."observed_at" AND newer_obs."id">player_obs."id")))
     ORDER BY gameweek."fpl_id", player."fpl_id"`, [run.id, run.as_of])).rows
   const gameweeks = [...new Set(rows.map(row => Number(row.gameweek_fpl_id)))].sort((left, right) => left - right).slice(0, Number(horizon))
   const selected = rows.filter(row => gameweeks.includes(Number(row.gameweek_fpl_id)))
   const players = new Map<number, any>()
   for (const row of selected) {
-    const id = Number(row.fpl_id), current = players.get(id) || { playerId: id, meanPoints: 0, variance: 0, fixtureCount: 0 }
-    current.meanPoints += Number(row.mean_points); current.variance += Number(row.standard_deviation) ** 2
+    const id = Number(row.fpl_id)
+    const current = players.get(id) || { playerId: id, fixtureCount: 0, meanPoints: 0, variance: 0, streams: [], minuteStreams: [], samplesAvailable: true }
+    const sim = simulateFromStoredForecast(row)
     current.fixtureCount += 1
+    current.meanPoints += Number(row.mean_points)
+    current.variance += Number(row.standard_deviation) ** 2
+    if (sim) {
+      current.streams.push(sim.samples)
+      if (sim.minuteSamples) current.minuteStreams.push(sim.minuteSamples)
+    } else {
+      current.samplesAvailable = false
+    }
     players.set(id, current)
   }
   const fixtureCount = selected.length
@@ -263,9 +282,23 @@ export async function latestForecastSummary(db: Database, { horizon = 1 }: { hor
     marketFixtureRatio: fixtureCount ? selected.filter(row => row.strength_method === 'MARKET_XG').length / fixtureCount : 0,
   }
   return { id: run.id, modelVersion: run.model_version, asOf: run.as_of, createdAt: run.created_at, horizon: Number(horizon), gameweeks, quality, players: [...players.values()].map(player => {
-    const standardDeviation = Math.sqrt(player.variance)
-    const percentileDistance = 1.2815515655446004 * standardDeviation
-    return { ...player, standardDeviation, p10Points: player.meanPoints - percentileDistance, p50Points: player.meanPoints, p90Points: player.meanPoints + percentileDistance, variance: undefined }
+    if (!player.samplesAvailable) {
+      const standardDeviation = Math.sqrt(player.variance)
+      const percentileDistance = 1.2815515655446004 * standardDeviation
+      return { playerId: player.playerId, fixtureCount: player.fixtureCount, meanPoints: player.meanPoints, standardDeviation, p10Points: player.meanPoints - percentileDistance, p50Points: player.meanPoints, p90Points: player.meanPoints + percentileDistance }
+    }
+    const combined = combineSampleStreams(player.streams)
+    const combinedMinutes = player.minuteStreams.length ? combineSampleStreams(player.minuteStreams) : undefined
+    const summary = summarizeSampleDistribution(combined, combinedMinutes)
+    return {
+      playerId: player.playerId,
+      fixtureCount: player.fixtureCount,
+      meanPoints: summary.mean,
+      standardDeviation: summary.standardDeviation,
+      p10Points: summary.p10,
+      p50Points: summary.p50,
+      p90Points: summary.p90,
+    }
   }) }
 }
 

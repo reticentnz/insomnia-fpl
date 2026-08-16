@@ -64,6 +64,7 @@ export type PlayerSignal = {
   sourceType: SignalSourceType;
   sourceUrl?: string | null;
   sourceName?: string | null;
+  sourceDate?: string | null;
   evidenceSummary: string;
   evidenceText?: string;
   claimClass?: SignalClaimClass;
@@ -179,6 +180,38 @@ function signalRole(signal: PlayerSignal): RoleSignalValue {
   return signal.value;
 }
 
+function roleSourceRecencyDays(kind: string) {
+  if (kind === "INJURY") return 10;
+  if (["START_PROBABILITY", "DEPTH_CHART", "EXPECTED_ROLE", "PRESEASON_MINUTES", "TACTICAL_ROLE"].includes(kind)) return 14;
+  return null;
+}
+
+const contextOnlyClaimClasses = new Set(["FPL_SELECTION", "CREATOR_RATING", "VALUE_OPINION", "STATISTICAL_CONTEXT", "PERFORMANCE_FORECAST", "UNKNOWN"]);
+
+function hasFreshSourceDate(signal: PlayerSignal, now: Date) {
+  const maxAgeDays = roleSourceRecencyDays(String(signal.kind));
+  if (maxAgeDays == null || !signal.sourceDate) return true;
+  const sourceDate = Date.parse(signal.sourceDate);
+  if (!Number.isFinite(sourceDate)) return false;
+  const ageDays = (now.getTime() - sourceDate) / (24 * 60 * 60 * 1000);
+  return ageDays >= -1 && ageDays <= maxAgeDays;
+}
+
+function sourceIdentity(signal: PlayerSignal, source: string) {
+  try {
+    const parsed = new URL(source);
+    if (signal.sourceType === "YOUTUBE_TRANSCRIPT") {
+      // Timestamped transcript citations from different videos must not
+      // supersede one another merely because they share youtube.com.
+      parsed.searchParams.delete("t");
+      return parsed.toString();
+    }
+    return parsed.hostname;
+  } catch {
+    return source;
+  }
+}
+
 export function resolvePlayerRole(
   base: PlayerRoleProfile,
   signals: PlayerSignal[],
@@ -190,7 +223,9 @@ export function resolvePlayerRole(
     (signal) =>
       signal.status === "VERIFIED" &&
       signal.confidence > 0 &&
+      (!signal.interpretation || (signal.interpretation.status === "APPROVED" && signal.interpretation.modelImpact === "ROLE" && !contextOnlyClaimClasses.has(String(signal.interpretation.claimClass)))) &&
       new Date(signal.validUntil).getTime() >= now.getTime() &&
+      hasFreshSourceDate(signal, now) &&
       (signal.gameweek == null || signal.gameweek === options.gameweek),
   );
   if (!eligible.length) return normalizeRoleProfile(base);
@@ -217,7 +252,7 @@ export function resolvePlayerRole(
   roleInputs.forEach((signal) => {
     const source = sanitizeExternalUrl(signal.sourceUrl);
     if (!source) return;
-    const key = `${signal.kind}|${signal.sourceType}|${new URL(source).hostname}`;
+    const key = `${signal.kind}|${signal.sourceType}|${sourceIdentity(signal, source)}`;
     const previous = latestByOrigin.get(key);
     if (!previous || Date.parse(signal.observedAt) > Date.parse(previous.observedAt)) {
       if (previous) superseded.add(previous.id);
@@ -230,15 +265,17 @@ export function resolvePlayerRole(
   // pull an official/reputable role estimate away from stronger evidence.
   const trustedInputs = currentInputs.filter((signal) => signalSourceTrust(signal.sourceType, signal.sourceUrl) >= strongestTrust - .08);
   const inputs = overrides.length ? [overrides[0]] : trustedInputs;
+  const effectiveConfidence = (signal: PlayerSignal) =>
+    clamp(Math.min(signal.confidence, signal.interpretation?.confidence ?? signal.confidence));
   const effectiveWeight = (signal: PlayerSignal) => {
     // Manual overrides intentionally bypass both decay and weighted averaging.
-    if (signal.sourceType === "MANUAL_OVERRIDE") return clamp(signal.confidence);
-    if (!(decayHalfLifeDays > 0)) return clamp(signal.confidence);
-    const observedAt = new Date(signal.observedAt).getTime();
+    if (signal.sourceType === "MANUAL_OVERRIDE") return effectiveConfidence(signal);
+    if (!(decayHalfLifeDays > 0)) return effectiveConfidence(signal);
+    const observedAt = new Date(signal.sourceDate || signal.observedAt).getTime();
     const ageDays = Number.isFinite(observedAt)
       ? Math.max(0, (now.getTime() - observedAt) / (24 * 60 * 60 * 1000))
       : 0;
-    return clamp(signal.confidence) * signalSourceTrust(signal.sourceType, signal.sourceUrl) * 2 ** (-ageDays / decayHalfLifeDays);
+    return effectiveConfidence(signal) * signalSourceTrust(signal.sourceType, signal.sourceUrl) * 2 ** (-ageDays / decayHalfLifeDays);
   };
   const weighted = <K extends keyof RoleSignalValue>(key: K, fallback: number) => {
     const values: { value: number; weight: number }[] = [];

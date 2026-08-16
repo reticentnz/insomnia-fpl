@@ -5,6 +5,7 @@ import { afterEach, describe, expect, it } from 'vitest'
 import { closeDb, getDb } from '../../scripts/db.mjs'
 import { ingestOfficialFpl } from '../../scripts/ingest-fpl.mjs'
 import { createForecastRun, latestEligibleForecastRun } from './forecast-service.ts'
+import { simulateFixtureOutcomes, simulateFromStoredForecast } from '../core/uncertainty.ts'
 
 const directories: string[] = []
 const fixture = <T>(name: string) => JSON.parse(fs.readFileSync(path.resolve('scripts/fixtures', name), 'utf8')) as T
@@ -66,5 +67,46 @@ describe('WP-08 immutable forecast ledger', () => {
     expect(result.status).toBe('FAILED')
     expect((await db.query('SELECT "status", "error_summary" FROM "ForecastRun" WHERE "id"=$1', [result.id])).rows[0]).toMatchObject({ status: 'FAILED', error_summary: 'injected projection failure' })
     expect((await db.query('SELECT COUNT(*) AS count FROM "PlayerFixtureForecast" WHERE "forecast_run_id"=$1', [result.id])).rows[0].count).toBe(0)
+  })
+
+  it('regenerates bit-for-bit identical point and minute arrays from stored forecast ledger rows', async () => {
+    const db = await seeded()
+    const run = await createForecastRun(db, { asOf: '2026-08-15T12:00:00Z' })
+    expect(run.status).toBe('SUCCEEDED')
+    const forecastRow = (await db.query(`SELECT * FROM "PlayerFixtureForecast" WHERE "forecast_run_id"=$1 LIMIT 1`, [run.id])).rows[0]
+    expect(forecastRow).toBeDefined()
+
+    const roleSource = JSON.parse(forecastRow.role_source_json)
+    expect(roleSource.simulationInput).toBeDefined()
+    expect(roleSource.simulationInput).toMatchObject({ engineVersion: 'fixture-outcomes-v1', samples: 2_000 })
+
+    const directSimulation = simulateFixtureOutcomes(roleSource.simulationInput)
+    const regenerated = simulateFromStoredForecast(forecastRow)
+
+    expect(regenerated).not.toBeNull()
+    expect(regenerated!.samples).toEqual(directSimulation.samples)
+    expect(regenerated!.minuteSamples).toEqual(directSimulation.minuteSamples)
+    expect(regenerated!.mean).toBeCloseTo(Number(forecastRow.mean_points), 4)
+    expect(regenerated!.standardDeviation).toBeCloseTo(Number(forecastRow.standard_deviation), 4)
+    expect(regenerated!.p10).toBeCloseTo(Number(forecastRow.p10_points), 4)
+    expect(regenerated!.p50).toBeCloseTo(Number(forecastRow.p50_points), 4)
+    expect(regenerated!.p90).toBeCloseTo(Number(forecastRow.p90_points), 4)
+  })
+
+  it('refuses to fabricate empirical streams for legacy forecast rows without simulationInput', () => {
+    const legacyRow = {
+      player_id: 'p-1',
+      fixture_id: 'f-1',
+      mean_points: 5.5,
+      standard_deviation: 2.0,
+      p10_points: 3.0,
+      p50_points: 5.5,
+      p90_points: 8.0,
+      start_probability: 0.9,
+      no_show_probability: 0.05,
+      role_source_json: JSON.stringify({ derivedSignalIds: ['sig-1'] }),
+    }
+    const result = simulateFromStoredForecast(legacyRow)
+    expect(result).toBeNull()
   })
 })

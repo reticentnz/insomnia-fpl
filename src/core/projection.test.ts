@@ -81,6 +81,18 @@ describe('market clean-sheet probabilities', () => {
     const rates = fixtureRateModel(player('DEF'), fixture)
     expect(Math.exp(-rates.xgcRate)).toBeCloseTo(projected.cleanSheetProbability, 8)
   })
+
+  it('correctly models clean-sheet survival for starters subbed at 60m vs full 90m', () => {
+    const fixture = { gameweek: 1, opponent: 'OPP', venue: 'H' as const, difficulty: 3 }
+    const full90 = projectFixture({ ...player('DEF'), roleProfile: { startProbability: 1, substituteProbabilityWhenBenched: 0, minutesIfStarting: 90, minutesIfSubstitute: 0, confidence: 'HIGH', derivedFromSignalIds: [] } }, fixture)
+    const sub60 = projectFixture({ ...player('DEF'), roleProfile: { startProbability: 1, substituteProbabilityWhenBenched: 0, minutesIfStarting: 60, minutesIfSubstitute: 0, confidence: 'HIGH', derivedFromSignalIds: [] } }, fixture)
+    const sub45 = projectFixture({ ...player('DEF'), roleProfile: { startProbability: 1, substituteProbabilityWhenBenched: 0, minutesIfStarting: 45, minutesIfSubstitute: 0, confidence: 'HIGH', derivedFromSignalIds: [] } }, fixture)
+
+    // A starter surviving 60 minutes has higher clean sheet probability than one exposed for 90 minutes
+    expect(sub60.cleanSheet).toBeGreaterThan(full90.cleanSheet)
+    // A starter playing only 45 minutes gets zero clean sheet points
+    expect(sub45.cleanSheet).toBe(0)
+  })
 })
 
 describe('gameweek aggregation', () => {

@@ -178,8 +178,9 @@ function oneFixtureAtMinutes(player: Player, fixture: FixtureItem, mins: number)
   const { attack, defence } = fixtureFactors(fixture)
   const defensive = fixtureDefenceRates(player, fixture)
   const goals = rates.goalRate * minuteShare * attack * scoringRules.goal[player.position], assists = rates.assistRate * minuteShare * attack * scoringRules.assist
-  const appearance = playProbability + sixtyProbability, cleanSheetProbability = defensive.cleanSheetProbability
-  const cleanSheet = cleanSheetProbability * sixtyProbability * scoringRules.cleanSheet[player.position]
+  const appearance = playProbability + sixtyProbability
+  const cleanSheetProbability = sixtyProbability ? Math.exp(-defensive.goalsConcededRate * minuteShare) : 0
+  const cleanSheet = cleanSheetProbability * scoringRules.cleanSheet[player.position]
   const concededLambda = defensive.goalsConcededRate * minuteShare
   const goalsConceded = player.position === 'GK' || player.position === 'DEF' ? -poissonFloorExpectation(concededLambda, 2) : 0
   const saves = player.position === 'GK' ? poissonFloorExpectation(rates.saveRate * minuteShare / Math.max(defence, .75), 3) : 0

@@ -68,4 +68,13 @@ describe('canonical signal service', () => {
     const updated = await revisePlayerSignalInterpretation(db, String(created.id), { claimClass: 'SET_PIECES', modelImpact: 'NONE', value: { note: created.evidenceSummary }, finalizeContext: true })
     expect(updated).toMatchObject({ status: 'VERIFIED', interpretation: { claimClass: 'SET_PIECES', modelImpact: 'NONE', status: 'APPROVED' } })
   })
+
+  it('rejects contradictory interpretation payloads and blocks unresolved role claims from approval', async () => {
+    const db = await seed()
+    await expect(createPlayerSignal(db, { id: 'invalid-context-role', playerId: 10, kind: 'VALUE_OPINION', value: { note: 'context', startProbability: .7 }, sourceType: 'YOUTUBE_TRANSCRIPT', claimClass: 'VALUE_OPINION', modelImpact: 'NONE', evidenceSummary: 'Context', confidence: .6, observedAt: '2026-08-15T12:05:00Z', validUntil: '2026-08-22T12:05:00Z' })).rejects.toThrow('Context-only interpretations cannot contain role adjustments')
+    await expect(createPlayerSignal(db, { id: 'invalid-empty-role', playerId: 10, kind: 'START_PROBABILITY', value: { note: 'ambiguous' }, sourceType: 'JOURNALIST', claimClass: 'REAL_WORLD_ROLE', modelImpact: 'ROLE', evidenceSummary: 'Ambiguous', confidence: .6, observedAt: '2026-08-15T12:05:00Z', validUntil: '2026-08-22T12:05:00Z' })).rejects.toThrow('requires a structured role adjustment')
+    const unresolved = await createPlayerSignal(db, { id: 'unresolved-role', playerId: 10, kind: 'INJURY', value: { note: 'fitness concern' }, sourceType: 'JOURNALIST', claimClass: 'INJURY', modelImpact: 'NONE', evidenceSummary: 'Fitness concern', confidence: .6, observedAt: '2026-08-15T12:05:00Z', validUntil: '2026-08-22T12:05:00Z' })
+    await expect(updatePlayerSignalStatuses(db, [{ id: unresolved.id, status: 'VERIFIED' }])).rejects.toThrow('requires an approved role interpretation')
+    expect((await listPlayerSignals(db, { playerId: 10 })).find(signal => signal.id === unresolved.id)?.status).toBe('PENDING')
+  })
 })

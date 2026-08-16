@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { pairedSimulationSeed, simulateFixtureOutcomes } from './uncertainty.ts'
+import { combineSampleStreams, deriveQuantileGain, pairedSimulationSeed, SIMULATION_ENGINE_VERSION, simulateFixtureOutcomes, simulateFromStoredForecast, summarizeSampleDistribution } from './uncertainty.ts'
 
 const input = {
   seed: 'run-a:player-a:fixture-a:role-aware-v2.0', position: 'MID' as const,
@@ -27,5 +27,31 @@ describe('seeded outcome simulation', () => {
 
   it('uses a common stream identity for paired comparisons', () => {
     expect(pairedSimulationSeed('comparison-1', 'sample-3')).toBe(pairedSimulationSeed('comparison-1', 'sample-3'))
+  })
+
+  it('does not manufacture empirical samples for legacy or unsupported stored inputs', () => {
+    expect(simulateFromStoredForecast({ role_source_json: '{}' })).toBeNull()
+    expect(simulateFromStoredForecast({ roleSource: { simulationInput: { ...input, samples: 20, engineVersion: 'future-v2' } } })).toBeNull()
+    expect(simulateFromStoredForecast({ roleSource: { simulationInput: { ...input, samples: 20, engineVersion: SIMULATION_ENGINE_VERSION } } })?.samples).toHaveLength(20)
+  })
+
+  it('aggregates independent fixture sample streams without assuming comonotonicity', () => {
+    const fixture1 = simulateFixtureOutcomes({ ...input, seed: 'f1:player-1' })
+    const fixture2 = simulateFixtureOutcomes({ ...input, seed: 'f2:player-1' })
+    const dgwSamples = combineSampleStreams([fixture1.samples, fixture2.samples])
+    const dgwSummary = summarizeSampleDistribution(dgwSamples)
+
+    expect(dgwSummary.mean).toBeCloseTo(fixture1.mean + fixture2.mean, 2)
+    // For non-comonotonic independent events, p90(X + Y) < p90(X) + p90(Y)
+    expect(dgwSummary.p90).toBeLessThan(fixture1.p90 + fixture2.p90)
+    expect(dgwSummary.p10).toBeGreaterThanOrEqual(0)
+  })
+
+  it('computes exact quantile gains between counterfactual sample streams', () => {
+    const baseline = simulateFixtureOutcomes({ ...input, seed: 'base:player-1' })
+    const counterfactual = simulateFixtureOutcomes({ ...input, goalRate: 0.6, seed: 'cf:player-1' })
+    const gain = deriveQuantileGain(counterfactual.samples, baseline.samples)
+    expect(gain.gain).toBeCloseTo(counterfactual.mean - baseline.mean, 2)
+    expect(gain.p90Gain).toBeGreaterThan(gain.p10Gain)
   })
 })

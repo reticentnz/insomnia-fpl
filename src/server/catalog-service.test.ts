@@ -71,11 +71,25 @@ describe('WP-05 projection input catalogue', () => {
       ['expired', 'VERIFIED', '2026-08-15T11:00:00Z', 'RESEARCH', base[2], base[3]],
       ['verified', 'VERIFIED', '2026-08-16T12:00:00Z', 'RESEARCH', base[2], base[3]],
       ['manual', 'VERIFIED', '2026-08-16T12:00:00Z', 'MANUAL_OVERRIDE', '{"startProbability":0.9}', '2026-08-15T11:30:00Z'],
-    ]) await db.query(`INSERT INTO "PlayerSignal" ("id","player_id","kind","value_json","source_type","evidence_summary","confidence","observed_at","valid_until","status","created_at","updated_at") VALUES ($1,$2,$3,$4,$5,$1,1,$6,$7,$8,$6,$6)`, [id, player.id, base[1], value, sourceType, observedAt, validUntil, status])
+    ]) {
+      await db.query(`INSERT INTO "PlayerSignal" ("id","player_id","kind","value_json","source_type","evidence_summary","confidence","observed_at","valid_until","status","created_at","updated_at") VALUES ($1,$2,$3,$4,$5,$1,1,$6,$7,$8,$6,$6)`, [id, player.id, base[1], value, sourceType, observedAt, validUntil, status])
+      await db.query(`INSERT INTO "PlayerSignalInterpretation" ("id","signal_id","origin","claim_class","model_impact","value_json","rationale","confidence","status","created_at","updated_at") VALUES ($1,$2,$3,'REAL_WORLD_ROLE','ROLE',$4,'test',1,$5,$6,$6)`, [`interpretation:${id}`, id, sourceType === 'MANUAL_OVERRIDE' ? 'USER' : 'AUTO', value, status === 'VERIFIED' ? 'APPROVED' : status === 'REJECTED' ? 'REJECTED' : status === 'EXPIRED' ? 'SUPERSEDED' : 'PROPOSED', observedAt])
+    }
     const catalogue = await assembleProjectionInputCatalog(db, { asOf: '2026-08-15T12:00:00Z' })
     const signals = catalogue.players.find(item => item.fplId === 10)!.roleSignals
     expect(signals.map(signal => signal.id)).toEqual(['manual'])
     expect(catalogue.players.find(item => item.fplId === 10)!.provenance).toMatchObject({ eligibleSignalIds: ['manual', 'verified'], manualOverrideSignalIds: ['manual'] })
+  })
+
+  it('treats the approved interpretation as authoritative at the projection boundary', async () => {
+    const { db } = await seededDatabase()
+    const player = (await db.query('SELECT "id" FROM "Player" WHERE "fpl_id"=10')).rows[0]
+    await db.query(`INSERT INTO "PlayerSignal" ("id","player_id","kind","value_json","source_type","evidence_summary","claim_class","confidence","observed_at","valid_until","status","created_at","updated_at") VALUES ('context-role-leak',$1,'VALUE_OPINION','{"note":"context","startProbability":0.99}','YOUTUBE_TRANSCRIPT','Context','VALUE_OPINION',1,'2026-08-15T10:00:00Z','2026-08-22T10:00:00Z','VERIFIED','2026-08-15T10:00:00Z','2026-08-15T10:00:00Z')`, [player.id])
+    await db.query(`INSERT INTO "PlayerSignalInterpretation" ("id","signal_id","origin","claim_class","model_impact","value_json","rationale","confidence","status","created_at","updated_at") VALUES ('interpretation:context-role-leak','context-role-leak','AUTO','VALUE_OPINION','NONE','{"note":"context","startProbability":0.99}','Context only',1,'APPROVED','2026-08-15T10:00:00Z','2026-08-15T10:00:00Z')`)
+    const catalogue = await assembleProjectionInputCatalog(db, { asOf: '2026-08-15T12:00:00Z' })
+    const leaked = catalogue.players.find(item => item.fplId === 10)!.roleSignals.find(signal => signal.id === 'context-role-leak')
+    expect(leaked?.value).toEqual({ note: 'context' })
+    expect(leaked?.modelImpact).toBe('NONE')
   })
 
   it('selects only complete derived market xG and exposes its method and age for debug provenance', async () => {

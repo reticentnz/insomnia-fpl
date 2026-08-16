@@ -85,6 +85,11 @@ describe('player evidence signals',()=>{
     expect(resolvePlayerRole(base,[opinion],{now:new Date('2026-08-10T12:00:00Z'),gameweek:1})).toEqual(base)
   })
 
+  it('does not apply role-shaped values from an approved context-only interpretation',()=>{
+    const context=signal({id:51,kind:'VALUE_OPINION',value:{startProbability:1,note:'Context'},interpretation:{id:'i51',origin:'AUTO',claimClass:'VALUE_OPINION',modelImpact:'NONE',value:{startProbability:1,note:'Context'},rationale:'Context only',confidence:1,status:'APPROVED'}})
+    expect(resolvePlayerRole(base,[context],{now:new Date('2026-08-10T12:00:00Z'),gameweek:1})).toEqual(base)
+  })
+
   it('decays a fourteen-day-old signal to half the weight of a fresh signal',()=>{
     const fresh=signal({id:6,observedAt:'2026-08-10T00:00:00Z',value:{startProbability:1}})
     const old=signal({id:7,observedAt:'2026-07-27T00:00:00Z',value:{startProbability:0}})
@@ -105,6 +110,19 @@ describe('player evidence signals',()=>{
     const resolved=resolvePlayerRole(base,[creator,official],{now:new Date('2026-08-10T00:00:00Z'),gameweek:1})
     expect(resolved.startProbability).toBeCloseTo(.9)
     expect(resolved.derivedFromSignalIds).toEqual([9])
+  })
+
+  it('keeps separate creator videos as independent evidence sources',()=>{
+    const first=signal({id:91,sourceType:'YOUTUBE_TRANSCRIPT',sourceUrl:'https://youtube.com/watch?v=first&t=10s',observedAt:'2026-08-10T00:00:00Z',value:{startProbability:.2}})
+    const second=signal({id:92,sourceType:'YOUTUBE_TRANSCRIPT',sourceUrl:'https://youtube.com/watch?v=second&t=20s',observedAt:'2026-08-10T00:00:00Z',value:{startProbability:.8}})
+    const resolved=resolvePlayerRole(base,[first,second],{now:new Date('2026-08-10T00:00:00Z'),gameweek:1})
+    expect(resolved.startProbability).toBeCloseTo(.5,5)
+    expect(resolved.derivedFromSignalIds).toEqual([91,92])
+  })
+
+  it('does not apply a stale source date even when its database validity window is still open',()=>{
+    const stale=signal({id:93,sourceDate:'2026-07-20T00:00:00Z',validUntil:'2026-08-20T00:00:00Z',value:{startProbability:1}})
+    expect(resolvePlayerRole(base,[stale],{now:new Date('2026-08-10T00:00:00Z'),gameweek:1})).toEqual(base)
   })
 
   it('supersedes an older claim from the same source and signal kind',()=>{

@@ -1,7 +1,27 @@
 import { describe, expect, it } from 'vitest'
 import { createRecommendationSet, getRecommendationSet, planSquad } from './recommendation-service.mjs'
+import { SIMULATION_ENGINE_VERSION } from '../src/core/uncertainty.ts'
 
 const runPlayers = [{ playerId: 'player-1', teamId: 'team-1', position: 'MID', active: true, purchasePriceTenths: 75 }]
+
+const storedSimulationInput = (seed: string, position: 'GK' | 'DEF' | 'MID' | 'FWD', startProbability: number, substituteProbability: number, minutesIfStarting: number) => JSON.stringify({ simulationInput: {
+  engineVersion: SIMULATION_ENGINE_VERSION,
+  seed,
+  position,
+  role: { startProbability, substituteProbability, noShowProbability: 0, minutesIfStarting, minutesIfSubstitute: 18 },
+  goalRate: .2,
+  assistRate: .15,
+  teamGoalsConcededRate: 1.2,
+  saveRate: position === 'GK' ? 3 : 0,
+  yellowCardRate: .1,
+  redCardRate: .005,
+  penaltySaveRate: 0,
+  penaltyMissRate: .01,
+  ownGoalRate: .002,
+  defensiveActionRate: 8,
+  bonusRate: .3,
+  samples: 200,
+} })
 
 function database({ officialSellingPrice = null, assumedSellingPrice = null }: { officialSellingPrice?: number | null; assumedSellingPrice?: number | null }) {
   return {
@@ -58,5 +78,118 @@ describe('stored recommendation retrieval', () => {
     const result = await createRecommendationSet(db, { planId: 'plan-1', forecastRunId: 'run-1', horizon: 3, maxTransfers: 2 })
     expect(result.cacheStatus).toBe('HIT')
     expect(queries.some(sql => sql.includes('PlayerFixtureForecast'))).toBe(false)
+  })
+
+  it('aggregates DGW fixture rows into single player-gameweek streams and produces exact chip quantile gains', async () => {
+    const squadPositions = ['GK', 'GK', 'DEF', 'DEF', 'DEF', 'DEF', 'DEF', 'MID', 'MID', 'MID', 'MID', 'MID', 'FWD', 'FWD', 'FWD']
+    const planPlayers = squadPositions.map((pos, i) => ({ player_id: `p-${i}`, inherited_selling_price_tenths: null, planned_purchase_price_tenths: 50, locked: 0, bank_tenths: 0, free_transfers: 1, manager_account_id: 'm-1', official_squad_snapshot_id: 's-1', gameweek_id: 'gw-1', squad_slot: i + 1 }))
+    const officialPlayers = planPlayers.map(p => ({ player_id: p.player_id, selling_price_tenths: 50 }))
+
+    // p-0 to p-14 forecasts, with p-7 having 2 fixtures in gw-1 (DGW)
+    const forecastRows = planPlayers.map((p, i) => ({
+      player_id: p.player_id,
+      fixture_id: `fix-${i}-1`,
+      forecast_run_id: 'run-dgw',
+      mean_points: 4 + i * 0.2,
+      standard_deviation: 1.5,
+      p10_points: 2,
+      p50_points: 4,
+      p90_points: 6,
+      start_probability: 0.9,
+      substitute_probability: 0.1,
+      no_show_probability: 0,
+      expected_minutes: 85,
+      goal_points: 1,
+      assist_points: 0.5,
+      clean_sheet_points: 0.5,
+      goals_conceded_points: -0.5,
+      save_points: 0,
+      penalty_points: 0,
+      defensive_contribution_points: 0,
+      bonus_points: 0.5,
+      card_points: -0.1,
+      model_version: 'role-aware-v2.3',
+      fpl_id: 100 + i,
+      position: squadPositions[i],
+      team_id: `team-${i}`,
+      active: 1,
+      price_tenths: 50,
+      gameweek_id: 'gw-1',
+      gameweek_fpl_id: 1,
+      role_source_json: storedSimulationInput(`run-dgw:${p.player_id}:fix-${i}-1`, squadPositions[i], 0.9, 0.1, 85),
+    }))
+
+    // Add 2nd fixture for p-7 in gw-1 (DGW)
+    forecastRows.push({
+      player_id: 'p-7',
+      fixture_id: 'fix-7-2',
+      forecast_run_id: 'run-dgw',
+      mean_points: 5.0,
+      standard_deviation: 1.8,
+      p10_points: 2,
+      p50_points: 5,
+      p90_points: 8,
+      start_probability: 0.85,
+      substitute_probability: 0.15,
+      no_show_probability: 0,
+      expected_minutes: 80,
+      goal_points: 1.5,
+      assist_points: 0.8,
+      clean_sheet_points: 0.5,
+      goals_conceded_points: -0.5,
+      save_points: 0,
+      penalty_points: 0,
+      defensive_contribution_points: 0,
+      bonus_points: 0.8,
+      card_points: -0.1,
+      model_version: 'role-aware-v2.3',
+      fpl_id: 107,
+      position: 'MID',
+      team_id: 'team-7',
+      active: 1,
+      price_tenths: 50,
+      gameweek_id: 'gw-1',
+      gameweek_fpl_id: 1,
+      role_source_json: storedSimulationInput('run-dgw:p-7:fix-7-2', 'MID', 0.85, 0.15, 80),
+    })
+
+    const insertedSets: any[] = []
+    const insertedCandidates: any[] = []
+
+    const db = {
+      async query(sql: string, params: any[] = []) {
+        if (sql.includes('FROM "ForecastRun"')) return { rows: [{ id: 'run-dgw', input_hash: 'dgw-hash' }] }
+        if (sql.startsWith('SELECT "id" FROM "RecommendationSet"')) return { rows: [] }
+        if (sql.includes('FROM "PlayerFixtureForecast"')) return { rows: forecastRows }
+        if (sql.includes('FROM "PlanPlayer"')) return { rows: planPlayers }
+        if (sql.includes('FROM "OfficialSquadPlayer"')) return { rows: officialPlayers }
+        if (sql.includes('FROM "ManagerAssumption"')) return { rows: [] }
+        if (sql.includes('INSERT INTO "RecommendationSet"')) {
+          insertedSets.push(params)
+          return { rows: [] }
+        }
+        if (sql.includes('INSERT INTO "RecommendationCandidate"')) {
+          insertedCandidates.push(params)
+          return { rows: [] }
+        }
+        if (sql.includes('UPDATE "RecommendationSet"')) return { rows: [] }
+        if (sql.includes('BEGIN') || sql.includes('COMMIT')) return { rows: [] }
+        if (sql.includes('SELECT * FROM "RecommendationSet"')) {
+          return { rows: [{ id: insertedSets[0]?.[0] || 'set-new', plan_id: 'plan-1', forecast_run_id: 'run-dgw', horizon: 1, max_transfers: 0, chip: 'TRIPLE_CAPTAIN', status: 'SUCCEEDED' }] }
+        }
+        if (sql.includes('SELECT * FROM "RecommendationCandidate"')) {
+          return { rows: insertedCandidates.map((c, idx) => ({ id: c[0], rank: idx + 1, action: c[3], moves_json: c[4], raw_gain: c[5], hit_cost: c[6], net_expected_gain: c[8], expected_team_points: c[12], p10_points: c[13], p50_points: c[14], p90_points: c[15] })) }
+        }
+        if (sql.includes('FROM "Player"')) return { rows: planPlayers.map(p => ({ id: p.player_id, fpl_id: Number(p.player_id.replace('p-', '')) + 100 })) }
+        throw new Error(`Unexpected query: ${sql}`)
+      },
+    }
+
+    const result = await createRecommendationSet(db, { planId: 'plan-1', forecastRunId: 'run-dgw', horizon: 1, chip: 'TRIPLE_CAPTAIN' })
+    expect(result.cacheStatus).toBe('MISS')
+    expect(result.candidates[0].action).toBe('CHIP')
+    expect(result.candidates[0].p90Points).toBeDefined()
+    expect(result.candidates[0].p10Points).toBeDefined()
+    expect(result.candidates[0].p90Points).toBeGreaterThan(result.candidates[0].p10Points!)
   })
 })

@@ -21,6 +21,20 @@ describe('creator signal ingestion helpers',()=>{
     expect(payload.claims[0].externalClaimId).toBe('YOUTUBE:abc123:122:kai havt:ROTATION')
   })
 
+  it('preserves the ingestion source type and converts percentage probabilities safely',()=>{
+    const payload=normalizeCreatorPayload({source:{platform:'RSS',signalSourceType:'LLM_RESEARCH',url:'https://example.com/article'},claims:[{rawPlayerName:'Foden',category:'ROLE',summary:'Foden is expected to start.',startProbability:75}]})
+    expect(payload.source.signalSourceType).toBe('LLM_RESEARCH')
+    expect(payload.claims[0].startProbability).toBe(.75)
+    expect(signalDraftFromClaim(payload.claims[0],10,payload.source).sourceType).toBe('LLM_RESEARCH')
+  })
+
+  it('does not let a contradictory extracted role override the wording-based interpretation',()=>{
+    const payload=normalizeCreatorPayload({source:{url:'https://youtu.be/abc'},claims:[{rawPlayerName:'Foden',category:'ROLE',summary:'Foden has no real competition for the right wing.',depthRole:'OUT',startProbability:0,suggestedInterpretation:{role:'OUT',confidence:.95,rationale:'Unavailable'}}]})
+    expect(payload.claims[0].suggestedInterpretation).toMatchObject({role:'FIRST_CHOICE'})
+    expect(payload.claims[0]).toMatchObject({depthRole:null,startProbability:null})
+    expect(signalDraftFromClaim(payload.claims[0],10,payload.source)).toMatchObject({modelImpact:'ROLE',value:{depthRole:'FIRST_CHOICE',startProbability:.88}})
+  })
+
   it('uses fuzzy club context and uncapped ranking to resolve transcript misspellings',()=>{
     const catalog=[
       {id:1,name:'Sangaré',club:'Brentford',position:'MID',price:5},
@@ -142,5 +156,11 @@ describe('creator signal ingestion helpers',()=>{
     expect(drafts.map(draft=>draft.playerId)).toEqual([1,4])
     expect(drafts[0]).toMatchObject({claimClass:'REAL_WORLD_ROLE',modelImpact:'ROLE',value:{depthRole:'BACKUP',startProbability:.08}})
     expect(drafts[1]).toMatchObject({claimClass:'CREATOR_RATING',modelImpact:'NONE'})
+  })
+
+  it('does not interpret a negated expected-start statement as first-choice evidence',()=>{
+    const drafts=interpretManualSignalText('Saka is not expected to start this week.',[{id:1,name:'Saka',position:'MID'}])
+    expect(drafts[0]).toMatchObject({claimClass:'ROTATION',modelImpact:'ROLE',value:{depthRole:'ROTATION'}})
+    expect(drafts[0].value.startProbability).not.toBe(.88)
   })
 })

@@ -47,7 +47,7 @@ import { baseRole, createForecastRun, latestForecastSummary } from '../src/serve
 import { CatalogueCache, catalogueCacheKey, catalogueRequestKey } from '../src/server/catalog-cache.ts'
 import { ConcurrencyLimiter, TtlCache } from '../src/server/upstream-control.ts'
 import { HttpRequestError, MAX_JSON_BODY_BYTES, readJsonBody, sanitizeError } from '../src/server/http-security.mjs'
-import { createPlayerSignal, deletePlayerSignal, listPlayerSignals, revisePlayerSignalInterpretation, updatePlayerSignalStatuses } from '../src/server/signal-service.ts'
+import { createPlayerSignal, deletePlayerSignal, hasRoleValue, listPlayerSignals, revisePlayerSignalInterpretation, updatePlayerSignalStatuses } from '../src/server/signal-service.ts'
 import { getRemoteSignalFeed } from '../src/server/remote-signal-service.ts'
 import { failFeedRun, latestSuccessfulFeedRun, startFeedRun, succeedFeedRun } from './feed-run.mjs'
 import { nextIngestSchedule, parseIngestIntervalHours } from '../src/server/ingest-scheduler.ts'
@@ -851,11 +851,17 @@ Candidates: ${JSON.stringify(candidates)}`
   return match
 }
 
-function validityDeadline(timeHorizon){
+function validityDeadline(timeHorizon,sourceDate=null,category='',modelImpact='NONE'){
   const normalized=String(timeHorizon||'').toUpperCase().replace(/\s+/g,'')
   const gw=normalized.match(/^GW(\d+)$/)
   const days=gw?Math.max(7,Number(gw[1])*7):({SHORT_TERM:14,MEDIUM_TERM:42,SEASON:120,UNKNOWN:14}[normalized]||14)
-  return new Date(Date.now()+days*24*60*60*1000).toISOString()
+  let deadline=Date.now()+days*24*60*60*1000
+  if(modelImpact==='ROLE'&&sourceDate){
+    const publishedAt=Date.parse(sourceDate)
+    const recencyDays={INJURY:10,ROLE:14,ROTATION:14,TACTICS:14,PRESEASON:14}[String(category||'').toUpperCase()]||14
+    if(Number.isFinite(publishedAt))deadline=Math.min(deadline,publishedAt+recencyDays*24*60*60*1000)
+  }
+  return new Date(deadline).toISOString()
 }
 
 async function createSignalForCreatorClaim(db,claimRow,source,gameweek){
@@ -864,7 +870,7 @@ async function createSignalForCreatorClaim(db,claimRow,source,gameweek){
   const recencyDays={INJURY:10,ROLE:14,ROTATION:14,TACTICS:14,PRESEASON:14}
   const publishedAt=rawDraft.sourceDate?Date.parse(rawDraft.sourceDate):NaN
   const ageDays=Number.isFinite(publishedAt)?(Date.now()-publishedAt)/86400000:Infinity
-  const roleIsFresh=rawDraft.modelImpact!=='ROLE'||(Number.isFinite(publishedAt)&&ageDays>=-1&&ageDays<=(recencyDays[claimRow.category]||14))
+  const roleIsFresh=rawDraft.modelImpact!=='ROLE'||(Boolean(rawDraft.sourceUrl)&&Number.isFinite(publishedAt)&&ageDays>=-1&&ageDays<=(recencyDays[claimRow.category]||14))
   const draft=roleIsFresh?rawDraft:{...rawDraft,modelImpact:'NONE',value:{note:rawDraft.value.note},interpretationRationale:'The source date is missing or stale for a role-changing claim; retained as context only.'}
   const confidence=Math.max(0,Math.min(1,Number(draft.confidence)||.65))
   const status=shouldAutoApproveCreatorContext(draft)?'VERIFIED':'PENDING'
@@ -874,7 +880,7 @@ async function createSignalForCreatorClaim(db,claimRow,source,gameweek){
   if(existing.some(signal=>signal.id===id))return {signal:existing.find(signal=>signal.id===id),created:false}
   const horizonMatch=String(claimRow.timeHorizon||'').toUpperCase().match(/^GW\s*(\d+)$/)
   const applicableGameweek=horizonMatch?Number(horizonMatch[1]):null
-  const signal=await createPlayerSignal(db,{id,playerId:draft.playerId,gameweek:applicableGameweek,kind:draft.kind,value:draft.value,sourceType:draft.sourceType,sourceUrl:draft.sourceUrl,evidenceSummary:draft.evidenceSummary,evidenceText:draft.evidenceText,claimClass:draft.claimClass,modelImpact:draft.modelImpact,interpretationRationale:draft.interpretationRationale,interpretationConfidence:draft.interpretationConfidence,confidence,observedAt,validUntil:validityDeadline(claimRow.timeHorizon),status,actorType:'INGESTION',sourceDate:draft.sourceDate})
+  const signal=await createPlayerSignal(db,{id,playerId:draft.playerId,gameweek:applicableGameweek,kind:draft.kind,value:draft.value,sourceType:draft.sourceType,sourceUrl:draft.sourceUrl,evidenceSummary:draft.evidenceSummary,evidenceText:draft.evidenceText,claimClass:draft.claimClass,modelImpact:draft.modelImpact,interpretationRationale:draft.interpretationRationale,interpretationConfidence:draft.interpretationConfidence,confidence,observedAt,validUntil:validityDeadline(claimRow.timeHorizon,draft.sourceDate,claimRow.category,draft.modelImpact),status,actorType:'INGESTION',sourceDate:draft.sourceDate})
   if(draft.claimClass==='PERFORMANCE_FORECAST'&&draft.value.forecastMetric&&draft.value.forecastDirection&&draft.value.forecastProbability!=null){
     await db.query(`INSERT INTO "CreatorForecastOutcome" ("signal_id","creator","external_source_id","target_metric","direction","probability","horizon","observed_at") VALUES ($1,$2,$3,$4,$5,$6,$7,$8) ON CONFLICT ("signal_id") DO NOTHING`,[
       String(signal.id),source.creator||'Unknown creator',source.externalId||'',draft.value.forecastMetric,draft.value.forecastDirection,Number(draft.value.forecastProbability),draft.value.forecastHorizon||claimRow.timeHorizon||'UNKNOWN',observedAt,
@@ -929,7 +935,9 @@ async function resolveCreatorClaim(db, id, { playerId, rememberAlias = true } = 
 
 function safeContextValue(signal) {
   const value=signal?.value&&typeof signal.value==='object'?signal.value:{}
-  return Object.fromEntries(['note','forecastMetric','forecastDirection','forecastProbability','forecastHorizon'].filter(key=>value[key]!=null).map(key=>[key,value[key]]))
+  const keys=['note','forecastMetric','forecastDirection','forecastProbability','forecastHorizon']
+  if(['SET_PIECES','PENALTIES'].includes(signal?.claimClass)&&value.setPieceRole!=null)keys.push('setPieceRole')
+  return Object.fromEntries(keys.filter(key=>value[key]!=null).map(key=>[key,value[key]]))
 }
 
 async function creatorSignalPublicationDate(db, signal) {
@@ -942,7 +950,7 @@ async function creatorSignalPublicationDate(db, signal) {
 
 async function recoverPriorRoleInterpretation(db, signal) {
   if(signal.interpretation?.modelImpact==='ROLE')return signal
-  const result=await db.query(`SELECT "claim_class","value_json","rationale","confidence" FROM "PlayerSignalInterpretation" WHERE "signal_id"=$1 AND "model_impact"='ROLE' ORDER BY rowid DESC LIMIT 1`,[signal.id])
+  const result=await db.query(`SELECT "claim_class","value_json","rationale","confidence" FROM "PlayerSignalInterpretation" WHERE "signal_id"=$1 AND "model_impact"='ROLE' AND "origin"='AUTO' AND "status"='SUPERSEDED' ORDER BY rowid DESC LIMIT 1`,[signal.id])
   const row=result.rows[0]
   if(!row)return signal
   return {...signal,claimClass:row.claim_class||signal.claimClass,value:parseJson(row.value_json,signal.value),interpretation:{...signal.interpretation,claimClass:row.claim_class||signal.claimClass,modelImpact:'ROLE',value:parseJson(row.value_json,signal.value),rationale:row.rationale||signal.interpretation?.rationale,confidence:Number(row.confidence??signal.interpretation?.confidence??signal.confidence)}}
@@ -950,6 +958,7 @@ async function recoverPriorRoleInterpretation(db, signal) {
 
 async function reprocessRemoteSignal(db, signal, { includeVerified = false } = {}) {
   if(signal.status!=='PENDING'&&!includeVerified)return {signal,changed:false,reason:'not_pending'}
+  if(signal.interpretation?.origin==='USER')return {signal,changed:false,reason:'user_interpretation_preserved'}
   const originalModelImpact=signal.interpretation?.modelImpact||'NONE'
   signal=await recoverPriorRoleInterpretation(db,signal)
   const roleKinds=new Set(['EXPECTED_ROLE','DEPTH_CHART','TACTICAL_ROLE','PRESEASON_MINUTES','INJURY'])
@@ -969,12 +978,13 @@ async function reprocessRemoteSignal(db, signal, { includeVerified = false } = {
   const fresh=Number.isFinite(sourceDate)&&(Date.now()-sourceDate)>=-86400000&&(Date.now()-sourceDate)<=maxAgeDays*86400000
   if(roleAllowed&&fresh){
     if(originalModelImpact==='ROLE')return {signal,changed:false,reason:'role_evidence_is_current'}
-    const restored=await revisePlayerSignalInterpretation(db,signal.id,{claimClass:signal.claimClass,modelImpact:'ROLE',value:signal.value,rationale:'Recovered prior role interpretation and passed current evidence/freshness checks.',confidence:signal.interpretation?.confidence,finalizeContext:false})
+    if(!hasRoleValue(signal.value))return {signal,changed:false,reason:'role_evidence_requires_structured_values'}
+    const restored=await revisePlayerSignalInterpretation(db,signal.id,{claimClass:signal.claimClass,modelImpact:'ROLE',value:signal.value,rationale:'Recovered prior role interpretation and passed current evidence/freshness checks.',confidence:signal.interpretation?.confidence,finalizeContext:false,origin:'AUTO'})
     return {signal:restored,changed:true,reason:'role_restored_after_audit'}
   }
   const safeKinds=new Set(['VALUE_OPINION','TRANSFER_OPINION','STATISTICAL_CLAIM','PERFORMANCE_FORECAST'])
   const finalize=safeKinds.has(signal.kind)||['VALUE_OPINION','STATISTICAL_CONTEXT','FPL_SELECTION','CREATOR_RATING'].includes(signal.claimClass)
-  const updated=await revisePlayerSignalInterpretation(db,signal.id,{modelImpact:'NONE',value:safeContextValue(signal),rationale:'Remote reprocess: unsupported, ambiguous, or stale role evidence was retained as context only.',finalizeContext:finalize})
+  const updated=await revisePlayerSignalInterpretation(db,signal.id,{modelImpact:'NONE',value:safeContextValue(signal),rationale:'Remote reprocess: unsupported, ambiguous, or stale role evidence was retained as context only.',finalizeContext:finalize,origin:'AUTO'})
   return {signal:updated,changed:true,reason:finalize?'context_finalized':'role_downgraded_pending'}
 }
 
