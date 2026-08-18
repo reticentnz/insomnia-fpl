@@ -92,7 +92,7 @@ export function inferSuggestedInterpretation(category, text){
   if(backupEvidencePattern.test(evidence)){
     return {role:'BACKUP',confidence:.75,rationale:'The creator describes a backup or reserve role.'}
   }
-  if(/\b(may not (?:get regular starts?|start)|not expected to (?:get )?regular starts?|not expected to start|material competition|may compete for minutes?|competition for minutes?|one of two|bench risk|rotation risk|could lose his (?:place|spot))\b/i.test(evidence)){
+  if(/\b(may not (?:get regular starts?|start)|not expected to (?:get )?regular starts?|not expected to start|material competition|may compete for minutes?|competition (?:for minutes?|from|with)|one of two|bench risk|rotation risk|could lose his (?:place|spot)|(?:nail(?:ed)?|starting|first[ -]?choice) status (?:is )?(?:in doubt|questionable|unclear|under threat)|in doubt)\b/i.test(evidence)){
     return {role:'ROTATION_HIGH',confidence:.65,rationale:'The creator describes material competition, bench risk, or a lack of regular starts.'}
   }
   if(/\b(not (?:fully )?nailed|no (?:fixed )?number one|all positions are up for grabs|minutes (?:risk|concern|managed)|split minutes|share minutes|eased back in|not guaranteed (?:starts|minutes)|rotation|rotat(?:e|ion))\b/i.test(evidence)){
@@ -116,7 +116,7 @@ function interpretationMatchesEvidence(role, category, text){
   if(!['ROLE','ROTATION','TACTICS','PRESEASON'].includes(category))return false
   if(role==='OUT')return unavailableEvidencePattern.test(evidence)
   if(role==='BACKUP')return backupEvidencePattern.test(evidence)
-  if(role.startsWith('ROTATION'))return /\b(?:may not (?:get regular starts?|start)|not expected to (?:get )?regular starts?|not expected to start|material competition|may compete for minutes?|competition for minutes?|not (?:fully )?nailed|no (?:fixed )?number one|all positions are up for grabs|one of two|rotation|rotat(?:e|ion)|bench risk|rotation risk|minutes (?:risk|concern|managed)|split minutes|share minutes|competing with|battle for (?:starts|the spot)|pushing for starts|could lose his (?:place|spot)|eased back in|impact sub|super sub|not guaranteed (?:starts|minutes))\b/i.test(evidence)
+  if(role.startsWith('ROTATION'))return /\b(?:may not (?:get regular starts?|start)|not expected to (?:get )?regular starts?|not expected to start|material competition|may compete for minutes?|competition (?:for minutes?|from|with)|not (?:fully )?nailed|no (?:fixed )?number one|all positions are up for grabs|one of two|rotation|rotat(?:e|ion)|bench risk|rotation risk|minutes (?:risk|concern|managed)|split minutes|share minutes|competing with|battle for (?:starts|the spot)|pushing for starts|could lose his (?:place|spot)|eased back in|impact sub|super sub|not guaranteed (?:starts|minutes)|(?:nail(?:ed)?|starting|first[ -]?choice) status (?:is )?(?:in doubt|questionable|unclear|under threat)|in doubt)\b/i.test(evidence)
   return firstChoiceEvidencePattern.test(evidence)
 }
 

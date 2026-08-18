@@ -5770,7 +5770,13 @@ function SignalsTab({
   function projectedSignalImpact(player: Player | undefined, signal: PlayerSignal) {
     if (!player) return null;
     const beforeRole = playerRoleProfile(player);
-    const candidate = { ...signal, status: "VERIFIED" as const };
+    const candidate = {
+      ...signal,
+      status: "VERIFIED" as const,
+      interpretation: signal.interpretation
+        ? { ...signal.interpretation, status: "APPROVED" as const, modelImpact: "ROLE" as const }
+        : undefined,
+    };
     const afterRole = resolvePlayerRole(beforeRole, [candidate], { gameweek: currentGameweek });
     const beforePoints = gameweekProjection({ ...player, roleProfile: beforeRole }, currentGameweek);
     const afterPoints = gameweekProjection({ ...player, roleProfile: afterRole }, currentGameweek);
