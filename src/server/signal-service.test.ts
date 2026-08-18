@@ -77,4 +77,30 @@ describe('canonical signal service', () => {
     await expect(updatePlayerSignalStatuses(db, [{ id: unresolved.id, status: 'VERIFIED' }])).rejects.toThrow('requires an approved role interpretation')
     expect((await listPlayerSignals(db, { playerId: 10 })).find(signal => signal.id === unresolved.id)?.status).toBe('PENDING')
   })
+
+  it('does not duplicate signals when multiple RSS items or videos share the same source URL', async () => {
+    const db = await seed()
+    const now = '2026-08-15T12:00:00Z'
+    await db.query(`INSERT INTO "RssSource" ("id","name","feed_url","enabled","created_at","updated_at") VALUES ($1,$2,$3,1,$4,$4)`, ['rss-1', 'BBC Sport', 'https://feeds.bbci.co.uk/sport.xml', now])
+    await db.query(`INSERT INTO "RssItem" ("id","source_id","external_id","title","url","content_text","status","created_at","updated_at") VALUES ($1,$2,$3,$4,$5,$6,'COMPLETE',$7,$7)`, ['item-1', 'rss-1', 'ext-1', 'Title 1', 'https://bbc.com/sport/article-1', 'Content 1', now])
+    await db.query(`INSERT INTO "RssItem" ("id","source_id","external_id","title","url","content_text","status","created_at","updated_at") VALUES ($1,$2,$3,$4,$5,$6,'COMPLETE',$7,$7)`, ['item-2', 'rss-1', 'ext-2', 'Title 2', 'https://bbc.com/sport/article-1', 'Content 2', now])
+
+    await createPlayerSignal(db, {
+      id: 'signal-shared-url',
+      playerId: 10,
+      kind: 'EXPECTED_ROLE',
+      value: { note: 'Captain and central' },
+      sourceType: 'LLM_RESEARCH',
+      sourceUrl: 'https://bbc.com/sport/article-1',
+      evidenceSummary: 'Bruno Fernandes is central to the team',
+      confidence: .8,
+      observedAt: now,
+      validUntil: '2026-08-22T12:00:00Z',
+      status: 'PENDING',
+    })
+
+    const signals = await listPlayerSignals(db, { playerId: 10 })
+    expect(signals.filter(s => s.id === 'signal-shared-url')).toHaveLength(1)
+    expect(signals.find(s => s.id === 'signal-shared-url')?.sourceName).toBe('BBC Sport')
+  })
 })

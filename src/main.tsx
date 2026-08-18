@@ -357,12 +357,15 @@ function PlayerNewsFeed({
   const [expandedGroups, setExpandedGroups] = useState<Set<string>>(new Set());
   const squadById = new Map(squad.map((player) => [player.id, player]));
   const seenIds = readSeenSignalIds();
+  const seenSignalIds = new Set<string | number>();
   const grouped = new Map<string, PlayerSignal[]>();
   signals
     .filter((signal) => squadById.has(signal.playerId))
     .filter((signal) => signal.status === "PENDING" || signal.status === "VERIFIED")
     .filter((signal) => Date.parse(signal.validUntil) >= Date.now())
     .forEach((signal) => {
+      if (seenSignalIds.has(signal.id)) return;
+      seenSignalIds.add(signal.id);
       // A source URL is the stable identity of a video/article. Without one,
       // keep the signal standalone rather than incorrectly merging unrelated news.
       const sourceKey = signal.sourceUrl ? signal.sourceUrl.split(/[?#]/, 1)[0] : String(signal.id);

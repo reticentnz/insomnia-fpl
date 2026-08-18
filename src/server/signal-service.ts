@@ -111,17 +111,14 @@ export function signalApiRow(row: any) {
 }
 
 const selectSignals = `SELECT signal.*, player."fpl_id", gameweek."fpl_id" AS "gameweek_fpl_id",
-    creator_source."name" AS "creator_source_name", rss_source."name" AS "rss_source_name",
+    (SELECT creator_source."name" FROM "CreatorVideo" creator_video JOIN "CreatorSource" creator_source ON creator_source."id"=creator_video."source_id" WHERE creator_video."url"=signal."source_url" LIMIT 1) AS "creator_source_name",
+    (SELECT rss_source."name" FROM "RssItem" rss_item JOIN "RssSource" rss_source ON rss_source."id"=rss_item."source_id" WHERE rss_item."url"=signal."source_url" LIMIT 1) AS "rss_source_name",
     interpretation."id" AS "interpretation_id", interpretation."origin" AS "interpretation_origin",
     interpretation."claim_class" AS "interpretation_claim_class", interpretation."model_impact" AS "interpretation_model_impact",
     interpretation."value_json" AS "interpretation_value_json", interpretation."rationale" AS "interpretation_rationale",
     interpretation."confidence" AS "interpretation_confidence", interpretation."status" AS "interpretation_status"
   FROM "PlayerSignal" signal JOIN "Player" player ON player."id"=signal."player_id"
   LEFT JOIN "Gameweek" gameweek ON gameweek."id"=signal."gameweek_id"
-  LEFT JOIN "CreatorVideo" creator_video ON creator_video."url"=signal."source_url"
-  LEFT JOIN "CreatorSource" creator_source ON creator_source."id"=creator_video."source_id"
-  LEFT JOIN "RssItem" rss_item ON rss_item."url"=signal."source_url"
-  LEFT JOIN "RssSource" rss_source ON rss_source."id"=rss_item."source_id"
   LEFT JOIN "PlayerSignalInterpretation" interpretation ON interpretation."id"=(
     SELECT candidate."id" FROM "PlayerSignalInterpretation" candidate
     WHERE candidate."signal_id"=signal."id" ORDER BY candidate.rowid DESC LIMIT 1
