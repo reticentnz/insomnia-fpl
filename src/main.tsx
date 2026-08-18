@@ -5433,7 +5433,7 @@ function SignalsTab({
 
   const loadSignals = useCallback(() => {
     setLoading(true);
-    fetchAllSignals({ limit: 300 })
+    fetchAllSignals({ limit: 500 })
       .then((s) => setSignals(s))
       .catch(() => {})
       .finally(() => setLoading(false));
@@ -5790,13 +5790,17 @@ function SignalsTab({
     try {
       await resolveCreatorClaim(claim.id,playerId,true);
       loadCreatorClaims();loadSignals();
+    } catch(error) {
+      alert(error instanceof Error ? error.message : "Could not resolve claim");
     } finally { setClaimReviewingId(null); }
   }
 
   async function handleDismissClaim(claim: CreatorClaim) {
     setClaimReviewingId(claim.id);
     try { await dismissCreatorClaim(claim.id); loadCreatorClaims(); }
-    finally { setClaimReviewingId(null); }
+    catch(error) {
+      alert(error instanceof Error ? error.message : "Could not dismiss claim");
+    } finally { setClaimReviewingId(null); }
   }
 
 

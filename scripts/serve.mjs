@@ -871,7 +871,8 @@ async function createSignalForCreatorClaim(db,claimRow,source,gameweek){
   const publishedAt=rawDraft.sourceDate?Date.parse(rawDraft.sourceDate):NaN
   const ageDays=Number.isFinite(publishedAt)?(Date.now()-publishedAt)/86400000:Infinity
   const roleIsFresh=rawDraft.modelImpact!=='ROLE'||(Boolean(rawDraft.sourceUrl)&&Number.isFinite(publishedAt)&&ageDays>=-1&&ageDays<=(recencyDays[claimRow.category]||14))
-  const draft=roleIsFresh?rawDraft:{...rawDraft,modelImpact:'NONE',value:{note:rawDraft.value.note},interpretationRationale:'The source date is missing or stale for a role-changing claim; retained as context only.'}
+  const safeContextClaimClass=['SET_PIECES','PENALTIES','PERFORMANCE_FORECAST','FPL_SELECTION','CREATOR_RATING','STATISTICAL_CONTEXT'].includes(rawDraft.claimClass)?rawDraft.claimClass:'VALUE_OPINION'
+  const draft=roleIsFresh?rawDraft:{...rawDraft,claimClass:safeContextClaimClass,modelImpact:'NONE',value:{note:rawDraft.value.note},interpretationRationale:'The source date is missing or stale for a role-changing claim; retained as context only.'}
   const confidence=Math.max(0,Math.min(1,Number(draft.confidence)||.65))
   const status=shouldAutoApproveCreatorContext(draft)?'VERIFIED':'PENDING'
   const observedAt=new Date().toISOString()
