@@ -79,41 +79,45 @@ const interpretationRoleValues={
   OUT:{depthRole:'OUT',startProbability:0},
 }
 
-// The model is asked to provide this translation, but it is optional in the
-// extraction JSON and some providers routinely omit optional nested objects.
-// Keep the fallback deliberately narrow: it only converts wording for which
-// the ingestion prompt already defines an unambiguous model meaning.  The
-// result remains PENDING for manager approval.
-function inferSuggestedInterpretation(category, text){
+const unavailableEvidencePattern=/\b(?:ruled out|unavailable|will miss|going to miss|set to miss|out for (?:weeks|months|the season)|miss the start of the season|sidelined|out injured|injury layoff|suffered an? injury|knee injury|hamstring (?:injury|strain|tear)|torn (?:acl|cruciate|hamstring|meniscus|ligament)|broken (?:leg|foot|ankle|arm)|underwent surgery|surgery|long[ -]term (?:injury|absentee)|suspended|red card ban|banned for \d+ (?:games|matches)|failed (?:a )?fitness test|not fit to feature|not in contention|out of contention)\b/i
+const backupEvidencePattern=/\b(?:back[ -]?up|second[ -]?choice|2nd choice|third[ -]?choice|3rd choice|understudy|reserve (?:keeper|goalkeeper)|cup (?:keeper|goalkeeper)|deputy|cover for|not expected to be (?:the )?(?:regular|first[ -]?choice) starter|won['’]?t be (?:the )?(?:regular )?starter|will not be (?:the )?(?:regular )?starter|not going to play|backup option)\b/i
+const firstChoiceEvidencePattern=/\b(?:first[ -]?choice|regular starter|starting (?:xi|line[- ]?up|striker|keeper|goalkeeper|centre-back)|number one|no real competition|nailed(?: on| down)?|guaranteed (?:to )?start|undisputed starter|main man|first on the team sheet|clear first choice|preferred starter|lock in the (?:xi|lineup)|lead the (?:line|attack)|spearhead the attack|set to start|likely to start|expected to start|will start|assured of (?:his|her|their) place)\b/i
+
+export function inferSuggestedInterpretation(category, text){
   const evidence=String(text||'')
-  if(category==='INJURY'&&/\b(ruled out|unavailable|will miss|going to miss|set to miss|out for (?:weeks|months)|miss the start of the season)\b/i.test(evidence)){
+  if(category==='INJURY'&&unavailableEvidencePattern.test(evidence)){
     return {role:'OUT',confidence:.75,rationale:'The creator explicitly says the player will be unavailable.'}
   }
-  if(!['ROLE','ROTATION','TACTICS'].includes(category))return null
-  if(/\b(may not (?:get regular starts?|start)|not expected to (?:get )?regular starts?|not expected to start|material competition|may compete for minutes?|competition for minutes?|one of two)\b/i.test(evidence)){
-    return {role:'ROTATION_HIGH',confidence:.65,rationale:'The creator describes material competition or a lack of regular starts.'}
+  if(!['ROLE','ROTATION','TACTICS','PRESEASON','INJURY'].includes(category))return null
+  if(backupEvidencePattern.test(evidence)){
+    return {role:'BACKUP',confidence:.75,rationale:'The creator describes a backup or reserve role.'}
   }
-  if(/\b(not (?:fully )?nailed|no (?:fixed )?number one|all positions are up for grabs)\b/i.test(evidence)){
-    return {role:'ROTATION_MEDIUM',confidence:.6,rationale:'The creator describes an unsettled starting role.'}
+  if(/\b(may not (?:get regular starts?|start)|not expected to (?:get )?regular starts?|not expected to start|material competition|may compete for minutes?|competition for minutes?|one of two|bench risk|rotation risk|could lose his (?:place|spot))\b/i.test(evidence)){
+    return {role:'ROTATION_HIGH',confidence:.65,rationale:'The creator describes material competition, bench risk, or a lack of regular starts.'}
   }
-  if(/\b(?:looks )?(?:set|likely|expected) to (?:be )?(?:a )?first[ -]?choice|(?:is )?set to start|no real competition|assured of (?:his|her|their) place|will start|expected to start\b/i.test(evidence)){
+  if(/\b(not (?:fully )?nailed|no (?:fixed )?number one|all positions are up for grabs|minutes (?:risk|concern|managed)|split minutes|share minutes|eased back in|not guaranteed (?:starts|minutes)|rotation|rotat(?:e|ion))\b/i.test(evidence)){
+    return {role:'ROTATION_MEDIUM',confidence:.6,rationale:'The creator describes an unsettled starting role or rotation risk.'}
+  }
+  if(firstChoiceEvidencePattern.test(evidence)){
     return {role:'FIRST_CHOICE',confidence:.7,rationale:'The creator explicitly describes a secure starting role.'}
+  }
+  if(unavailableEvidencePattern.test(evidence)){
+    return {role:'OUT',confidence:.75,rationale:'The creator describes the player as unavailable or injured.'}
   }
   return null
 }
-const autoApprovedContextClasses=new Set(['FPL_SELECTION','CREATOR_RATING','VALUE_OPINION','STATISTICAL_CONTEXT'])
+const autoApprovedContextClasses=new Set(['FPL_SELECTION','CREATOR_RATING','VALUE_OPINION','STATISTICAL_CONTEXT','PERFORMANCE_FORECAST','TRANSFER_OPINION','SET_PIECES','PENALTIES','REAL_WORLD_ROLE','INJURY','ROTATION','AVAILABILITY'])
 const roleCapableCategories=new Set(['ROLE','ROTATION','TACTICS','PRESEASON','INJURY'])
-const roleEvidencePattern=/\b(?:first[ -]?choice|regular starter|starting (?:xi|line[- ]?up|striker|keeper)|number one|no real competition|nailed|set to start|likely to start|expected to start|will start|assured of (?:his|her|their) place|all positions are up for grabs|not expected to|regular starts?|rotation|rotat(?:e|ion)|one of two|compete? for minutes|competition for minutes|may not start|unavailable|ruled out|will miss|out for|back[ -]?up|third[ -]?choice|\d{1,3}(?:\.\d+)?\s*%?\s*(?:chance|probability|starts?|minutes?))\b/i
-const unavailableEvidencePattern=/\b(?:ruled out|unavailable|will miss|going to miss|set to miss|out for (?:weeks|months)|miss the start of the season)\b/i
+const roleEvidencePattern=/\b(?:first[ -]?choice|regular starter|starting (?:xi|line[- ]?up|striker|keeper|goalkeeper|centre-back)|number one|no real competition|nailed(?: on| down)?|guaranteed (?:to )?start|undisputed starter|main man|first on the team sheet|clear first choice|preferred starter|lock in the (?:xi|lineup)|lead the (?:line|attack)|spearhead the attack|set to start|likely to start|expected to start|will start|assured of (?:his|her|their) place|all positions are up for grabs|not expected to|regular starts?|rotation|rotat(?:e|ion)|bench risk|rotation risk|minutes (?:risk|concern|managed)|split minutes|share minutes|one of two|compete? for minutes|competition for minutes|may not start|unavailable|ruled out|will miss|out for|sidelined|out injured|back[ -]?up|second[ -]?choice|third[ -]?choice|reserve (?:keeper|goalkeeper)|\d{1,3}(?:\.\d+)?\s*%?\s*(?:chance|probability|starts?|minutes?))\b/i
 
 function interpretationMatchesEvidence(role, category, text){
   const evidence=String(text||'')
   if(category==='INJURY')return role==='OUT'&&unavailableEvidencePattern.test(evidence)
   if(!['ROLE','ROTATION','TACTICS','PRESEASON'].includes(category))return false
   if(role==='OUT')return unavailableEvidencePattern.test(evidence)
-  if(role==='BACKUP')return /\b(?:back[ -]?up|third[ -]?choice|not expected to be (?:the )?(?:regular|first[ -]?choice) starter|won['’]?t be (?:the )?(?:regular )?starter|will not be (?:the )?(?:regular )?starter)\b/i.test(evidence)
-  if(role.startsWith('ROTATION'))return /\b(?:may not (?:get regular starts?|start)|not expected to (?:get )?regular starts?|not expected to start|material competition|may compete for minutes?|competition for minutes?|not (?:fully )?nailed|no (?:fixed )?number one|all positions are up for grabs|one of two|rotation|rotat(?:e|ion))\b/i.test(evidence)
-  return /\b(?:first[ -]?choice|regular starter|starting (?:xi|line[- ]?up|striker|keeper)|number one|no real competition|nailed|set to start|likely to start|expected to start|will start|assured of (?:his|her|their) place)\b/i.test(evidence)
+  if(role==='BACKUP')return backupEvidencePattern.test(evidence)
+  if(role.startsWith('ROTATION'))return /\b(?:may not (?:get regular starts?|start)|not expected to (?:get )?regular starts?|not expected to start|material competition|may compete for minutes?|competition for minutes?|not (?:fully )?nailed|no (?:fixed )?number one|all positions are up for grabs|one of two|rotation|rotat(?:e|ion)|bench risk|rotation risk|minutes (?:risk|concern|managed)|split minutes|share minutes|competing with|battle for (?:starts|the spot)|pushing for starts|could lose his (?:place|spot)|eased back in|impact sub|super sub|not guaranteed (?:starts|minutes))\b/i.test(evidence)
+  return firstChoiceEvidencePattern.test(evidence)
 }
 
 const probability=value=>{
@@ -130,8 +134,17 @@ function sourceUrl(value){
   }catch{return ''}
 }
 
+export function shouldAutoApproveSignal(draft){
+  if(!draft)return false
+  if(draft.modelImpact==='NONE'&&autoApprovedContextClasses.has(draft.claimClass))return true
+  if(draft.modelImpact==='ROLE'&&Number(draft.confidence)>=0.65&&['FIRST_CHOICE','ROTATION','BACKUP','OUT'].includes(String(draft.value?.depthRole))){
+    return true
+  }
+  return false
+}
+
 export function shouldAutoApproveCreatorContext(draft){
-  return draft?.modelImpact==='NONE'&&autoApprovedContextClasses.has(draft.claimClass)
+  return shouldAutoApproveSignal(draft)
 }
 
 export function normalizeCreatorPayload(payload){
@@ -230,7 +243,9 @@ export function matchCreatorClaim(claim,catalog,aliases=[]){
   const clubMatched=best?.reasons.includes('club matched')
   const positionMatched=best?.reasons.includes('position matched')
   const strongContext=clubMatched&&best.confidence>=.62&&margin>=(positionMatched?.1:.12)
+  const isTransfer = String(claim.category || '').toUpperCase() === 'TRANSFER' || /\b(?:transfer(?:s|red|ring)?|sign(?:ed|ing|ings)?|rumou?r(?:s)?|deal|linked with|agreed terms|medical|bid|release clause|loaned to|bought from|joined from|completed a move|switch to|negotiat(?:ing|ions)|target(?:ing|ed)?)\b/i.test(`${claim.summary || ''} ${claim.evidenceText || ''}`)
   if(best&&(strongContext||(best.confidence>=.72&&margin>=(clubHint?.1:.15))))return {status:'MATCHED',player:best.player,confidence:best.confidence,candidates}
+  if(isTransfer)return {status:'DISMISSED',player:null,confidence:1,candidates:[],reason:'transfer claim for player outside active FPL catalog'}
   if(best&&best.confidence>=.5)return {status:'AMBIGUOUS',player:null,confidence:best.confidence,candidates}
   return {status:'UNRESOLVED',player:null,confidence:best?.confidence||0,candidates}
 }

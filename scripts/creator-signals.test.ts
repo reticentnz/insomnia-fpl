@@ -57,6 +57,9 @@ describe('creator signal ingestion helpers',()=>{
     expect(alias.player?.id).toBe(10)
     const ambiguous=matchCreatorClaim({rawPlayerName:'Fernandez'},catalog,[])
     expect(ambiguous.status).toBe('AMBIGUOUS')
+    const transferAmbiguous=matchCreatorClaim({rawPlayerName:'Nico Williams',category:'TRANSFER',summary:'Arsenal linked with transfer for Nico Williams'},catalog,[])
+    expect(transferAmbiguous.status).toBe('DISMISSED')
+    expect(transferAmbiguous.reason).toContain('transfer claim for player outside active FPL catalog')
     const spursMatch=matchCreatorClaim({rawPlayerName:'Fernandez',clubHint:'Spurs'},catalog,[])
     expect(spursMatch.player?.id).toBe(12)
   })
@@ -122,23 +125,39 @@ describe('creator signal ingestion helpers',()=>{
     expect(signalDraftFromClaim(payload.claims[0],10,payload.source)).toMatchObject({modelImpact:'NONE'})
   })
 
-  it('creates a context-only structured performance forecast',()=>{
+  it('creates a context-only structured performance forecast and auto-approves it',()=>{
     const payload=normalizeCreatorPayload({source:{url:'https://youtu.be/abc'},claims:[{rawPlayerName:'Groß',category:'PERFORMANCE_FORECAST',summary:'Groß could blank early and drop in price.',forecastMetric:'EXPECTED_POINTS',forecastDirection:'UNDERPERFORM',forecastProbability:.62,forecastHorizon:'GW1'}]})
     expect(payload.claims[0]).toMatchObject({category:'PERFORMANCE_FORECAST',forecastMetric:'EXPECTED_POINTS',forecastDirection:'UNDERPERFORM',forecastProbability:.62,forecastHorizon:'GW1'})
     const draft=signalDraftFromClaim(payload.claims[0],10,payload.source)
     expect(draft).toMatchObject({kind:'PERFORMANCE_FORECAST',claimClass:'PERFORMANCE_FORECAST',modelImpact:'NONE',value:{forecastMetric:'EXPECTED_POINTS',forecastDirection:'UNDERPERFORM',forecastProbability:.62,forecastHorizon:'GW1'}})
-    expect(shouldAutoApproveCreatorContext(draft)).toBe(false)
+    expect(shouldAutoApproveCreatorContext(draft)).toBe(true)
   })
 
-  it('auto-approves safe context while retaining ambiguous or role evidence for review',()=>{
+  it('auto-approves safe context and high-confidence role evidence while retaining ambiguous items',()=>{
     const opinion=signalDraftFromClaim({category:'VALUE',summary:'Cheap upside'},10,{})
     const selection=signalDraftFromClaim({category:'FPL_SELECTION',summary:'In my team'},10,{})
     const unknown=signalDraftFromClaim({category:'OTHER',summary:'Worth monitoring'},10,{})
     const role=signalDraftFromClaim({category:'ROTATION',summary:'May not start',suggestedInterpretation:{role:'ROTATION_HIGH'}},10,{})
+    const lowConfRole=signalDraftFromClaim({category:'ROTATION',summary:'May not start',confidence:.3,suggestedInterpretation:{role:'ROTATION_HIGH'}},10,{})
     expect(shouldAutoApproveCreatorContext(opinion)).toBe(true)
     expect(shouldAutoApproveCreatorContext(selection)).toBe(true)
     expect(shouldAutoApproveCreatorContext(unknown)).toBe(false)
-    expect(shouldAutoApproveCreatorContext(role)).toBe(false)
+    expect(shouldAutoApproveCreatorContext(role)).toBe(true)
+    expect(shouldAutoApproveCreatorContext(lowConfRole)).toBe(false)
+  })
+
+  it('derives backup, nailed starter, bench risk, and surgery/sidelined interpretations from wording',()=>{
+    const payload=normalizeCreatorPayload({source:{url:'https://youtu.be/abc'},claims:[
+      {rawPlayerName:'Trafford',category:'ROLE',summary:'Trafford is the backup keeper and second choice.'},
+      {rawPlayerName:'Saka',category:'ROLE',summary:'Saka is nailed on and guaranteed to start.'},
+      {rawPlayerName:'Foden',category:'ROTATION',summary:'Foden carries bench risk and could lose his place.'},
+      {rawPlayerName:'Rodri',category:'INJURY',summary:'Rodri underwent surgery and is sidelined with a torn ACL.'},
+    ]})
+    expect(payload.claims.map(claim=>claim.suggestedInterpretation?.role||null)).toEqual(['BACKUP','FIRST_CHOICE','ROTATION_HIGH','OUT'])
+    expect(signalDraftFromClaim(payload.claims[0],10,payload.source)).toMatchObject({modelImpact:'ROLE',value:{depthRole:'BACKUP'}})
+    expect(signalDraftFromClaim(payload.claims[1],11,payload.source)).toMatchObject({modelImpact:'ROLE',value:{depthRole:'FIRST_CHOICE'}})
+    expect(signalDraftFromClaim(payload.claims[2],12,payload.source)).toMatchObject({modelImpact:'ROLE',value:{depthRole:'ROTATION'}})
+    expect(signalDraftFromClaim(payload.claims[3],13,payload.source)).toMatchObject({modelImpact:'ROLE',value:{depthRole:'OUT'}})
   })
 
   it('treats creator bench choices as context and strips accidental role values',()=>{
