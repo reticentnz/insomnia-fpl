@@ -83,9 +83,12 @@ const unavailableEvidencePattern=/\b(?:ruled out|unavailable|will miss|going to 
 const backupEvidencePattern=/\b(?:back[ -]?up|second[ -]?choice|2nd choice|third[ -]?choice|3rd choice|understudy|reserve (?:keeper|goalkeeper)|cup (?:keeper|goalkeeper)|deputy|cover for|not expected to be (?:the )?(?:regular|first[ -]?choice) starter|won['’]?t be (?:the )?(?:regular )?starter|will not be (?:the )?(?:regular )?starter|not going to play|backup option)\b/i
 const firstChoiceEvidencePattern=/\b(?:first[ -]?choice|regular starter|starting (?:xi|line[- ]?up|striker|keeper|goalkeeper|centre-back)|number one|no real competition|nailed(?: on| down)?|guaranteed (?:to )?start|undisputed starter|main man|first on the team sheet|clear first choice|preferred starter|lock in the (?:xi|lineup)|lead the (?:line|attack)|spearhead the attack|set to start|likely to start|expected to start|will start|assured of (?:his|her|their) place)\b/i
 
+const pastInjuryPattern=/\b(?:last season|past season|\b20\d\d[-/]\d\d\b|back to (?:his|her|their) best|seems? fit|now fit|returned to (?:full )?training|played \d+ minutes?|available again|has recovered)\b/i
+
 export function inferSuggestedInterpretation(category, text){
   const evidence=String(text||'')
-  if(category==='INJURY'&&unavailableEvidencePattern.test(evidence)){
+  const isPastInjury=pastInjuryPattern.test(evidence)
+  if(category==='INJURY'&&unavailableEvidencePattern.test(evidence)&&!isPastInjury){
     return {role:'OUT',confidence:.75,rationale:'The creator explicitly says the player will be unavailable.'}
   }
   if(!['ROLE','ROTATION','TACTICS','PRESEASON','INJURY'].includes(category))return null
@@ -101,7 +104,7 @@ export function inferSuggestedInterpretation(category, text){
   if(firstChoiceEvidencePattern.test(evidence)){
     return {role:'FIRST_CHOICE',confidence:.7,rationale:'The creator explicitly describes a secure starting role.'}
   }
-  if(unavailableEvidencePattern.test(evidence)){
+  if(unavailableEvidencePattern.test(evidence)&&!isPastInjury){
     return {role:'OUT',confidence:.75,rationale:'The creator describes the player as unavailable or injured.'}
   }
   return null
