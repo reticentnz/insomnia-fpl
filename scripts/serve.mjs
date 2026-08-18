@@ -977,15 +977,31 @@ async function reprocessRemoteSignal(db, signal, { includeVerified = false } = {
   const maxAgeDays=signal.kind==='INJURY'?10:14
   const fresh=Number.isFinite(sourceDate)&&(Date.now()-sourceDate)>=-86400000&&(Date.now()-sourceDate)<=maxAgeDays*86400000
   if(roleAllowed&&fresh){
-    if(originalModelImpact==='ROLE')return {signal,changed:false,reason:'role_evidence_is_current'}
-    if(!hasRoleValue(signal.value))return {signal,changed:false,reason:'role_evidence_requires_structured_values'}
-    const restored=await revisePlayerSignalInterpretation(db,signal.id,{claimClass:signal.claimClass,modelImpact:'ROLE',value:signal.value,rationale:'Recovered prior role interpretation and passed current evidence/freshness checks.',confidence:signal.interpretation?.confidence,finalizeContext:false,origin:'AUTO'})
-    return {signal:restored,changed:true,reason:'role_restored_after_audit'}
+    const inferred=inferSuggestedInterpretation(signal.claimClass,text)
+    if(inferred&&!hasRoleValue(signal.value)){
+      const depthRole=inferred.role==='FIRST_CHOICE'?'FIRST_CHOICE':inferred.role==='BACKUP'?'BACKUP':inferred.role==='OUT'?'OUT':'ROTATION'
+      const startProbability=inferred.role==='FIRST_CHOICE'?0.88:inferred.role==='ROTATION_LOW'?0.70:inferred.role==='ROTATION_MEDIUM'?0.55:inferred.role==='ROTATION_HIGH'?0.40:inferred.role==='BACKUP'?0.08:0
+      const value={depthRole,startProbability,note:signal.evidenceSummary}
+      const restored=await revisePlayerSignalInterpretation(db,signal.id,{claimClass:inferred.role==='OUT'?'INJURY':inferred.role.startsWith('ROTATION')?'ROTATION':'REAL_WORLD_ROLE',modelImpact:'ROLE',value,rationale:inferred.rationale,confidence:inferred.confidence,finalizeContext:false,origin:'AUTO'})
+      if(Number(signal.confidence)>=0.65){
+        const verified=await updatePlayerSignalStatuses(db,[{id:signal.id,status:'VERIFIED'}],{actorType:'AUTO_REPROCESS',reason:'Auto-approved role signal'})
+        return {signal:verified[0]||restored,changed:true,reason:'role_inferred_and_verified'}
+      }
+      return {signal:restored,changed:true,reason:'role_inferred_pending'}
+    }
+    if(hasRoleValue(signal.value)){
+      if(originalModelImpact==='ROLE'&&signal.status==='VERIFIED')return {signal,changed:false,reason:'role_evidence_is_current'}
+      const restored=await revisePlayerSignalInterpretation(db,signal.id,{claimClass:signal.claimClass,modelImpact:'ROLE',value:signal.value,rationale:'Recovered prior role interpretation and passed current evidence/freshness checks.',confidence:signal.interpretation?.confidence,finalizeContext:false,origin:'AUTO'})
+      if(Number(signal.confidence)>=0.65){
+        const verified=await updatePlayerSignalStatuses(db,[{id:signal.id,status:'VERIFIED'}],{actorType:'AUTO_REPROCESS',reason:'Auto-approved role signal'})
+        return {signal:verified[0]||restored,changed:true,reason:'role_restored_and_verified'}
+      }
+      return {signal:restored,changed:true,reason:'role_restored_pending'}
+    }
   }
-  const safeKinds=new Set(['VALUE_OPINION','TRANSFER_OPINION','STATISTICAL_CLAIM','PERFORMANCE_FORECAST','SET_PIECES','PENALTIES'])
-  const finalize=safeKinds.has(signal.kind)||['VALUE_OPINION','STATISTICAL_CONTEXT','FPL_SELECTION','CREATOR_RATING','PERFORMANCE_FORECAST','TRANSFER_OPINION','SET_PIECES','PENALTIES'].includes(signal.claimClass)
-  const updated=await revisePlayerSignalInterpretation(db,signal.id,{modelImpact:'NONE',value:safeContextValue(signal),rationale:'Remote reprocess: unsupported, ambiguous, or stale role evidence was retained as context only.',finalizeContext:finalize,origin:'AUTO'})
-  return {signal:updated,changed:true,reason:finalize?'context_finalized':'role_downgraded_pending'}
+  const claimClass=['SET_PIECES','PENALTIES','PERFORMANCE_FORECAST','FPL_SELECTION','CREATOR_RATING','STATISTICAL_CONTEXT'].includes(signal.claimClass)?signal.claimClass:'VALUE_OPINION'
+  const updated=await revisePlayerSignalInterpretation(db,signal.id,{claimClass,modelImpact:'NONE',value:safeContextValue(signal),rationale:'Remote reprocess: non-role evidence was finalized as context.',finalizeContext:true,origin:'AUTO'})
+  return {signal:updated,changed:true,reason:'context_finalized'}
 }
 
 async function processCreatorPayload(rawPayload){
