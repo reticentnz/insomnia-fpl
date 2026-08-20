@@ -2396,6 +2396,16 @@ function App() {
               setEditing(true);
             }}
             onSelectPlayer={handleSelectPlayer}
+            challenge={squadChallenge}
+            challengeLoading={challengeLoading}
+            challengeError={challengeError}
+            challengeRawOutput={challengeRawOutput}
+            challengeOutputTypes={challengeOutputTypes}
+            onChallenge={runSquadChallenge}
+            onReviewSignal={reviewSquadSignal}
+            stagedSignalReviews={stagedSignalReviews}
+            onUnstageSignal={unstageSignalReview}
+            onManualOverride={handleManualOverride}
             weakest={weakest}
             decision={decision}
             freeTransfers={manager.freeTransfers}
@@ -2408,6 +2418,10 @@ function App() {
             setTab={(t) => {
               setTab(t);
               if (t !== "Transfers") setTargetSwapPlayer(null);
+            }}
+            onReplacePlayer={(p) => {
+              setTargetSwapPlayer(p);
+              setTab("Transfers");
             }}
             forecastLoading={draftPlanLoading || !forecastSummary || forecastSummary.horizon !== horizon}
             leagueCoverage={canonicalRecommendation?.league?.coverageByFplId}
@@ -4936,6 +4950,16 @@ function MyTeamV2({
   bank = activeManagerSettings.bank,
   onEdit,
   onSelectPlayer,
+  challenge,
+  challengeLoading,
+  challengeError,
+  challengeRawOutput,
+  challengeOutputTypes,
+  onChallenge,
+  onReviewSignal,
+  stagedSignalReviews,
+  onUnstageSignal,
+  onManualOverride,
   weakest,
   decision,
   freeTransfers,
@@ -4946,6 +4970,7 @@ function MyTeamV2({
   onApplyBundle,
   onWhy,
   setTab,
+  onReplacePlayer,
   forecastLoading = false,
   leagueCoverage,
   leagueName,
@@ -4961,6 +4986,23 @@ function MyTeamV2({
   bank?: number;
   onEdit: () => void;
   onSelectPlayer: (p: Player) => void;
+  challenge: SquadChallengeResult | null;
+  challengeLoading: boolean;
+  challengeError: string | null;
+  challengeRawOutput: string;
+  challengeOutputTypes: string[];
+  onChallenge: () => void;
+  onReviewSignal: (
+    signal: PlayerSignal,
+    status: "VERIFIED" | "REJECTED",
+  ) => void;
+  stagedSignalReviews: Record<string, "VERIFIED" | "REJECTED">;
+  onUnstageSignal: (signalId: string | number) => void;
+  onManualOverride?: (
+    playerId: number,
+    startProbability: number,
+    note?: string,
+  ) => void;
   weakest: Transfer | null;
   decision: { roll: boolean };
   freeTransfers: number;
@@ -4971,6 +5013,7 @@ function MyTeamV2({
   onApplyBundle?: (bundle: DraftChangeBundle) => void;
   onWhy: (transfer: Transfer) => void;
   setTab: (tab: string) => void;
+  onReplacePlayer?: (p: Player) => void;
   forecastLoading?: boolean;
   leagueCoverage?: Record<string, number>;
   leagueName?: string | null;
@@ -4981,6 +5024,20 @@ function MyTeamV2({
 }) {
   const starters = new Set(xi.map((p) => p.id));
   const bench = benchOrder(horizon, squad, xi);
+  const auditTargetCount = Math.min(
+    6,
+    squad.filter(
+      (player) =>
+        (starters.has(player.id) && player.position === "GK") ||
+        (player.position === "GK" && player.price <= 4.5) ||
+        (player.status && player.status !== "a") ||
+        !!player.news ||
+        player.roleProfile?.confidence === "LOW" ||
+        player.transferredRecently ||
+        (player.roleProfile?.startProbability ?? 1) < 0.85 ||
+        (starters.has(player.id) && player.price <= 6),
+    ).length,
+  );
   const vice = [...xi]
     .filter((p) => p.id !== captain?.id)
     .sort(
@@ -5278,6 +5335,24 @@ function MyTeamV2({
         unreadSignalCounts={unreadSignalCounts}
         onSelectPlayer={onSelectPlayer}
         onOpenSignals={onOpenSignals}
+      />
+      <EvidencePanel
+        squad={squad}
+        horizon={horizon}
+        auditTargetCount={auditTargetCount}
+        result={challenge}
+        loading={challengeLoading}
+        error={challengeError}
+        rawOutput={challengeRawOutput}
+        outputTypes={challengeOutputTypes}
+        onChallenge={onChallenge}
+        onReviewSignal={onReviewSignal}
+        stagedSignalReviews={stagedSignalReviews}
+        onUnstageSignal={onUnstageSignal}
+        onSelectPlayer={onSelectPlayer}
+        setTab={setTab}
+        onManualOverride={onManualOverride}
+        onReplacePlayer={onReplacePlayer}
       />
       <div className="panel table squad-table" style={{ marginTop: "20px" }}>
         <div className="panel-head" style={{ padding: "16px 20px 0" }}>
