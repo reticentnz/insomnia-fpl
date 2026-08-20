@@ -1589,8 +1589,11 @@ const waitFor=milliseconds=>new Promise(resolve=>setTimeout(resolve,milliseconds
 
 async function callGroundedSquadChallenge(players,gameweek,deadline,customConfig={}){
   const storedAi = loadAiSettings()
-  const userProvider=(customConfig.userProvider||storedAi.provider||'openai').toLowerCase()
-  const userKey=String(customConfig.userApiKey||storedAi.apiKey||'').trim()
+  const requestKey=String(customConfig.userApiKey||'').trim()
+  // A provider accompanying a request without its own key is only UI state;
+  // preserve the server's saved provider/key pair in that case.
+  const userProvider=String(requestKey?customConfig.userProvider:storedAi.provider||'openai').toLowerCase()
+  const userKey=requestKey||String(storedAi.apiKey||'').trim()
   const isDeepSeek=userProvider==='deepseek'
   const apiKey=(isDeepSeek&&userKey)||(!isDeepSeek&&userProvider==='openai'&&userKey)||(isDeepSeek?process.env.DEEPSEEK_API_KEY:process.env.OPENAI_API_KEY)
   if(!apiKey)throw new Error(`Grounded squad research currently requires a ${isDeepSeek?'DeepSeek':'OpenAI'} API key.`)

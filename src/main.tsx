@@ -1647,7 +1647,9 @@ function App() {
         horizon,
         {
           apiKey: apiKey || undefined,
-          provider: aiProvider,
+          // When using the saved server key, let the server select its saved
+          // provider. Sending the UI default here could override DeepSeek.
+          provider: apiKey ? aiProvider : undefined,
           startingPlayerIds: xi.map((player) => player.id),
         },
       );
