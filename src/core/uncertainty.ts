@@ -3,7 +3,8 @@ import { scorePlayerMatch } from './scoring.ts'
 
 export const SIMULATION_COUNT = 2_000
 export const SIMULATION_SEED_VERSION = 'mulberry32-v1'
-export const SIMULATION_ENGINE_VERSION = 'fixture-outcomes-v1'
+export const SIMULATION_ENGINE_VERSION = 'fixture-outcomes-v2'
+export const LEGACY_SIMULATION_ENGINE_VERSION = 'fixture-outcomes-v1'
 
 export type RoleState = {
   startProbability: number
@@ -11,11 +12,14 @@ export type RoleState = {
   noShowProbability: number
   minutesIfStarting: number
   minutesIfSubstitute: number
+  /** Half-width of a triangular minutes distribution around the role-state mean. */
+  startingMinutesSpread?: number
+  substituteMinutesSpread?: number
 }
 
 /** All rates are per 90 minutes after fixture-strength adjustment. */
 export type FixtureSimulationInput = {
-  engineVersion?: typeof SIMULATION_ENGINE_VERSION
+  engineVersion?: typeof SIMULATION_ENGINE_VERSION | typeof LEGACY_SIMULATION_ENGINE_VERSION
   seed: string
   position: Position
   role: RoleState
@@ -41,6 +45,13 @@ export type OutcomeSummary = {
   p90: number
   samples: readonly number[]
   minuteSamples?: readonly number[]
+  expectedGoals: number
+  expectedAssists: number
+  goalProbability: number
+  assistProbability: number
+  cleanSheetProbability: number
+  bonusProbability: number
+  defensiveContributionProbability: number
 }
 
 /** Stable string hash followed by a small deterministic PRNG; no ambient randomness. */
@@ -73,7 +84,7 @@ const quantile = (sorted: readonly number[], percentile: number) => sorted[Math.
 
 export function summarizeSampleDistribution(samples: readonly number[], minuteSamples?: readonly number[]): OutcomeSummary {
   if (!samples.length) {
-    return { mean: 0, standardDeviation: 0, p10: 0, p50: 0, p90: 0, samples: [], minuteSamples: minuteSamples || [] }
+    return { mean: 0, standardDeviation: 0, p10: 0, p50: 0, p90: 0, samples: [], minuteSamples: minuteSamples || [], expectedGoals: 0, expectedAssists: 0, goalProbability: 0, assistProbability: 0, cleanSheetProbability: 0, bonusProbability: 0, defensiveContributionProbability: 0 }
   }
   const sampleCount = samples.length
   const mean = samples.reduce((total, value) => total + value, 0) / sampleCount
@@ -88,6 +99,13 @@ export function summarizeSampleDistribution(samples: readonly number[], minuteSa
     p90: quantile(sorted, .9),
     samples,
     minuteSamples,
+    expectedGoals: 0,
+    expectedAssists: 0,
+    goalProbability: 0,
+    assistProbability: 0,
+    cleanSheetProbability: 0,
+    bonusProbability: 0,
+    defensiveContributionProbability: 0,
   }
 }
 
@@ -132,34 +150,70 @@ export function deriveQuantileGain(counterfactualSamples: readonly number[], bas
 
 export function simulateFixtureOutcomes(input: FixtureSimulationInput): OutcomeSummary {
   const random = seededRandom(input.seed), samples: number[] = [], minuteSamples: number[] = []
+  let totalGoals = 0, totalAssists = 0, scored = 0, assisted = 0, cleanSheets = 0, bonuses = 0, defensiveContributions = 0
   const sampleCount = input.samples ?? SIMULATION_COUNT
   const roleTotal = input.role.startProbability + input.role.substituteProbability + input.role.noShowProbability
   if (Math.abs(roleTotal - 1) > 1e-6) throw new Error('Fixture role probabilities must sum to one')
   for (let index = 0; index < sampleCount; index++) {
     const state = random()
-    const minutes = state < input.role.startProbability ? input.role.minutesIfStarting : state < input.role.startProbability + input.role.substituteProbability ? input.role.minutesIfSubstitute : 0
+    const started = state < input.role.startProbability
+    const substituted = !started && state < input.role.startProbability + input.role.substituteProbability
+    const meanMinutes = started ? input.role.minutesIfStarting : substituted ? input.role.minutesIfSubstitute : 0
+    const spread = started ? input.role.startingMinutesSpread : input.role.substituteMinutesSpread
+    // Two uniforms produce a centred triangular distribution. Legacy ledgers and
+    // callers without a spread retain their exact fixed-minute behaviour.
+    const minutes = meanMinutes <= 0
+      ? 0
+      : !spread
+        ? meanMinutes
+        : Math.round(Math.min(90, Math.max(1, meanMinutes + spread * (random() + random() - 1))))
     minuteSamples.push(minutes)
     if (minutes <= 0) { samples.push(0); continue }
     const share = minutes / 90
     const defensiveThreshold = input.position === 'DEF' ? 10 : 12
     const goalsConceded = poisson(random, nonNegative(input.teamGoalsConcededRate) * share)
+    const goals = poisson(random, nonNegative(input.goalRate) * share)
+    const assists = poisson(random, nonNegative(input.assistRate) * share)
+    const saves = poisson(random, nonNegative(input.saveRate) * share)
+    const penaltiesSaved = poisson(random, nonNegative(input.penaltySaveRate) * share)
+    const penaltiesMissed = poisson(random, nonNegative(input.penaltyMissRate) * share)
+    const ownGoals = poisson(random, nonNegative(input.ownGoalRate) * share)
+    const yellowCards = poisson(random, nonNegative(input.yellowCardRate) * share)
+    const redCards = poisson(random, nonNegative(input.redCardRate) * share)
+    const defensiveActions = poisson(random, nonNegative(input.defensiveActionRate) * share)
+    const bonus = Math.min(3, poisson(random, nonNegative(input.bonusRate) * share))
+    totalGoals += goals; totalAssists += assists
+    if (goals > 0) scored++
+    if (assists > 0) assisted++
+    if (goalsConceded === 0 && minutes >= 60) cleanSheets++
+    if (bonus > 0) bonuses++
+    if (input.position !== 'GK' && defensiveActions >= defensiveThreshold) defensiveContributions++
     samples.push(scorePlayerMatch({
       position: input.position, minutes,
-      goals: poisson(random, nonNegative(input.goalRate) * share),
-      assists: poisson(random, nonNegative(input.assistRate) * share),
+      goals,
+      assists,
       cleanSheet: goalsConceded === 0,
       goalsConceded,
-      saves: poisson(random, nonNegative(input.saveRate) * share),
-      penaltiesSaved: poisson(random, nonNegative(input.penaltySaveRate) * share),
-      penaltiesMissed: poisson(random, nonNegative(input.penaltyMissRate) * share),
-      ownGoals: poisson(random, nonNegative(input.ownGoalRate) * share),
-      yellowCards: poisson(random, nonNegative(input.yellowCardRate) * share),
-      redCards: poisson(random, nonNegative(input.redCardRate) * share),
-      clearancesBlocksInterceptions: poisson(random, nonNegative(input.defensiveActionRate) * share),
-      bonus: Math.min(3, poisson(random, nonNegative(input.bonusRate) * share)),
+      saves,
+      penaltiesSaved,
+      penaltiesMissed,
+      ownGoals,
+      yellowCards,
+      redCards,
+      clearancesBlocksInterceptions: defensiveActions,
+      bonus,
     }).total)
   }
-  return summarizeSampleDistribution(samples, minuteSamples)
+  return {
+    ...summarizeSampleDistribution(samples, minuteSamples),
+    expectedGoals: totalGoals / sampleCount,
+    expectedAssists: totalAssists / sampleCount,
+    goalProbability: scored / sampleCount,
+    assistProbability: assisted / sampleCount,
+    cleanSheetProbability: cleanSheets / sampleCount,
+    bonusProbability: bonuses / sampleCount,
+    defensiveContributionProbability: defensiveContributions / sampleCount,
+  }
 }
 
 export function simulateFromStoredForecast(row: {
@@ -183,7 +237,7 @@ export function simulateFromStoredForecast(row: {
   } catch {}
 
   if (!simulationInput) return null
-  if (simulationInput.engineVersion !== SIMULATION_ENGINE_VERSION) return null
+  if (simulationInput.engineVersion !== SIMULATION_ENGINE_VERSION && simulationInput.engineVersion !== LEGACY_SIMULATION_ENGINE_VERSION) return null
   if (!Number.isInteger(simulationInput.samples) || Number(simulationInput.samples) <= 0) return null
   return simulateFixtureOutcomes(simulationInput)
 }

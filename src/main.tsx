@@ -9406,7 +9406,10 @@ function PlayerDrawer({
               {horizon}-GW projected score · {roleProjection.expectedMinutes.toFixed(0)} expected mins
             </div>
             {player.storedForecast?.horizon === horizon && (
-              <div className="hero-stat-meta">Outcome range under current assumptions: {player.storedForecast.p10Points.toFixed(1)}–{player.storedForecast.p90Points.toFixed(1)} pts (p10–p90)</div>
+              <>
+                <div className="hero-stat-meta">Outcome range under current assumptions: {player.storedForecast.p10Points.toFixed(1)}–{player.storedForecast.p90Points.toFixed(1)} pts (p10–p90)</div>
+                {player.storedForecast.goalProbability != null && <div className="hero-stat-meta">Score {Math.round(player.storedForecast.goalProbability * 100)}% · Assist {Math.round((player.storedForecast.assistProbability || 0) * 100)}% · CS {Math.round((player.storedForecast.cleanSheetProbability || 0) * 100)}% · Bonus {Math.round((player.storedForecast.bonusProbability || 0) * 100)}% · DefCon {Math.round((player.storedForecast.defensiveContributionProbability || 0) * 100)}%</div>}
+              </>
             )}
           </div>
         </div>

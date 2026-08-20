@@ -3,7 +3,7 @@ import { canonicalJson, sanitizeError } from '../../scripts/feed-run.mjs'
 import { projectionBreakdown, MODEL_VERSION } from '../model.ts'
 import { resolvePlayerRole, type PlayerRoleProfile } from '../player-signals.ts'
 import { fixtureRateModel, fixtureRoleStates, MARKET_CLEAN_SHEET_WEIGHT, projectFixture } from '../core/projection.ts'
-import { combineSampleStreams, SIMULATION_COUNT, SIMULATION_ENGINE_VERSION, SIMULATION_SEED_VERSION, simulateFixtureOutcomes, simulateFromStoredForecast, summarizeSampleDistribution } from '../core/uncertainty.ts'
+import { combineSampleStreams, SIMULATION_COUNT, SIMULATION_ENGINE_VERSION, SIMULATION_SEED_VERSION, simulateFixtureOutcomes, simulateFromStoredForecast, summarizeSampleDistribution, type FixtureSimulationInput } from '../core/uncertainty.ts'
 import type { ProjectionCatalogFixture, ProjectionCatalogPlayer, ProjectionInputCatalog } from '../core/types.ts'
 import { assembleProjectionInputCatalog } from './catalog-service.ts'
 import { getTeamColor, type Player } from '../domain.ts'
@@ -129,10 +129,16 @@ export function projectCatalogFixture(player: ProjectionCatalogPlayer, fixture: 
   const components = projectFixture(modelPlayer, fixtureInput)
   const states = fixtureRoleStates(role)
   const rates = fixtureRateModel(modelPlayer, fixtureInput)
-  const simulationInput = {
+  const simulationInput: FixtureSimulationInput = {
     engineVersion: SIMULATION_ENGINE_VERSION,
     seed: `${context?.forecastRunId || 'preview'}:${player.id}:${fixture.id}:${context?.modelVersion || MODEL_VERSION}:${SIMULATION_SEED_VERSION}`,
-    position, role: { ...states, minutesIfStarting: role.minutesIfStarting, minutesIfSubstitute: role.minutesIfSubstitute },
+    position, role: {
+      ...states,
+      minutesIfStarting: role.minutesIfStarting,
+      minutesIfSubstitute: role.minutesIfSubstitute,
+      startingMinutesSpread: position === 'GK' ? 0 : 8,
+      substituteMinutesSpread: position === 'GK' ? 0 : 6,
+    },
     goalRate: rates.goalRate, assistRate: rates.assistRate, teamGoalsConcededRate: rates.xgcRate, saveRate: rates.saveRate,
     yellowCardRate: rates.cardRate, redCardRate: number(official.red_cards) * 90 / Math.max(1, number(official.minutes)),
     penaltySaveRate: rates.penaltySaveRate, penaltyMissRate: rates.penaltyMissRate, ownGoalRate: rates.ownGoalRate,
@@ -142,7 +148,7 @@ export function projectCatalogFixture(player: ProjectionCatalogPlayer, fixture: 
   const outcome = simulateFixtureOutcomes(simulationInput)
   const mean = outcome.mean
   return {
-    playerId: player.id, fixtureId: fixture.id, expectedMinutes: components.expectedMinutes,
+    playerId: player.id, fixtureId: fixture.id, expectedMinutes: outcome.minuteSamples?.reduce((sum, value) => sum + value, 0)! / outcome.samples.length,
     appearancePoints: components.appearance, goalPoints: components.goals, assistPoints: components.assists,
     cleanSheetPoints: components.cleanSheet, goalsConcededPoints: components.goalsConceded,
     savePoints: components.saves, penaltyPoints: components.penalties, defensiveContributionPoints: components.defensiveContribution,
@@ -257,7 +263,7 @@ export async function latestForecastSummary(db: Database, { horizon = 1 }: { hor
   const players = new Map<number, any>()
   for (const row of selected) {
     const id = Number(row.fpl_id)
-    const current = players.get(id) || { playerId: id, fixtureCount: 0, meanPoints: 0, variance: 0, streams: [], minuteStreams: [], samplesAvailable: true }
+    const current = players.get(id) || { playerId: id, fixtureCount: 0, meanPoints: 0, variance: 0, streams: [], minuteStreams: [], samplesAvailable: true, expectedGoals: 0, expectedAssists: 0, noGoalProbability: 1, noAssistProbability: 1, noCleanSheetProbability: 1, noBonusProbability: 1, noDefensiveContributionProbability: 1 }
     const sim = simulateFromStoredForecast(row)
     current.fixtureCount += 1
     current.meanPoints += Number(row.mean_points)
@@ -265,6 +271,13 @@ export async function latestForecastSummary(db: Database, { horizon = 1 }: { hor
     if (sim) {
       current.streams.push(sim.samples)
       if (sim.minuteSamples) current.minuteStreams.push(sim.minuteSamples)
+      current.expectedGoals += sim.expectedGoals
+      current.expectedAssists += sim.expectedAssists
+      current.noGoalProbability *= 1 - sim.goalProbability
+      current.noAssistProbability *= 1 - sim.assistProbability
+      current.noCleanSheetProbability *= 1 - sim.cleanSheetProbability
+      current.noBonusProbability *= 1 - sim.bonusProbability
+      current.noDefensiveContributionProbability *= 1 - sim.defensiveContributionProbability
     } else {
       current.samplesAvailable = false
     }
@@ -298,6 +311,13 @@ export async function latestForecastSummary(db: Database, { horizon = 1 }: { hor
       p10Points: summary.p10,
       p50Points: summary.p50,
       p90Points: summary.p90,
+      expectedGoals: player.expectedGoals,
+      expectedAssists: player.expectedAssists,
+      goalProbability: 1 - player.noGoalProbability,
+      assistProbability: 1 - player.noAssistProbability,
+      cleanSheetProbability: 1 - player.noCleanSheetProbability,
+      bonusProbability: 1 - player.noBonusProbability,
+      defensiveContributionProbability: 1 - player.noDefensiveContributionProbability,
     }
   }) }
 }

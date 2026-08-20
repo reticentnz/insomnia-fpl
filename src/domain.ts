@@ -71,7 +71,7 @@ export type Player = {
   calibrationFactor?: number;
   dataConfidence?: "LOW" | "MEDIUM" | "HIGH";
   coldStart?: boolean;
-  storedForecast?: { runId: string; horizon: number; meanPoints: number; standardDeviation: number; p10Points: number; p50Points: number; p90Points: number; fixtureCount: number };
+  storedForecast?: { runId: string; horizon: number; meanPoints: number; standardDeviation: number; p10Points: number; p50Points: number; p90Points: number; fixtureCount: number; expectedGoals?: number; expectedAssists?: number; goalProbability?: number; assistProbability?: number; cleanSheetProbability?: number; bonusProbability?: number; defensiveContributionProbability?: number };
 };
 
 export const TEAM_COLORS: Record<string, string> = {

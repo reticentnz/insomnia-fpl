@@ -18,6 +18,22 @@ describe('seeded outcome simulation', () => {
     expect(outcome.p10).toBeLessThanOrEqual(outcome.p50)
     expect(outcome.p50).toBeLessThanOrEqual(outcome.p90)
     expect(outcome.standardDeviation).toBeGreaterThan(0)
+    expect(outcome.expectedGoals).toBeGreaterThan(0)
+    expect(outcome.expectedAssists).toBeGreaterThan(0)
+    expect(outcome.goalProbability).toBeGreaterThan(0)
+    expect(outcome.assistProbability).toBeGreaterThan(0)
+    expect(outcome.cleanSheetProbability).toBeGreaterThan(0)
+  })
+
+  it('samples a bounded minutes distribution within each appearance state', () => {
+    const outcome = simulateFixtureOutcomes({
+      ...input,
+      samples: 500,
+      role: { startProbability: 1, substituteProbability: 0, noShowProbability: 0, minutesIfStarting: 82, minutesIfSubstitute: 18, startingMinutesSpread: 8 },
+    })
+    expect(new Set(outcome.minuteSamples!).size).toBeGreaterThan(5)
+    expect(Math.min(...outcome.minuteSamples!)).toBeGreaterThanOrEqual(74)
+    expect(Math.max(...outcome.minuteSamples!)).toBeLessThanOrEqual(90)
   })
 
   it('has no points when appearances are impossible', () => {

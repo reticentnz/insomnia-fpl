@@ -4,8 +4,8 @@ import path from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
 import { closeDb, getDb } from '../../scripts/db.mjs'
 import { ingestOfficialFpl } from '../../scripts/ingest-fpl.mjs'
-import { createForecastRun, latestEligibleForecastRun } from './forecast-service.ts'
-import { simulateFixtureOutcomes, simulateFromStoredForecast } from '../core/uncertainty.ts'
+import { createForecastRun, latestEligibleForecastRun, latestForecastSummary } from './forecast-service.ts'
+import { SIMULATION_ENGINE_VERSION, simulateFixtureOutcomes, simulateFromStoredForecast } from '../core/uncertainty.ts'
 
 const directories: string[] = []
 const fixture = <T>(name: string) => JSON.parse(fs.readFileSync(path.resolve('scripts/fixtures', name), 'utf8')) as T
@@ -78,7 +78,8 @@ describe('WP-08 immutable forecast ledger', () => {
 
     const roleSource = JSON.parse(forecastRow.role_source_json)
     expect(roleSource.simulationInput).toBeDefined()
-    expect(roleSource.simulationInput).toMatchObject({ engineVersion: 'fixture-outcomes-v1', samples: 2_000 })
+    expect(roleSource.simulationInput).toMatchObject({ engineVersion: SIMULATION_ENGINE_VERSION, samples: 2_000 })
+    expect(roleSource.simulationInput.role.startingMinutesSpread).toBeGreaterThanOrEqual(0)
 
     const directSimulation = simulateFixtureOutcomes(roleSource.simulationInput)
     const regenerated = simulateFromStoredForecast(forecastRow)
@@ -91,6 +92,21 @@ describe('WP-08 immutable forecast ledger', () => {
     expect(regenerated!.p10).toBeCloseTo(Number(forecastRow.p10_points), 4)
     expect(regenerated!.p50).toBeCloseTo(Number(forecastRow.p50_points), 4)
     expect(regenerated!.p90).toBeCloseTo(Number(forecastRow.p90_points), 4)
+  })
+
+  it('exposes aggregated football-event probabilities with the point distribution', async () => {
+    const db = await seeded()
+    const run = await createForecastRun(db, { asOf: '2026-08-15T12:00:00Z' })
+    expect(run.status).toBe('SUCCEEDED')
+    const summary = await latestForecastSummary(db, { horizon: 1 })
+    const player = summary?.players[0]
+    expect(player).toBeDefined()
+    expect(player!.expectedGoals).toBeGreaterThanOrEqual(0)
+    expect(player!.expectedAssists).toBeGreaterThanOrEqual(0)
+    expect(player!.goalProbability).toBeGreaterThanOrEqual(0)
+    expect(player!.goalProbability).toBeLessThanOrEqual(1)
+    expect(player!.cleanSheetProbability).toBeGreaterThanOrEqual(0)
+    expect(player!.cleanSheetProbability).toBeLessThanOrEqual(1)
   })
 
   it('refuses to fabricate empirical streams for legacy forecast rows without simulationInput', () => {
