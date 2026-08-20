@@ -1211,41 +1211,6 @@ function App() {
   }, [profileHydrated, stagedSignalReviews]);
 
   useEffect(() => {
-    let active = true;
-    fetchPlayerSignals()
-      .then((signals) => {
-        if (!active || !signals.length) return;
-        setSquadChallenge((current) => {
-          if (current) {
-            const map = new Map(signals.map((s) => [s.id, s]));
-            return {
-              ...current,
-              signals: current.signals.map((item) => {
-                const match = map.get(item.id);
-                return match ? { ...item, status: match.status } : item;
-              }),
-            };
-          }
-          const verified = signals.filter(
-            (s) => s.status === "VERIFIED" || s.status === "PENDING",
-          );
-          if (!verified.length) return current;
-          return {
-            summary: `${verified.length} active evidence finding${verified.length === 1 ? "" : "s"} loaded from database.`,
-            provider: "Insomnia FPL Evidence Engine",
-            audits: [],
-            signals: verified,
-            sources: [],
-          };
-        });
-      })
-      .catch(() => {});
-    return () => {
-      active = false;
-    };
-  }, []);
-
-  useEffect(() => {
     getUserProfile().then(({ account, selectedIds: serverIds, preferences, planId, parentPlanId, sellingPrices, snapshotMetadata }) => {
       const prefs = preferences;
       if (account) setFplAccount(account);
@@ -4546,9 +4511,15 @@ function EvidencePanel({
   const playerName = (id: number) =>
     squad.find((player) => player.id === id)?.name || `Player ${id}`;
 
-  const verifiedSignals = useMemo(() => {
-    return result?.signals?.filter((s) => s.status === "VERIFIED") || [];
-  }, [result]);
+  const squadPlayerIds = useMemo(() => new Set(squad.map((player) => player.id)), [squad]);
+  const squadSignals = useMemo(
+    () => result?.signals?.filter((signal) => squadPlayerIds.has(signal.playerId)) || [],
+    [result, squadPlayerIds],
+  );
+  const verifiedSignals = useMemo(
+    () => squadSignals.filter((signal) => signal.status === "VERIFIED"),
+    [squadSignals],
+  );
 
   return (
     <section className="panel evidence-panel">
@@ -4794,7 +4765,7 @@ function EvidencePanel({
             </div>
           )}
 
-          {!result.signals.length && (
+          {!squadSignals.length && (
             <p className="muted no-pending-approvals">
               No source-backed projection changes are awaiting approval. “BASELINE · ROTATION”
               is an existing model assessment; its Transfer and Set Start % controls are optional
@@ -4803,7 +4774,7 @@ function EvidencePanel({
           )}
 
           <div className="evidence-list">
-            {result.signals.map((signal) => {
+            {squadSignals.map((signal) => {
               const player = squad.find((p) => p.id === signal.playerId);
               const xPts = player ? horizonProjection(player, horizon) : null;
               const rawProb = signal.value?.startProbability;
