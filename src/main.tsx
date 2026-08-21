@@ -989,6 +989,8 @@ function App() {
     isMetadataLoaded,
   });
   const draftMode = planningMode === "DRAFT";
+  const initialDraftPeriod = isInitialDraftPeriod(currentGameweek, deadlineTime);
+  const awaitingOfficialSquad = draftMode && !initialDraftPeriod;
 
   const selectedIdsRef = useRef(selectedIds);
   useEffect(() => { selectedIdsRef.current = selectedIds; }, [selectedIds]);
@@ -1979,6 +1981,34 @@ function App() {
     }
   };
 
+  const automaticOfficialSquadSyncRef = useRef<string | null>(null);
+  useEffect(() => {
+    if (
+      !profileHydrated ||
+      !isMetadataLoaded ||
+      !fplAccount?.teamId ||
+      !awaitingOfficialSquad ||
+      hasCurrentSeasonOfficialSquad ||
+      syncingAccount ||
+      pendingOfficialTransition
+    ) return;
+
+    const attemptKey = `${fplAccount.teamId}:${currentGameweek ?? 1}:${deadlineTime ?? "deadline-passed"}`;
+    if (automaticOfficialSquadSyncRef.current === attemptKey) return;
+    automaticOfficialSquadSyncRef.current = attemptKey;
+    void syncAccount(fplAccount.teamId);
+  }, [
+    profileHydrated,
+    isMetadataLoaded,
+    fplAccount?.teamId,
+    awaitingOfficialSquad,
+    hasCurrentSeasonOfficialSquad,
+    syncingAccount,
+    pendingOfficialTransition,
+    currentGameweek,
+    deadlineTime,
+  ]);
+
   const doImport = () => syncAccount();
 
   const unlinkAccount = async () => {
@@ -2144,10 +2174,14 @@ function App() {
       <main>
         <header>
           <div>
-            <div className={`planning-mode-badge ${planningMode === "LOADING" ? "loading-mode" : draftMode ? "draft-mode" : "season-mode"}`}>
+            <div className={`planning-mode-badge ${planningMode === "LOADING" ? "loading-mode" : awaitingOfficialSquad ? "loading-mode" : draftMode ? "draft-mode" : "season-mode"}`}>
               <span className="badge-pill">
                 {planningMode === "LOADING"
                   ? "LOADING METADATA..."
+                  : awaitingOfficialSquad
+                    ? fplAccount
+                      ? "OFFICIAL SQUAD PENDING"
+                      : "SEASON SETUP REQUIRED"
                   : draftMode
                     ? "GW1 DRAFT MODE"
                     : "LIVE SEASON MODE"}
@@ -2155,6 +2189,10 @@ function App() {
               <span className="badge-text">
                 {planningMode === "LOADING"
                   ? "Fetching server configuration and snapshot metadata."
+                  : awaitingOfficialSquad
+                    ? fplAccount
+                      ? "The GW1 deadline has passed. Syncing your official FPL squad."
+                      : "The season has started. Link your official FPL team to plan transfers."
                   : draftMode
                     ? "Build and test your initial team. Changes are not submitted to FPL."
                     : "Planning from your imported official FPL squad."}
@@ -2169,7 +2207,9 @@ function App() {
               {tab === "Admin"
                 ? "Run and audit data maintenance tasks from one place."
                 : tab === "My Team"
-                ? draftMode
+                ? awaitingOfficialSquad
+                  ? "Your saved draft will be replaced when the official FPL squad import completes."
+                : draftMode
                   ? draftPlan
                     ? "A coordinated GW1 restructure improves this draft."
                     : "Your locked-core draft is optimised within the £100m cap."

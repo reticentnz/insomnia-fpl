@@ -2370,7 +2370,7 @@ function startServerOnAvailablePort(targetPort) {
         } else {
           const manager = await importManagerPayload(db, {
             ...payload,
-            season: body.season,
+            season: body.season || FPL_SEASON,
             importedAt,
           })
           sendJson(res, 200, {
