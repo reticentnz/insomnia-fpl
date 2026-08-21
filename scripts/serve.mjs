@@ -1736,16 +1736,35 @@ async function callGroundedSquadChallenge(players,gameweek,deadline,customConfig
     const demote=audit.outcome==='MATERIAL_RISK'&&softDroppedIds.has(audit.playerId)
     return {...audit,sourceUrl:canonicalUrl(audit.sourceUrl),outcome:demote?'NO_MATERIAL_RISK':audit.outcome}
   })
-  const missingAuditNames=priorityAudit.filter(player=>!seenAuditIds.has(player.id)).map(player=>player.name)
-  if(missingAuditNames.length)throw groundedOutputError(`Grounded research was incomplete and changed nothing. Missing source-validated audits for: ${missingAuditNames.join(', ')}`,data,parsed)
   const signalledIds=new Set(signals.map(signal=>signal.playerId))
-  const uncoveredRisks=audits.filter(audit=>audit.outcome==='MATERIAL_RISK'&&!signalledIds.has(audit.playerId)).map(audit=>audit.playerName)
-  if(uncoveredRisks.length)throw groundedOutputError(`Grounded research identified risks without usable signals and changed nothing: ${uncoveredRisks.join(', ')}`,data,parsed)
+  // Provider web-search metadata is not always complete (especially via the
+  // DeepSeek compatibility endpoint). A missing citation must never make the
+  // entire squad challenge fail or create a projection change. Represent it as
+  // an explicit no-change audit instead, so the user can see the gap.
+  const auditByPlayerId=new Map(audits.map(audit=>[audit.playerId,audit]))
+  const completeAudits=priorityAudit.map(player=>{
+    const audit=auditByPlayerId.get(player.id)
+    if(!audit)return {
+      playerId:player.id,
+      playerName:player.name,
+      outcome:'INSUFFICIENT_EVIDENCE',
+      expectedRole:'UNKNOWN',
+      evidenceSummary:'Research returned no source-validatable audit for this player. No projection change was made.',
+      sourceUrl:''
+    }
+    if(audit.outcome==='MATERIAL_RISK'&&!signalledIds.has(audit.playerId))return {
+      ...audit,
+      outcome:'INSUFFICIENT_EVIDENCE',
+      evidenceSummary:'Research identified a possible risk, but no source-backed model change passed validation. No projection change was made.',
+      sourceUrl:''
+    }
+    return audit
+  })
   const rejectedSignalCount=proposedSignals.length-signals.length
   const summary=signals.length
     ? `${signals.length} source-backed finding${signals.length===1?'':'s'} require review. No projection or squad has changed yet.`
     : `Research completed, but no proposed claim passed source validation. No projection or squad was changed.`
-  return {summary,researchSummary:parsed.summary,audits,signals,usage:researchUsage(model,data.usage,webSearchCalls,isDeepSeek?'deepseek':'openai'),proposedSignalCount:proposedSignals.length,rejectedSignalCount,provider:`${isDeepSeek?'DeepSeek':'OpenAI'} grounded research (${model})`,provenanceWarning:isDeepSeek?'DeepSeek source metadata is not exposed through its Responses compatibility layer; HTTPS URLs are retained for manual review only.':'',sources:[...searchedSources].map(url=>({url}))}
+  return {summary,researchSummary:parsed.summary,audits:completeAudits,signals,usage:researchUsage(model,data.usage,webSearchCalls,isDeepSeek?'deepseek':'openai'),proposedSignalCount:proposedSignals.length,rejectedSignalCount,provider:`${isDeepSeek?'DeepSeek':'OpenAI'} grounded research (${model})`,provenanceWarning:isDeepSeek?'DeepSeek source metadata is not exposed through its Responses compatibility layer; HTTPS URLs are retained for manual review only.':'',sources:[...searchedSources].map(url=>({url}))}
 }
 
 const squadChallengeJobs=new Map()
