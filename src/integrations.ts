@@ -353,6 +353,7 @@ export interface LeagueRivalPick {
   multiplier: number;
   is_captain: boolean;
   is_vice_captain: boolean;
+  team?: number | null;
   /** Fraction of the player's current-GW fixtures still to be played (0–1). */
   remainingFixtureFraction?: number | null;
 }
@@ -1043,6 +1044,20 @@ export async function fetchLeagueDetails(leagueId: number, gameweek?: number, yo
   if (youEntry) params.set('youEntry', String(youEntry))
   const res = await fetch(`/api/fpl-league-details?${params.toString()}`)
   if (!res.ok) throw new Error(`League fetch failed: HTTP ${res.status}`)
+  return await res.json()
+}
+
+export type LeagueLiveStateResponse = {
+  updatedAt: string;
+  standings: Array<Partial<LeagueRival> & Pick<LeagueRival, 'entry' | 'picks'>>;
+};
+
+export async function fetchLeagueLiveState(leagueId: number, gameweek?: number, youEntry?: number): Promise<LeagueLiveStateResponse> {
+  const params = new URLSearchParams({ leagueId: String(leagueId) })
+  if (gameweek) params.set('gameweek', String(gameweek))
+  if (youEntry) params.set('youEntry', String(youEntry))
+  const res = await fetch(`/api/fpl-league-live?${params.toString()}`, { cache: 'no-store' })
+  if (!res.ok) throw new Error(`Live league update failed: HTTP ${res.status}`)
   return await res.json()
 }
 

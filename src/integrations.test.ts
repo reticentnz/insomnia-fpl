@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { fetchFplAccount, leagueSquadValue } from './integrations'
+import { fetchFplAccount, fetchLeagueLiveState, leagueSquadValue } from './integrations'
 
 afterEach(() => {
   vi.unstubAllGlobals()
@@ -50,5 +50,22 @@ describe('leagueSquadValue', () => {
 
   it('preserves unavailable values', () => {
     expect(leagueSquadValue(null, 1)).toBeNull()
+  })
+})
+
+describe('fetchLeagueLiveState', () => {
+  it('requests an uncached live update scoped to the league, GW, and manager', async () => {
+    const payload = { updatedAt: '2026-08-22T03:00:00.000Z', standings: [] }
+    const fetchMock = vi.fn().mockResolvedValue(new Response(JSON.stringify(payload), {
+      status: 200,
+      headers: { 'content-type': 'application/json' },
+    }))
+    vi.stubGlobal('fetch', fetchMock)
+
+    await expect(fetchLeagueLiveState(321, 2, 123)).resolves.toEqual(payload)
+    expect(fetchMock).toHaveBeenCalledWith(
+      '/api/fpl-league-live?leagueId=321&gameweek=2&youEntry=123',
+      { cache: 'no-store' },
+    )
   })
 })

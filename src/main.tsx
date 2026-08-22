@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { createRoot } from "react-dom/client";
+import { compareSortValues, nextSortDirection, type SortDirection, type SortValue } from "./table-sorting";
 import {
   bestXI,
   benchOrder,
@@ -76,6 +77,7 @@ import {
   createManualPlayerSignal,
   fetchPlayerSignals,
   fetchLeagueDetails,
+  fetchLeagueLiveState,
   leagueSquadValue,
   type FplAccount,
   type FplRankHistoryEntry,
@@ -130,6 +132,7 @@ import { createToolContext } from "./intelligence";
 import { reviewDecision, type DecisionReview } from "./decision-review";
 import { playerRoleProfile, projectionBreakdown } from "./model";
 import { deriveForecastReadiness } from "./forecast-status";
+import { readCachedClientCatalog, writeCachedClientCatalog } from "./client-catalog-cache";
 import "./styles.css";
 
 type GlyphProps = { size?: number; className?: string };
@@ -777,6 +780,7 @@ function AdminView({ system, forecast, horizon }: { system: SystemStatus | null;
 }
 
 function App() {
+  const [initialCatalog] = useState(() => readCachedClientCatalog());
   const [tab, setTab] = useState("My Team");
   const [signalsPlayerFilterId, setSignalsPlayerFilterId] = useState<number | null>(null);
   const [horizon, setHorizon] = useState(5);
@@ -815,16 +819,16 @@ function App() {
   const [explanationTransfer, setExplanationTransfer] =
     useState<Transfer | null>(null);
   const [playerDetail, setPlayerDetail] = useState<Player | null>(null);
-  const [livePlayers, setLivePlayers] = useState<Player[] | null>(null);
+  const [livePlayers, setLivePlayers] = useState<Player[] | null>(() => initialCatalog?.players || null);
   const [forecastSummary, setForecastSummary] = useState<ForecastSummary | null>(null);
   const [canonicalRecommendation, setCanonicalRecommendation] = useState<CanonicalRecommendation | null>(null);
   const [canonicalRecommendationLoading, setCanonicalRecommendationLoading] = useState(false);
   const [catalogMode, setCatalogMode] = useState<
-    "loading" | "live" | "demo-live" | "demo-conflict" | "demo-offline"
-  >("loading");
-  const [currentGameweek, setCurrentGameweek] = useState<number | null>(null);
-  const [deadlineTime, setDeadlineTime] = useState<string | null>(null);
-  const [capturedAt, setCapturedAt] = useState<string | null>(null);
+    "loading" | "cached" | "cached-offline" | "live" | "demo-live" | "demo-conflict" | "demo-offline"
+  >(() => initialCatalog ? "cached" : "loading");
+  const [currentGameweek, setCurrentGameweek] = useState<number | null>(() => initialCatalog?.currentGameweek ?? null);
+  const [deadlineTime, setDeadlineTime] = useState<string | null>(() => initialCatalog?.deadline ?? null);
+  const [capturedAt, setCapturedAt] = useState<string | null>(() => initialCatalog?.capturedAt ?? null);
   const [llmAnswer, setLlmAnswer] = useState<string | null>(null);
   const [llmProvider, setLlmProvider] = useState<string>(
     "Deterministic Engine",
@@ -955,7 +959,7 @@ function App() {
           : player!) as Player[],
     [selectedIds, catalog, officialSellingPrices],
   );
-  const [catalogSeason, setCatalogSeason] = useState<string | null>(null);
+  const [catalogSeason, setCatalogSeason] = useState<string | null>(() => initialCatalog?.season ?? null);
   const [seasonModeManagerAccountId, setSeasonModeManagerAccountId] = useState<string | null>(null);
   const [seasonModeSeason, setSeasonModeSeason] = useState<string | null>(null);
   const [snapshotMeta, setSnapshotMeta] = useState<{ officialSnapshotId: string; snapshotSeason: string; officialPlayerCount: number; managerAccountId: string } | null>(null);
@@ -1121,6 +1125,15 @@ function App() {
   activeDraftPlan = draftPlan;
   activeDraftPlanLoading = draftPlanLoading;
   players = catalog;
+  const initialCatalogRequest = useRef<ReturnType<typeof fetchLiveCatalog> | null>(null);
+  useEffect(() => {
+    // Begin this alongside profile hydration. The result is consumed below once
+    // saved squad metadata is available for catalogue compatibility checks.
+    initialCatalogRequest.current = fetchLiveCatalog(3);
+    // The profile may take long enough that this rejects before the consumer
+    // effect attaches. Mark it handled here while preserving the rejection.
+    void initialCatalogRequest.current.catch(() => {});
+  }, []);
   useEffect(() => {
     if (!profileHydrated) return;
     let active = true;
@@ -1128,8 +1141,11 @@ function App() {
 
     const loadCatalog = async () => {
       try {
-        const data = await fetchLiveCatalog(3);
+        const request = initialCatalogRequest.current || fetchLiveCatalog(3);
+        initialCatalogRequest.current = null;
+        const data = await request;
         if (!active) return;
+        writeCachedClientCatalog(data);
         setLivePlayers(data.players);
         setCapturedAt(data.capturedAt || null);
         if (data.season) setCatalogSeason(data.season);
@@ -1187,6 +1203,8 @@ function App() {
             setSystemStatus(sys);
             if (sys.isSeeding || sys.status === "initializing" || sys.status === "seeding") {
               pollTimer = setTimeout(loadCatalog, 3000);
+            } else if (initialCatalog) {
+              setCatalogMode("cached-offline");
             } else {
               setLivePlayers([]);
               setCatalogMode("demo-offline");
@@ -1194,8 +1212,12 @@ function App() {
           })
           .catch(() => {
             if (!active) return;
-            setLivePlayers([]);
-            setCatalogMode("demo-offline");
+            if (initialCatalog) {
+              setCatalogMode("cached-offline");
+            } else {
+              setLivePlayers([]);
+              setCatalogMode("demo-offline");
+            }
           });
       }
     };
@@ -1780,6 +1802,7 @@ function App() {
       // Role profiles update immediately; the immutable points forecast is
       // picked up by the existing fast polling once its new run completes.
       fetchLiveCatalog().then((data) => {
+        writeCachedClientCatalog(data);
         setLivePlayers(data.players);
         setCapturedAt(data.capturedAt || null);
       }).catch(() => {});
@@ -1847,6 +1870,7 @@ function App() {
       setSignalReviewRefreshToken((token) => token + 1);
       setStagedSignalReviews({});
       const data = await fetchLiveCatalog();
+      writeCachedClientCatalog(data);
       setLivePlayers(data.players);
       setCapturedAt(data.capturedAt || null);
       const approvedCount = updates.filter((u) => u.status === "VERIFIED").length;
@@ -1878,6 +1902,7 @@ function App() {
   ) => {
     const signal = await createManualPlayerSignal(playerId, input);
     const data = await fetchLiveCatalog();
+    writeCachedClientCatalog(data);
     setLivePlayers(data.players);
     setCapturedAt(data.capturedAt || null);
     setPlayerDetail((current) =>
@@ -2120,7 +2145,11 @@ function App() {
 
   if (catalogMode === "loading") return <LoadingScreen />;
   const syncText =
-    catalogMode === "live"
+    catalogMode === "cached"
+      ? "Refreshing latest data…"
+      : catalogMode === "cached-offline"
+        ? "Offline · showing recent data"
+      : catalogMode === "live"
       ? capturedAt
         ? `Updated ${new Date(capturedAt).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}`
         : "Live data ready"
@@ -6488,6 +6517,42 @@ function SignalRiskStrip({ players }: { players: Player[] }) {
   );
 }
 
+type LeagueTableSort = { key: string | null; direction: SortDirection };
+
+function SortableLeagueHeader({
+  label,
+  sortKey,
+  sort,
+  onSort,
+  title,
+}: {
+  label: string;
+  sortKey: string;
+  sort: LeagueTableSort;
+  onSort: (key: string) => void;
+  title?: string;
+}) {
+  const active = sort.key === sortKey;
+  return (
+    <th
+      title={title}
+      aria-sort={active ? (sort.direction === "asc" ? "ascending" : "descending") : "none"}
+    >
+      <button
+        type="button"
+        className={`league-sort-button ${active ? "active" : ""}`}
+        onClick={() => onSort(sortKey)}
+        title={`Sort by ${label}${active ? ` (${sort.direction === "asc" ? "ascending" : "descending"})` : ""}`}
+      >
+        <span>{label}</span>
+        <span className="league-sort-indicator" aria-hidden="true">
+          {active ? (sort.direction === "asc" ? "▲" : "▼") : "↕"}
+        </span>
+      </button>
+    </th>
+  );
+}
+
 function LeaguesView({
   fplAccount,
   currentGameweek,
@@ -6533,10 +6598,14 @@ function LeaguesView({
   const [loading, setLoading] = useState<boolean>(false);
   const [error, setError] = useState<string | null>(null);
   const [details, setDetails] = useState<LeagueDetailsResponse | null>(null);
+  const [leagueUpdatedAt, setLeagueUpdatedAt] = useState<string | null>(null);
   const [subTab, setSubTab] = useState<"standings" | "eo" | "chips">("standings");
   const [inspectingRival, setInspectingRival] = useState<LeagueRival | null>(null);
   const [searchFilter, setSearchFilter] = useState<string>("");
   const [eoFilter, setEoFilter] = useState<"all" | "owned" | "unowned" | "differentials">("all");
+  const [standingsSort, setStandingsSort] = useState<LeagueTableSort>({ key: null, direction: "asc" });
+  const [eoSort, setEoSort] = useState<LeagueTableSort>({ key: null, direction: "asc" });
+  const [chipSort, setChipSort] = useState<LeagueTableSort>({ key: null, direction: "asc" });
 
   const activeLeagueId = selectedLeagueId;
 
@@ -6580,6 +6649,7 @@ function LeaguesView({
     try {
       const data = await fetchLeagueDetails(id, currentGameweek, fplAccount?.teamId ?? undefined);
       setDetails(data);
+      setLeagueUpdatedAt(new Date().toISOString());
     } catch (err) {
       setError((err as Error)?.message || "Failed to load league details.");
       setDetails(null);
@@ -6593,6 +6663,50 @@ function LeaguesView({
       loadLeague(activeLeagueId);
     }
   }, [activeLeagueId, loadLeague]);
+
+  useEffect(() => {
+    if (!activeLeagueId || !details) return;
+    let active = true;
+    let polling = false;
+
+    const pollLiveLeague = async () => {
+      if (!active || polling || document.hidden) return;
+      polling = true;
+      try {
+        const live = await fetchLeagueLiveState(activeLeagueId, currentGameweek, fplAccount?.teamId ?? undefined);
+        if (!active) return;
+        const liveByEntry = new Map(live.standings.map((rival) => [rival.entry, rival]));
+        setDetails((current) => current ? {
+          ...current,
+          standings: current.standings.map((rival) => {
+            const update = liveByEntry.get(rival.entry);
+            return update ? { ...rival, ...update, picks: update.picks || rival.picks } : rival;
+          }),
+        } : current);
+        setInspectingRival((current) => {
+          if (!current) return current;
+          const update = liveByEntry.get(current.entry);
+          return update ? { ...current, ...update, picks: update.picks || current.picks } : current;
+        });
+        setLeagueUpdatedAt(live.updatedAt);
+      } catch {
+        // Keep the last good league state; the next interval retries quietly.
+      } finally {
+        polling = false;
+      }
+    };
+
+    const timer = window.setInterval(pollLiveLeague, 60_000);
+    const handleVisibilityChange = () => {
+      if (!document.hidden) void pollLiveLeague();
+    };
+    document.addEventListener("visibilitychange", handleVisibilityChange);
+    return () => {
+      active = false;
+      window.clearInterval(timer);
+      document.removeEventListener("visibilitychange", handleVisibilityChange);
+    };
+  }, [activeLeagueId, currentGameweek, fplAccount?.teamId, Boolean(details)]);
 
   // Handle initial league selection setup once preferences and leagues are loaded
   useEffect(() => {
@@ -6675,6 +6789,38 @@ function LeaguesView({
     });
   }, [details, userSquad, catalog]);
 
+  const changeSort = (setter: React.Dispatch<React.SetStateAction<LeagueTableSort>>, key: string) => {
+    setter((current) => ({
+      key,
+      direction: nextSortDirection(current.key, key, current.direction),
+    }));
+  };
+
+  const sortedRivals = useMemo(() => {
+    if (!standingsSort.key) return rivalsWithOverlap;
+    const valueFor = (rival: (typeof rivalsWithOverlap)[number]): SortValue => {
+      switch (standingsSort.key) {
+        case "rank": return rival.rank;
+        case "manager": return `${rival.entry_name} ${rival.player_name}`;
+        case "transfers": return rival.eventTransfers + rival.eventTransfersCost / 100;
+        case "chip": return rival.activeChip;
+        case "overlap": return rival.picks?.length ? rival.overlapPct : null;
+        case "template": return rival.picks?.length ? rival.templateCount : null;
+        case "value": return leagueSquadValue(rival.value, rival.bank);
+        case "xpts1": return rival.expectedPoints[1];
+        case "xpts3": return rival.expectedPoints[3];
+        case "xpts5": return rival.expectedPoints[5];
+        case "predicted": return rival.livePrediction?.predictedPoints;
+        case "gwPoints": return rival.event_total;
+        case "totalPoints": return rival.total;
+        default: return null;
+      }
+    };
+    return [...rivalsWithOverlap].sort((a, b) =>
+      compareSortValues(valueFor(a), valueFor(b), standingsSort.direction) || a.rank - b.rank,
+    );
+  }, [rivalsWithOverlap, standingsSort]);
+
   const enrichedEOList = useMemo(() => {
     if (!details?.effectiveOwnership) return [];
     return details.effectiveOwnership.map((item) => {
@@ -6741,6 +6887,24 @@ function LeaguesView({
     });
   }, [enrichedEOList, searchFilter, eoFilter]);
 
+  const sortedEOList = useMemo(() => {
+    if (!eoSort.key) return filteredEOList;
+    const valueFor = (item: (typeof filteredEOList)[number]): SortValue => {
+      switch (eoSort.key) {
+        case "player": return item.player?.name ?? `Player ${item.element}`;
+        case "position": return item.player ? `${item.player.position} ${item.player.club}` : null;
+        case "status": return item.statusTag;
+        case "ownership": return item.ownershipPercent;
+        case "captaincy": return item.captaincyPercent;
+        case "eo": return item.effectiveOwnership;
+        default: return null;
+      }
+    };
+    return [...filteredEOList].sort((a, b) =>
+      compareSortValues(valueFor(a), valueFor(b), eoSort.direction) || a.element - b.element,
+    );
+  }, [filteredEOList, eoSort]);
+
   const formatChipName = (chipName: string | null) => {
     if (!chipName) return null;
     const map: Record<string, { label: string; color: string }> = {
@@ -6766,6 +6930,28 @@ function LeaguesView({
     const found = rival.chipsUsed.find((c) => c.name.toLowerCase() === chipKey);
     return found ? { used: true, event: found.event } : { used: false };
   };
+
+  const sortedChipRivals = useMemo(() => {
+    if (!chipSort.key) return details?.standings ?? [];
+    const chipValue = (rival: LeagueRival, chipKey: "wc1" | "wc2" | "freehit" | "bboost" | "3xc") => {
+      const status = getChipStatusForRival(rival, chipKey);
+      return status.used ? status.event ?? 0 : Number.MAX_SAFE_INTEGER;
+    };
+    const valueFor = (rival: LeagueRival): SortValue => {
+      switch (chipSort.key) {
+        case "manager": return `${rival.player_name} ${rival.entry_name}`;
+        case "wc1": return chipValue(rival, "wc1");
+        case "wc2": return chipValue(rival, "wc2");
+        case "freehit": return chipValue(rival, "freehit");
+        case "bboost": return chipValue(rival, "bboost");
+        case "tripleCaptain": return chipValue(rival, "3xc");
+        default: return null;
+      }
+    };
+    return [...(details?.standings ?? [])].sort((a, b) =>
+      compareSortValues(valueFor(a), valueFor(b), chipSort.direction) || a.rank - b.rank,
+    );
+  }, [details, chipSort]);
 
   const isCurrentDefault = selectedLeagueId === savedDefaultId;
 
@@ -6962,30 +7148,36 @@ function LeaguesView({
                       : `Showing top ${details.sampledManagerCount ?? details.totalAnalyzed} of ${(details.totalManagerCount ?? details.totalAnalyzed).toLocaleString()} managers`}
                   </span>
                 </div>
-                <span className="badge-info">Gameweek {currentGameweek}</span>
+                <div className="league-live-status">
+                  <span className="live-dot" aria-hidden="true" />
+                  <span>Auto-updating · GW{currentGameweek}</span>
+                  {leagueUpdatedAt && (
+                    <small>Updated {new Date(leagueUpdatedAt).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}</small>
+                  )}
+                </div>
               </div>
               <div className="table-responsive">
                 <table className="standings-table">
                   <thead>
                     <tr>
-                      <th>Rank</th>
-                      <th>Manager & Team</th>
-                      <th>GW Transfers & Hits</th>
-                      <th>Active Chip</th>
-                      <th>Overlap</th>
-                      <th>Template</th>
-                      <th>Squad £</th>
-                      <th title="Projected points from the current XI and captain over the next gameweek">xPts 1W</th>
-                      <th title="Projected points from the current XI and captain over the next 3 gameweeks">xPts 3W</th>
-                      <th title="Projected points from the current XI and captain over the next 5 gameweeks">xPts 5W</th>
-                      <th title="Live gameweek points plus projected points from players with time still remaining">Pred GW</th>
-                      <th>GW Pts</th>
-                      <th>Total Pts</th>
+                      <SortableLeagueHeader label="Rank" sortKey="rank" sort={standingsSort} onSort={(key) => changeSort(setStandingsSort, key)} />
+                      <SortableLeagueHeader label="Manager & Team" sortKey="manager" sort={standingsSort} onSort={(key) => changeSort(setStandingsSort, key)} />
+                      <SortableLeagueHeader label="GW Transfers & Hits" sortKey="transfers" sort={standingsSort} onSort={(key) => changeSort(setStandingsSort, key)} />
+                      <SortableLeagueHeader label="Active Chip" sortKey="chip" sort={standingsSort} onSort={(key) => changeSort(setStandingsSort, key)} />
+                      <SortableLeagueHeader label="Overlap" sortKey="overlap" sort={standingsSort} onSort={(key) => changeSort(setStandingsSort, key)} />
+                      <SortableLeagueHeader label="Template" sortKey="template" sort={standingsSort} onSort={(key) => changeSort(setStandingsSort, key)} />
+                      <SortableLeagueHeader label="Squad £" sortKey="value" sort={standingsSort} onSort={(key) => changeSort(setStandingsSort, key)} />
+                      <SortableLeagueHeader label="xPts 1W" sortKey="xpts1" sort={standingsSort} onSort={(key) => changeSort(setStandingsSort, key)} title="Projected points from the current XI and captain over the next gameweek" />
+                      <SortableLeagueHeader label="xPts 3W" sortKey="xpts3" sort={standingsSort} onSort={(key) => changeSort(setStandingsSort, key)} title="Projected points from the current XI and captain over the next 3 gameweeks" />
+                      <SortableLeagueHeader label="xPts 5W" sortKey="xpts5" sort={standingsSort} onSort={(key) => changeSort(setStandingsSort, key)} title="Projected points from the current XI and captain over the next 5 gameweeks" />
+                      <SortableLeagueHeader label="Pred GW" sortKey="predicted" sort={standingsSort} onSort={(key) => changeSort(setStandingsSort, key)} title="Live gameweek points plus projected points from players with time still remaining" />
+                      <SortableLeagueHeader label="GW Pts" sortKey="gwPoints" sort={standingsSort} onSort={(key) => changeSort(setStandingsSort, key)} />
+                      <SortableLeagueHeader label="Total Pts" sortKey="totalPoints" sort={standingsSort} onSort={(key) => changeSort(setStandingsSort, key)} />
                       <th>Action</th>
                     </tr>
                   </thead>
                   <tbody>
-                    {rivalsWithOverlap.map((rival) => {
+                    {sortedRivals.map((rival) => {
                       const isUser = rival.entry === fplAccount?.teamId;
                       const activeChipInfo = formatChipName(rival.activeChip);
                       const rankDiff = rival.last_rank ? rival.last_rank - rival.rank : 0;
@@ -7128,16 +7320,16 @@ function LeaguesView({
                 <table className="eo-table">
                   <thead>
                     <tr>
-                      <th>Player</th>
-                      <th>Position / Club</th>
-                      <th>Status in League</th>
-                      <th>Ownership %</th>
-                      <th>Captaincy %</th>
-                      <th>Effective Ownership (EO)</th>
+                      <SortableLeagueHeader label="Player" sortKey="player" sort={eoSort} onSort={(key) => changeSort(setEoSort, key)} />
+                      <SortableLeagueHeader label="Position / Club" sortKey="position" sort={eoSort} onSort={(key) => changeSort(setEoSort, key)} />
+                      <SortableLeagueHeader label="Status in League" sortKey="status" sort={eoSort} onSort={(key) => changeSort(setEoSort, key)} />
+                      <SortableLeagueHeader label="Ownership %" sortKey="ownership" sort={eoSort} onSort={(key) => changeSort(setEoSort, key)} />
+                      <SortableLeagueHeader label="Captaincy %" sortKey="captaincy" sort={eoSort} onSort={(key) => changeSort(setEoSort, key)} />
+                      <SortableLeagueHeader label="Effective Ownership (EO)" sortKey="eo" sort={eoSort} onSort={(key) => changeSort(setEoSort, key)} />
                     </tr>
                   </thead>
                   <tbody>
-                    {filteredEOList.map((item) => {
+                    {sortedEOList.map((item) => {
                       const p = item.player;
                       return (
                         <tr key={item.element} className={item.isUserOwned ? "user-owned-row" : ""}>
@@ -7196,16 +7388,16 @@ function LeaguesView({
                 <table className="chip-table">
                   <thead>
                     <tr>
-                      <th>Manager / Team</th>
-                      <th>Wildcard 1</th>
-                      <th>Wildcard 2</th>
-                      <th>Free Hit</th>
-                      <th>Bench Boost</th>
-                      <th>Triple Captain</th>
+                      <SortableLeagueHeader label="Manager / Team" sortKey="manager" sort={chipSort} onSort={(key) => changeSort(setChipSort, key)} />
+                      <SortableLeagueHeader label="Wildcard 1" sortKey="wc1" sort={chipSort} onSort={(key) => changeSort(setChipSort, key)} />
+                      <SortableLeagueHeader label="Wildcard 2" sortKey="wc2" sort={chipSort} onSort={(key) => changeSort(setChipSort, key)} />
+                      <SortableLeagueHeader label="Free Hit" sortKey="freehit" sort={chipSort} onSort={(key) => changeSort(setChipSort, key)} />
+                      <SortableLeagueHeader label="Bench Boost" sortKey="bboost" sort={chipSort} onSort={(key) => changeSort(setChipSort, key)} />
+                      <SortableLeagueHeader label="Triple Captain" sortKey="tripleCaptain" sort={chipSort} onSort={(key) => changeSort(setChipSort, key)} />
                     </tr>
                   </thead>
                   <tbody>
-                    {details.standings.map((rival) => {
+                    {sortedChipRivals.map((rival) => {
                       const wc1 = getChipStatusForRival(rival, "wc1");
                       const wc2 = getChipStatusForRival(rival, "wc2");
                       const fh = getChipStatusForRival(rival, "freehit");

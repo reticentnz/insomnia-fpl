@@ -485,7 +485,12 @@ const catalogueCache = new CatalogueCache({
   filePath: process.env.FPL_CATALOG_CACHE_FILE || appDataFile('cache/projection-catalog.json'),
 })
 const leagueCache = new TtlCache(5 * 60 * 1000)
+const leagueLiveContextCache = new TtlCache(24 * 60 * 60 * 1000)
 const leagueUpstream = new ConcurrencyLimiter(5)
+
+function leagueDetailsCacheKey(leagueId, gameweek, youEntry) {
+  return `${leagueId}:${gameweek}:${youEntry == null ? '' : Number(youEntry)}`
+}
 
 // Fetches a classic league's standings, rival picks/history and effective
 // ownership, backed by the short-lived in-process cache shared by the Leagues
@@ -501,7 +506,7 @@ const STANDINGS_MAX_WALK_PAGES = 20
 
 async function loadLeagueDetailsWithEO(leagueId, requestedGameweek, { youEntry, maxStandingsPages = STANDINGS_MAX_WALK_PAGES } = {}) {
   const gameweek = String(requestedGameweek ?? '')
-  const leagueKey = `${leagueId}:${gameweek}`
+  const leagueKey = leagueDetailsCacheKey(leagueId, gameweek, youEntry)
   const cachedLeague = leagueCache.get(leagueKey)
   if (cachedLeague) return cachedLeague
 
@@ -642,6 +647,7 @@ async function loadLeagueDetailsWithEO(leagueId, requestedGameweek, { youEntry, 
           seasonHits,
           picks: (picksData?.picks || []).map(pick => ({
             ...pick,
+            team: teamByElement.get(Number(pick.element)) ?? null,
             remainingFixtureFraction: remainingFixtureFraction(pick.element)
           })),
           chipsUsed: historyData?.chips || []
@@ -720,7 +726,83 @@ async function loadLeagueDetailsWithEO(leagueId, requestedGameweek, { youEntry, 
       effectiveOwnership
     }
   leagueCache.set(leagueKey, response)
+  leagueLiveContextCache.set(leagueKey, response)
   return response
+}
+
+async function loadLeagueLiveState(leagueId, requestedGameweek, { youEntry } = {}) {
+  const gameweek = String(requestedGameweek ?? '')
+  const context = leagueLiveContextCache.get(leagueDetailsCacheKey(leagueId, gameweek, youEntry))
+  if (!context) throw new Error('League must be loaded before live updates can start')
+
+  const pageNumbers = new Set()
+  const maxPage = Math.max(1, Math.ceil((Number(context.totalManagerCount) || 1) / STANDINGS_PAGE_SIZE))
+  for (const rival of context.standings || []) {
+    const page = Math.max(1, Math.ceil((Number(rival.rank_sort || rival.rank) || 1) / STANDINGS_PAGE_SIZE))
+    pageNumbers.add(page)
+    if (page > 1) pageNumbers.add(page - 1)
+    if (page < maxPage) pageNumbers.add(page + 1)
+  }
+
+  const [standingsPages, fixturesRes] = await Promise.all([
+    Promise.all(Array.from(pageNumbers).map(page => leagueUpstream.run(async () => {
+      const response = await fetch(`https://fantasy.premierleague.com/api/leagues-classic/${leagueId}/standings/?page_new_entries=1&page_standings=${page}`, {
+        headers: { 'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7)' }
+      })
+      return response.ok ? (await response.json()).standings?.results || [] : []
+    }))),
+    leagueUpstream.run(() => fetch(`https://fantasy.premierleague.com/api/fixtures/?event=${gameweek}`, {
+      headers: { 'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7)' }
+    }))
+  ])
+
+  const latestByEntry = new Map(standingsPages.flat().map(row => [Number(row.entry), row]))
+  const fixturesByTeam = new Map()
+  if (fixturesRes.ok) {
+    const fixtures = await fixturesRes.json()
+    for (const fixture of Array.isArray(fixtures) ? fixtures : []) {
+      for (const team of [Number(fixture.team_h), Number(fixture.team_a)]) {
+        const list = fixturesByTeam.get(team) || []
+        list.push(fixture)
+        fixturesByTeam.set(team, list)
+      }
+    }
+  }
+
+  const remainingFractionForTeam = (team) => {
+    const fixtures = team == null ? [] : (fixturesByTeam.get(Number(team)) || [])
+    if (fixtures.length === 0) return null
+    const remaining = fixtures.map(fixture => {
+      if (fixture.finished || fixture.finished_provisional) return 0
+      if (!fixture.started) return 1
+      const elapsed = Math.max(0, Math.min(90, Number(fixture.minutes) || 0))
+      return Math.max(0, (90 - elapsed) / 90)
+    })
+    return Number((remaining.reduce((sum, share) => sum + share, 0) / fixtures.length).toFixed(4))
+  }
+
+  return {
+    updatedAt: new Date().toISOString(),
+    standings: (context.standings || []).map(rival => {
+      const latest = latestByEntry.get(Number(rival.entry))
+      return {
+        entry: rival.entry,
+        ...(latest ? {
+          event_total: latest.event_total,
+          rank: latest.rank,
+          last_rank: latest.last_rank,
+          rank_sort: latest.rank_sort,
+          total: latest.total
+        } : {}),
+        picks: (rival.picks || []).map(pick => ({
+          ...pick,
+          remainingFixtureFraction: fixturesRes.ok
+            ? remainingFractionForTeam(pick.team)
+            : pick.remainingFixtureFraction
+        }))
+      }
+    })
+  }
 }
 
 // Maps a loaded league response to the compact coverage form used by the
@@ -2649,6 +2731,24 @@ function startServerOnAvailablePort(targetPort) {
         if (!res.headersSent) {
           sendJson(res, 500, { error: err instanceof Error ? err.message : 'FPL league details fetch failed' })
         }
+      }
+      return
+    }
+
+    if (request === '/api/fpl-league-live' && req.method === 'GET') {
+      const urlParams = new URLSearchParams((req.url || '').split('?')[1] || '')
+      const leagueId = Number(urlParams.get('leagueId'))
+      if (!leagueId || isNaN(leagueId)) {
+        sendJson(res, 400, { error: 'Valid numeric leagueId parameter is required' })
+        return
+      }
+      const requestedGameweek = urlParams.get('gameweek') || ''
+      const youEntryParam = urlParams.get('youEntry')
+      const youEntry = youEntryParam && !isNaN(Number(youEntryParam)) ? Number(youEntryParam) : undefined
+      try {
+        sendJson(res, 200, await loadLeagueLiveState(leagueId, requestedGameweek, { youEntry }), { cacheControl: 'private, no-store' })
+      } catch (err) {
+        sendJson(res, 409, { error: err instanceof Error ? err.message : 'Live league update unavailable' })
       }
       return
     }
