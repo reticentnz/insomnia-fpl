@@ -353,6 +353,8 @@ export interface LeagueRivalPick {
   multiplier: number;
   is_captain: boolean;
   is_vice_captain: boolean;
+  /** Fraction of the player's current-GW fixtures still to be played (0–1). */
+  remainingFixtureFraction?: number | null;
 }
 
 export interface LeagueRivalChip {

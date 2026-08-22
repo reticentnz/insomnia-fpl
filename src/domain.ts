@@ -1637,7 +1637,44 @@ export type LeagueProjectionPick = {
   element: number;
   position: number;
   is_captain?: boolean;
+  multiplier?: number;
+  remainingFixtureFraction?: number | null;
 };
+
+export type LeagueLivePrediction = {
+  predictedPoints: number;
+  playersRemaining: number;
+};
+
+/** Adds only the unplayed share of the current-GW projection to live points. */
+export function leagueLivePredictedPoints(
+  catalog: Player[],
+  picks: LeagueProjectionPick[],
+  currentPoints: number,
+): LeagueLivePrediction | null {
+  const scoringPicks = picks.filter((pick) => (pick.multiplier ?? 0) > 0);
+  if (
+    scoringPicks.length === 0 ||
+    scoringPicks.some((pick) => pick.remainingFixtureFraction == null)
+  ) return null;
+
+  const playersById = new Map(catalog.map((player) => [player.id, player]));
+  let remainingExpectedPoints = 0;
+  let playersRemaining = 0;
+  for (const pick of scoringPicks) {
+    const remainingFraction = Math.max(0, Math.min(1, pick.remainingFixtureFraction!));
+    if (remainingFraction <= 0) continue;
+    const player = playersById.get(pick.element);
+    if (!player) return null;
+    playersRemaining += 1;
+    remainingExpectedPoints += horizonProjection(player, 1) * (pick.multiplier ?? 1) * remainingFraction;
+  }
+
+  return {
+    predictedPoints: +(currentPoints + remainingExpectedPoints).toFixed(1),
+    playersRemaining,
+  };
+}
 
 /**
  * Projects a revealed league lineup across a planning horizon. The current

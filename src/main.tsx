@@ -12,6 +12,7 @@ import {
   getSquad,
   groupLegalChangeBundles,
   horizonProjection,
+  leagueLivePredictedPoints,
   leagueLineupExpectedPoints,
   gameweekProjection,
   getPlayerUpcomingFixtures,
@@ -6669,6 +6670,7 @@ function LeaguesView({
           3: leagueLineupExpectedPoints(catalog, rival.picks || [], 3, rival.activeChip),
           5: leagueLineupExpectedPoints(catalog, rival.picks || [], 5, rival.activeChip),
         },
+        livePrediction: leagueLivePredictedPoints(catalog, rival.picks || [], rival.event_total),
       };
     });
   }, [details, userSquad, catalog]);
@@ -6976,6 +6978,7 @@ function LeaguesView({
                       <th title="Projected points from the current XI and captain over the next gameweek">xPts 1W</th>
                       <th title="Projected points from the current XI and captain over the next 3 gameweeks">xPts 3W</th>
                       <th title="Projected points from the current XI and captain over the next 5 gameweeks">xPts 5W</th>
+                      <th title="Live gameweek points plus projected points from players with time still remaining">Pred GW</th>
                       <th>GW Pts</th>
                       <th>Total Pts</th>
                       <th>Action</th>
@@ -7059,6 +7062,16 @@ function LeaguesView({
                               )}
                             </td>
                           ))}
+                          <td className="predicted-gw-pts">
+                            {rival.livePrediction == null ? (
+                              <span className="muted-text">-</span>
+                            ) : (
+                              <span>
+                                <b>{rival.livePrediction.predictedPoints.toFixed(1)}</b>
+                                <small>{rival.livePrediction.playersRemaining} left</small>
+                              </span>
+                            )}
+                          </td>
                           <td className="gw-pts"><b>{rival.event_total}</b></td>
                           <td className="total-pts"><b>{rival.total}</b></td>
                           <td>

@@ -567,6 +567,51 @@ async function loadLeagueDetailsWithEO(leagueId, requestedGameweek, { youEntry, 
 
   const defaultGw = String(requestedGameweek || standingsData.league?.start_event || 1)
 
+  // Resolve each player's current-GW fixture state once for the whole league.
+  // The client uses this to add only the unplayed share of a projection to the
+  // manager's live event_total, rather than projecting the whole week again.
+  const teamByElement = new Map()
+  const fixturesByTeam = new Map()
+  try {
+    const [bootstrapRes, fixturesRes] = await Promise.all([
+      leagueUpstream.run(() => fetch('https://fantasy.premierleague.com/api/bootstrap-static/', {
+        headers: { 'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7)' }
+      })),
+      leagueUpstream.run(() => fetch(`https://fantasy.premierleague.com/api/fixtures/?event=${defaultGw}`, {
+        headers: { 'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7)' }
+      }))
+    ])
+    if (bootstrapRes.ok && fixturesRes.ok) {
+      const bootstrapData = await bootstrapRes.json()
+      const fixturesData = await fixturesRes.json()
+      for (const element of bootstrapData.elements || []) {
+        teamByElement.set(Number(element.id), Number(element.team))
+      }
+      for (const fixture of Array.isArray(fixturesData) ? fixturesData : []) {
+        for (const team of [Number(fixture.team_h), Number(fixture.team_a)]) {
+          const list = fixturesByTeam.get(team) || []
+          list.push(fixture)
+          fixturesByTeam.set(team, list)
+        }
+      }
+    }
+  } catch {
+    // League standings still work if FPL's fixture/bootstrap endpoints fail.
+  }
+
+  const remainingFixtureFraction = (element) => {
+    const team = teamByElement.get(Number(element))
+    const fixtures = team == null ? [] : (fixturesByTeam.get(team) || [])
+    if (fixtures.length === 0) return null
+    const remainingShares = fixtures.map(fixture => {
+      if (fixture.finished || fixture.finished_provisional) return 0
+      if (!fixture.started) return 1
+      const elapsed = Math.max(0, Math.min(90, Number(fixture.minutes) || 0))
+      return Math.max(0, (90 - elapsed) / 90)
+    })
+    return Number((remainingShares.reduce((sum, share) => sum + share, 0) / fixtures.length).toFixed(4))
+  }
+
   const enrichedRivals = await Promise.all(
     topRivals.map(async (rival) => {
       try {
@@ -595,7 +640,10 @@ async function loadLeagueDetailsWithEO(leagueId, requestedGameweek, { youEntry, 
           value: entryHistory.value == null ? null : Number(entryHistory.value) / 10,
           bank: entryHistory.bank == null ? null : Number(entryHistory.bank) / 10,
           seasonHits,
-          picks: picksData?.picks || [],
+          picks: (picksData?.picks || []).map(pick => ({
+            ...pick,
+            remainingFixtureFraction: remainingFixtureFraction(pick.element)
+          })),
           chipsUsed: historyData?.chips || []
         }
       } catch {

@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { bestXI, bestXIForGameweek, buildDraftImprovementPlan, buildLegalDefaultSquad, buildLegalRemainingSquad, computeDraftFingerprint, computeDraftPlayerFingerprint, draftSquadScore, evaluateModeTransition, findTransferRoutesToTarget, getSquad, groupLegalChangeBundles, horizonProjection, initialSquadBank, isInitialDraftPeriod, isLegalTransfer, isPlayerInjured, isPlayerFlagged, leagueLineupExpectedPoints, optimizeInitialSquad, players, resolvePlanningMode, resolveSquadSaveTarget, transferDecision, transfers, validateInitialSquad, validateSquad, CLUB_FIXTURES, getPlayerUpcomingFixtures, gameweekProjection, INITIAL_SQUAD_BUDGET, TRANSFER_GAIN_THRESHOLDS, calculateChipImpact, generateSquadExportText, getPlayerFixtureTicker, getDifferentialsAndEnablers, getCaptaincyBreakdown, calculateRivalEO, getTeamColor, getPlayerShirtColor } from './domain'
+import { bestXI, bestXIForGameweek, buildDraftImprovementPlan, buildLegalDefaultSquad, buildLegalRemainingSquad, computeDraftFingerprint, computeDraftPlayerFingerprint, draftSquadScore, evaluateModeTransition, findTransferRoutesToTarget, getSquad, groupLegalChangeBundles, horizonProjection, initialSquadBank, isInitialDraftPeriod, isLegalTransfer, isPlayerInjured, isPlayerFlagged, leagueLivePredictedPoints, leagueLineupExpectedPoints, optimizeInitialSquad, players, resolvePlanningMode, resolveSquadSaveTarget, transferDecision, transfers, validateInitialSquad, validateSquad, CLUB_FIXTURES, getPlayerUpcomingFixtures, gameweekProjection, INITIAL_SQUAD_BUDGET, TRANSFER_GAIN_THRESHOLDS, calculateChipImpact, generateSquadExportText, getPlayerFixtureTicker, getDifferentialsAndEnablers, getCaptaincyBreakdown, calculateRivalEO, getTeamColor, getPlayerShirtColor } from './domain'
 
 import { createToolContext, getBestTransfers, simulateTransfers } from './intelligence'
 import { reviewDecision } from './decision-review'
@@ -686,5 +686,25 @@ describe('GW1 locked-core squad optimisation',()=>{
 
     expect(leagueLineupExpectedPoints(players, picks, 5, '3xc')).toBeCloseTo(baseline + captainOneWeek, 1)
     expect(leagueLineupExpectedPoints(players, picks, 5, 'bboost')).toBeCloseTo(baseline + benchOneWeek, 1)
+  })
+
+  it('predicts the final live GW score from only players with fixture time remaining',()=>{
+    const squad = getSquad()
+    const picks = squad.map((player, index) => ({
+      element: player.id,
+      position: index + 1,
+      multiplier: index === 0 ? 2 : index < 11 ? 1 : 0,
+      remainingFixtureFraction: index === 0 ? 1 : index === 1 ? 0.5 : 0,
+    }))
+    const prediction = leagueLivePredictedPoints(players, picks, 30)!
+    const remaining = horizonProjection(squad[0], 1) * 2 + horizonProjection(squad[1], 1) * 0.5
+
+    expect(prediction.predictedPoints).toBeCloseTo(30 + remaining, 1)
+    expect(prediction.playersRemaining).toBe(2)
+  })
+
+  it('does not invent a live GW prediction when fixture state is unavailable',()=>{
+    const player = players[0]
+    expect(leagueLivePredictedPoints(players, [{ element: player.id, position: 1, multiplier: 1 }], 12)).toBeNull()
   })
 })

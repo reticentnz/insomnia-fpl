@@ -4492,6 +4492,20 @@ h2 {
   white-space: nowrap;
 }
 
+.standings-table .predicted-gw-pts {
+  color: #a78bfa;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+.standings-table .predicted-gw-pts small {
+  color: #94a3b8;
+  display: block;
+  font-size: 10px;
+  font-weight: 500;
+  margin-top: 2px;
+}
+
 .standings-table tr:hover, .eo-table tr:hover, .chip-table tr:hover {
   background: rgba(255, 255, 255, 0.03);
 }
