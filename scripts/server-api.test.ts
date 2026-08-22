@@ -22,9 +22,24 @@ async function waitForServer(process: ChildProcess, baseUrl: string) {
   throw new Error(`Server did not become ready: ${output}`)
 }
 
-afterEach(() => {
-  for (const process of processes.splice(0)) process.kill('SIGTERM')
-  for (const directory of directories.splice(0)) fs.rmSync(directory, { recursive: true, force: true })
+afterEach(async () => {
+  for (const child of processes.splice(0)) {
+    if (child.exitCode === null) {
+      const exited = new Promise<void>(resolve => child.once('exit', () => resolve()))
+      child.kill('SIGTERM')
+      const stopped = await Promise.race([
+        exited.then(() => true),
+        new Promise<false>(resolve => setTimeout(() => resolve(false), 2_000)),
+      ])
+      if (!stopped && child.exitCode === null) {
+        child.kill('SIGKILL')
+        await exited
+      }
+    }
+  }
+  for (const directory of directories.splice(0)) {
+    fs.rmSync(directory, { recursive: true, force: true, maxRetries: 10, retryDelay: 50 })
+  }
 })
 
 describe('canonical HTTP API smoke', () => {
@@ -110,7 +125,11 @@ describe('canonical HTTP API smoke', () => {
     expect(keyMetadata).toEqual({ provider: 'openai', configured: true, suffix: '9x7z' })
     expect(JSON.stringify(keyMetadata)).not.toContain(testKey)
     expect(fs.readFileSync(databasePath).includes(Buffer.from(testKey))).toBe(false)
-    expect(fs.statSync(path.join(directory, 'ai-settings.json')).mode & 0o777).toBe(0o600)
+    const settingsStat = fs.statSync(path.join(directory, 'ai-settings.json'))
+    expect(settingsStat.isFile()).toBe(true)
+    // Windows does not expose POSIX permission bits; chmod is effective and
+    // verifiable on the deployment platforms that support them.
+    if (process.platform !== 'win32') expect(settingsStat.mode & 0o777).toBe(0o600)
 
     const wrongContentType = await fetch(`${baseUrl}/api/ask`, { method: 'POST', headers: { 'content-type': 'text/plain' }, body: '{}' })
     const wrongContentTypeBody = await wrongContentType.json()

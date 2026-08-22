@@ -745,10 +745,21 @@ function writeOfficialCache(cachePath, payloads, capturedAt, sourceUpdatedAt) {
 
 export function resolveOfficialCachePath({ cachePath, env = process.env, cwd = process.cwd() } = {}) {
   if (cachePath !== undefined) return cachePath
+  const resolveConfiguredPath = (...parts) => {
+    const first = String(parts[0] || '')
+    // A leading slash is an explicit POSIX/container path even though
+    // path.win32.isAbsolute('/app') also returns true on Windows.
+    const pathApi = String(cwd).startsWith('/') || first.startsWith('/')
+      ? path.posix
+      : path.win32.isAbsolute(cwd) || path.win32.isAbsolute(first)
+        ? path.win32
+        : path
+    return pathApi.resolve(cwd, ...parts)
+  }
   const configured = env.FPL_INGEST_CACHE_PATH || env.FPL_DATA_CACHE_FILE
-  if (configured) return path.resolve(cwd, configured)
-  if (env.APP_DATA_DIR) return path.resolve(cwd, env.APP_DATA_DIR, 'cache', 'fpl-official.json')
-  return path.resolve(cwd, '.cache', 'fpl-official.json')
+  if (configured) return resolveConfiguredPath(configured)
+  if (env.APP_DATA_DIR) return resolveConfiguredPath(env.APP_DATA_DIR, 'cache', 'fpl-official.json')
+  return resolveConfiguredPath('.cache', 'fpl-official.json')
 }
 
 export async function refreshOfficialFpl({
