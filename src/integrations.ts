@@ -374,6 +374,7 @@ export interface LeagueRival {
   activeChip: string | null;
   eventTransfers: number;
   eventTransfersCost: number;
+  /** FPL's total team value, including bank. */
   value: number | null;
   bank: number | null;
   seasonHits: number;
@@ -384,6 +385,11 @@ export interface LeagueRival {
   overlapPct?: number;
   sharedElements?: number[];
   myDifferentialIds?: number[];
+}
+
+export function leagueSquadValue(totalTeamValue: number | null, bank: number | null): number | null {
+  if (totalTeamValue == null) return null;
+  return +Math.max(0, totalTeamValue - (bank ?? 0)).toFixed(1);
 }
 
 export interface LeaguePlayerEO {

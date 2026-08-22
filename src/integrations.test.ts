@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { fetchFplAccount } from './integrations'
+import { fetchFplAccount, leagueSquadValue } from './integrations'
 
 afterEach(() => {
   vi.unstubAllGlobals()
@@ -38,5 +38,17 @@ describe('fetchFplAccount', () => {
     const result = await fetchFplAccount(123, 1)
 
     expect(result.account.leagues).toEqual({ classic: [], h2h: [] })
+  })
+})
+
+describe('leagueSquadValue', () => {
+  it('removes bank funds from FPL total team value', () => {
+    expect(leagueSquadValue(101, 1)).toBe(100)
+    expect(leagueSquadValue(100, 1)).toBe(99)
+    expect(leagueSquadValue(100, 1.5)).toBe(98.5)
+  })
+
+  it('preserves unavailable values', () => {
+    expect(leagueSquadValue(null, 1)).toBeNull()
   })
 })

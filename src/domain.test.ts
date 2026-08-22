@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { bestXI, bestXIForGameweek, buildDraftImprovementPlan, buildLegalDefaultSquad, buildLegalRemainingSquad, computeDraftFingerprint, computeDraftPlayerFingerprint, draftSquadScore, evaluateModeTransition, findTransferRoutesToTarget, getSquad, groupLegalChangeBundles, horizonProjection, initialSquadBank, isInitialDraftPeriod, isLegalTransfer, isPlayerInjured, isPlayerFlagged, optimizeInitialSquad, players, resolvePlanningMode, resolveSquadSaveTarget, transferDecision, transfers, validateInitialSquad, validateSquad, CLUB_FIXTURES, getPlayerUpcomingFixtures, gameweekProjection, INITIAL_SQUAD_BUDGET, TRANSFER_GAIN_THRESHOLDS, calculateChipImpact, generateSquadExportText, getPlayerFixtureTicker, getDifferentialsAndEnablers, getCaptaincyBreakdown, calculateRivalEO, getTeamColor, getPlayerShirtColor } from './domain'
+import { bestXI, bestXIForGameweek, buildDraftImprovementPlan, buildLegalDefaultSquad, buildLegalRemainingSquad, computeDraftFingerprint, computeDraftPlayerFingerprint, draftSquadScore, evaluateModeTransition, findTransferRoutesToTarget, getSquad, groupLegalChangeBundles, horizonProjection, initialSquadBank, isInitialDraftPeriod, isLegalTransfer, isPlayerInjured, isPlayerFlagged, leagueLineupExpectedPoints, optimizeInitialSquad, players, resolvePlanningMode, resolveSquadSaveTarget, transferDecision, transfers, validateInitialSquad, validateSquad, CLUB_FIXTURES, getPlayerUpcomingFixtures, gameweekProjection, INITIAL_SQUAD_BUDGET, TRANSFER_GAIN_THRESHOLDS, calculateChipImpact, generateSquadExportText, getPlayerFixtureTicker, getDifferentialsAndEnablers, getCaptaincyBreakdown, calculateRivalEO, getTeamColor, getPlayerShirtColor } from './domain'
 
 import { createToolContext, getBestTransfers, simulateTransfers } from './intelligence'
 import { reviewDecision } from './decision-review'
@@ -654,5 +654,37 @@ describe('GW1 locked-core squad optimisation',()=>{
     const eoStats = calculateRivalEO(rivalPicks, userSquad, players)
     expect(eoStats.sharedPlayersCount).toBeGreaterThanOrEqual(2)
     expect(eoStats.effectiveOwnership[userSquad[0].id].isCaptain).toBe(true)
+  })
+
+  it('projects a revealed league XI and captain over 1/3/5 gameweeks',()=>{
+    const squad = getSquad()
+    const picks = squad.map((player, index) => ({
+      element: player.id,
+      position: index + 1,
+      is_captain: index === 0,
+    }))
+    const expected = (horizon: 1 | 3 | 5) => squad
+      .slice(0, 11)
+      .reduce((sum, player) => sum + horizonProjection(player, horizon), horizonProjection(squad[0], horizon))
+
+    expect(leagueLineupExpectedPoints(players, picks, 1)).toBeCloseTo(expected(1), 1)
+    expect(leagueLineupExpectedPoints(players, picks, 3)).toBeCloseTo(expected(3), 1)
+    expect(leagueLineupExpectedPoints(players, picks, 5)).toBeCloseTo(expected(5), 1)
+    expect(leagueLineupExpectedPoints(players, [], 1)).toBeNull()
+  })
+
+  it('applies single-week scoring chips only once in longer league projections',()=>{
+    const squad = getSquad()
+    const picks = squad.map((player, index) => ({
+      element: player.id,
+      position: index + 1,
+      is_captain: index === 0,
+    }))
+    const baseline = leagueLineupExpectedPoints(players, picks, 5)!
+    const captainOneWeek = horizonProjection(squad[0], 1)
+    const benchOneWeek = squad.slice(11).reduce((sum, player) => sum + horizonProjection(player, 1), 0)
+
+    expect(leagueLineupExpectedPoints(players, picks, 5, '3xc')).toBeCloseTo(baseline + captainOneWeek, 1)
+    expect(leagueLineupExpectedPoints(players, picks, 5, 'bboost')).toBeCloseTo(baseline + benchOneWeek, 1)
   })
 })

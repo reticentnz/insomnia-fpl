@@ -4486,6 +4486,12 @@ h2 {
   color: #f8fafc;
 }
 
+.standings-table .expected-pts {
+  color: #60a5fa;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
 .standings-table tr:hover, .eo-table tr:hover, .chip-table tr:hover {
   background: rgba(255, 255, 255, 0.03);
 }

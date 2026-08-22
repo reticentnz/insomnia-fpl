@@ -1632,6 +1632,52 @@ export function horizonProjection(p: Player, h: number) {
     h,
   );
 }
+
+export type LeagueProjectionPick = {
+  element: number;
+  position: number;
+  is_captain?: boolean;
+};
+
+/**
+ * Projects a revealed league lineup across a planning horizon. The current
+ * starting XI and captain are held constant; one-week scoring chips only add
+ * their extra points in the first gameweek of a longer horizon.
+ */
+export function leagueLineupExpectedPoints(
+  catalog: Player[],
+  picks: LeagueProjectionPick[],
+  horizon: 1 | 3 | 5,
+  activeChip?: string | null,
+): number | null {
+  if (picks.length === 0) return null;
+
+  const playersById = new Map(catalog.map((player) => [player.id, player]));
+  const resolved = picks.map((pick) => ({ pick, player: playersById.get(pick.element) }));
+  if (resolved.some(({ player }) => !player)) return null;
+
+  const starters = resolved.filter(({ pick }) => pick.position <= 11);
+  const captain = starters.find(({ pick }) => pick.is_captain);
+  let total = starters.reduce(
+    (sum, { player }) => sum + horizonProjection(player!, horizon),
+    0,
+  );
+
+  // Assume the revealed captain remains captain throughout the horizon.
+  if (captain?.player) total += horizonProjection(captain.player, horizon);
+
+  const chip = activeChip?.toLowerCase();
+  if (chip === "3xc" && captain?.player) {
+    total += horizonProjection(captain.player, 1);
+  }
+  if (chip === "bboost") {
+    total += resolved
+      .filter(({ pick }) => pick.position > 11)
+      .reduce((sum, { player }) => sum + horizonProjection(player!, 1), 0);
+  }
+
+  return +total.toFixed(1);
+}
 export function validateSquad(squad: Player[], bank = 0): SquadIssue[] {
   const issues: SquadIssue[] = [];
   const counts = {

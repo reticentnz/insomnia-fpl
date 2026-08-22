@@ -12,6 +12,7 @@ import {
   getSquad,
   groupLegalChangeBundles,
   horizonProjection,
+  leagueLineupExpectedPoints,
   gameweekProjection,
   getPlayerUpcomingFixtures,
   initialSquadBank,
@@ -74,6 +75,7 @@ import {
   createManualPlayerSignal,
   fetchPlayerSignals,
   fetchLeagueDetails,
+  leagueSquadValue,
   type FplAccount,
   type FplRankHistoryEntry,
   type FplLeagueSummary,
@@ -6662,9 +6664,14 @@ function LeaguesView({
         overlapPct,
         sharedElements: sharedPicks.map(p => p.element),
         myDifferentialIds: userSquad.filter(p => !startPicks.some(sp => sp.element === p.id)).map(p => p.id),
+        expectedPoints: {
+          1: leagueLineupExpectedPoints(catalog, rival.picks || [], 1, rival.activeChip),
+          3: leagueLineupExpectedPoints(catalog, rival.picks || [], 3, rival.activeChip),
+          5: leagueLineupExpectedPoints(catalog, rival.picks || [], 5, rival.activeChip),
+        },
       };
     });
-  }, [details, userSquad]);
+  }, [details, userSquad, catalog]);
 
   const enrichedEOList = useMemo(() => {
     if (!details?.effectiveOwnership) return [];
@@ -6966,6 +6973,9 @@ function LeaguesView({
                       <th>Overlap</th>
                       <th>Template</th>
                       <th>Squad £</th>
+                      <th title="Projected points from the current XI and captain over the next gameweek">xPts 1W</th>
+                      <th title="Projected points from the current XI and captain over the next 3 gameweeks">xPts 3W</th>
+                      <th title="Projected points from the current XI and captain over the next 5 gameweeks">xPts 5W</th>
                       <th>GW Pts</th>
                       <th>Total Pts</th>
                       <th>Action</th>
@@ -7029,7 +7039,7 @@ function LeaguesView({
                           <td>
                             {rival.value != null ? (
                               <span>
-                                <b>£{rival.value.toFixed(1)}</b>
+                                <b>£{leagueSquadValue(rival.value, rival.bank)?.toFixed(1)}</b>
                                 {rival.bank != null && (
                                   <span className="muted-text" style={{ fontSize: "11px", display: "block" }}>
                                     £{rival.bank.toFixed(1)} bank
@@ -7040,6 +7050,15 @@ function LeaguesView({
                               <span className="muted-text">-</span>
                             )}
                           </td>
+                          {([1, 3, 5] as const).map((projectionHorizon) => (
+                            <td key={projectionHorizon} className="expected-pts">
+                              {rival.expectedPoints[projectionHorizon] == null ? (
+                                <span className="muted-text">-</span>
+                              ) : (
+                                <b>{rival.expectedPoints[projectionHorizon].toFixed(1)}</b>
+                              )}
+                            </td>
+                          ))}
                           <td className="gw-pts"><b>{rival.event_total}</b></td>
                           <td className="total-pts"><b>{rival.total}</b></td>
                           <td>
@@ -7249,7 +7268,7 @@ function LeaguesView({
                   <>
                     <div>
                       <small>Squad Value</small>
-                      <b>£{inspectingRival.value.toFixed(1)}</b>
+                      <b>£{leagueSquadValue(inspectingRival.value, inspectingRival.bank)?.toFixed(1)}</b>
                       {inspectingRival.bank != null && (
                         <small style={{ display: "block" }}>£{inspectingRival.bank.toFixed(1)} bank</small>
                       )}
