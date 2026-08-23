@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { createRoot } from "react-dom/client";
 import { compareSortValues, nextSortDirection, type SortDirection, type SortValue } from "./table-sorting";
+import { deriveRecommendationSafety, type RecommendationSafety } from "./decision-safety";
 import {
   bestXI,
   benchOrder,
@@ -29,7 +30,6 @@ import {
   resolvePlanningMode,
   resolveSquadSaveTarget,
   squadIds,
-  transferDecisionFromRanked,
   transfers,
   validateInitialSquad,
   validateSquad,
@@ -98,6 +98,7 @@ import {
   type ForecastSummary,
   fetchBacktest,
   fetchDecisionHistory,
+  evaluatePendingDecisionHistory,
   createPlanRecommendation,
   recordRecommendationDecision,
   type CanonicalRecommendation,
@@ -632,6 +633,7 @@ function ForecastReadinessPanel({ system, forecast, requestedHorizon }: { system
       <span><small>Next refresh</small><b>{system?.ingestIntervalHours === 0 ? "Disabled" : formatOperationalTime(system?.nextIngestAt)}</b></span>
     </div>
     {forecast && <code title={forecast.id}>Run {forecast.id.slice(0, 8)} · {forecast.modelVersion}</code>}
+    {readiness.recommendedActions.length > 0 && <details className="forecast-repair-actions"><summary>How to improve these inputs</summary>{readiness.recommendedActions.map(action => <p key={action}>{action}</p>)}</details>}
   </section>;
 }
 
@@ -823,6 +825,7 @@ function App() {
   const [forecastSummary, setForecastSummary] = useState<ForecastSummary | null>(null);
   const [canonicalRecommendation, setCanonicalRecommendation] = useState<CanonicalRecommendation | null>(null);
   const [canonicalRecommendationLoading, setCanonicalRecommendationLoading] = useState(false);
+  const [recommendationAssumptions, setRecommendationAssumptions] = useState({ freeTransfersConfirmed: false, exactSellingPrices: false });
   const [catalogMode, setCatalogMode] = useState<
     "loading" | "cached" | "cached-offline" | "live" | "demo-live" | "demo-conflict" | "demo-offline"
   >(() => initialCatalog ? "cached" : "loading");
@@ -975,6 +978,7 @@ function App() {
     snapshotMetadata?: { officialSnapshotId: string; snapshotSeason: string; officialPlayerCount: number; managerAccountId: string } | null;
     planBank?: number | null;
     planFreeTransfers?: number | null;
+    recommendationAssumptions?: { freeTransfersConfirmed: boolean; exactSellingPrices: boolean };
   } | null>(null);
 
   const isMetadataLoaded = Boolean(catalog.length > 0 || snapshotMeta != null);
@@ -1006,7 +1010,9 @@ function App() {
   useEffect(() => { planningModeRef.current = planningMode; }, [planningMode]);
 
   const effectiveBank = draftMode ? initialSquadBank(squad) : manager.bank;
-  const xi = bestXI(horizon, squad);
+  // Transfers use the selected multi-GW horizon; executable lineup and
+  // captaincy decisions always belong to the immediate gameweek.
+  const xi = bestXI(1, squad);
   const topTransfers = useMemo(
     () =>
       draftMode
@@ -1079,6 +1085,18 @@ function App() {
       }
     }
   }, [profileHydrated, draftMode, currentFingerprint]);
+  const canonicalPrimary = useMemo(
+    () => canonicalRecommendation?.candidates.find(candidate => candidate.id === canonicalRecommendation.primaryCandidateId) || null,
+    [canonicalRecommendation],
+  );
+  const forecastReadiness = useMemo(
+    () => deriveForecastReadiness(systemStatus, forecastSummary),
+    [systemStatus, forecastSummary],
+  );
+  const recommendationSafety = useMemo(
+    () => deriveRecommendationSafety(forecastReadiness.state, canonicalRecommendation?.assumptions || recommendationAssumptions, canonicalPrimary?.probabilityBeatsRoll ?? null),
+    [forecastReadiness.state, canonicalRecommendation, recommendationAssumptions, canonicalPrimary],
+  );
   const decision = useMemo(
     () =>
       draftMode
@@ -1091,12 +1109,18 @@ function App() {
             hitCost: 0,
             freeTransfers: 0,
           }
-        : transferDecisionFromRanked(
-            horizon,
-            manager.freeTransfers,
-            topTransfers,
-          ),
-    [draftMode, draftPlan, horizon, topTransfers, manager.freeTransfers],
+        : {
+            transfer: null,
+            roll: !recommendationSafety.actionable || canonicalPrimary?.action !== 'TRANSFER',
+            reason: canonicalPrimary?.action === 'TRANSFER'
+              ? `Stored optimizer found a ${canonicalPrimary.netExpectedGain.toFixed(1)}-point net advantage.`
+              : canonicalPrimary?.action === 'ROLL'
+                ? 'The stored optimizer prefers rolling the transfer.'
+                : 'A safe stored recommendation is not yet available.',
+            hitCost: canonicalPrimary?.hitCost ?? 0,
+            freeTransfers: manager.freeTransfers,
+          },
+    [draftMode, draftPlan, canonicalPrimary, manager.freeTransfers, recommendationSafety.actionable],
   );
 
   const chipImpacts = useMemo(
@@ -1115,10 +1139,15 @@ function App() {
       ),
     [squad, horizon, manager, activeChip],
   );
-  const weakest = decision.transfer;
+  const weakest = draftMode ? decision.transfer : null;
   const captain = [...xi].sort(
-    (a, b) => horizonProjection(b, horizon) - horizonProjection(a, horizon),
+    (a, b) => horizonProjection(b, 1) - horizonProjection(a, 1),
   )[0];
+  const canonicalPreferredTransfer = useMemo(() => {
+    if (!recommendationSafety.actionable || canonicalPrimary?.action !== 'TRANSFER' || canonicalPrimary.apiMoves.length !== 1) return null;
+    const move = canonicalPrimary.apiMoves[0];
+    return topTransfers.find(transfer => transfer.out.id === move.outId && transfer.in.id === move.inId) || null;
+  }, [recommendationSafety.actionable, canonicalPrimary, topTransfers]);
   activeManagerSettings = { ...manager, bank: effectiveBank };
   activeDraftMode = draftMode;
   activeLockedIds = lockedIds;
@@ -1238,12 +1267,13 @@ function App() {
   }, [profileHydrated, stagedSignalReviews]);
 
   useEffect(() => {
-    getUserProfile().then(({ account, selectedIds: serverIds, preferences, planId, parentPlanId, sellingPrices, snapshotMetadata }) => {
+    getUserProfile().then(({ account, selectedIds: serverIds, preferences, planId, parentPlanId, sellingPrices, snapshotMetadata, recommendationAssumptions: hydratedAssumptions }) => {
       const prefs = preferences;
       if (account) setFplAccount(account);
       setActivePlanId(planId || null);
       setActivePlanParentId(parentPlanId || null);
       setOfficialSellingPrices(sellingPrices || {});
+      setRecommendationAssumptions(hydratedAssumptions || { freeTransfersConfirmed: false, exactSellingPrices: false });
       setSnapshotMeta(snapshotMetadata || null);
 
       const storedActivationAccountId = prefs?.seasonModeManagerAccountId || null;
@@ -1332,6 +1362,8 @@ function App() {
             gw: currentGameweek || 1,
             bank: effectiveBank,
             ft: draftMode ? 5 : manager.freeTransfers,
+            recommendation: canonicalRecommendation?.id || null,
+            recommendationActionable: recommendationSafety.actionable,
             squad: squad
               .map((p): [number, number, number | null] => [p.id, +p.price.toFixed(1), p.sellingPrice ?? null])
               .sort((a, b) => a[0] - b[0]),
@@ -1352,7 +1384,7 @@ function App() {
               .join(";"),
           })
         : "",
-    [submittedQuestion, horizon, currentGameweek, effectiveBank, draftMode, manager, squad, catalog],
+    [submittedQuestion, horizon, currentGameweek, effectiveBank, draftMode, manager, squad, catalog, canonicalRecommendation?.id, recommendationSafety.actionable],
   );
   const lastAskSignatureRef = useRef("");
 
@@ -1383,6 +1415,9 @@ function App() {
         freeTransfers: draftMode ? 5 : manager.freeTransfers,
         currentGameweek: currentGameweek || 1,
       }),
+      {},
+      canonicalPreferredTransfer,
+      false,
     )
       .then((result) => {
         if (active) setReview(result);
@@ -1399,8 +1434,8 @@ function App() {
         catalog,
         startingXI: xi,
         captain,
-        transfers: topTransfers,
-        decision,
+        transfers: canonicalPreferredTransfer ? [canonicalPreferredTransfer] : [],
+        decision: canonicalPreferredTransfer ? { ...decision, roll: false, transfer: canonicalPreferredTransfer } : decision,
         bank: effectiveBank,
         freeTransfers: draftMode ? 5 : manager.freeTransfers,
         currentGameweek: currentGameweek || 1,
@@ -1552,6 +1587,12 @@ function App() {
   };
   const applyCanonicalCandidate = async (candidate: CanonicalRecommendation['candidates'][number]) => {
     if (!canonicalRecommendation || !activePlanId) return;
+    if (!recommendationSafety.actionable) { setToast({ message: recommendationSafety.reasons.join(' '), tone: 'warning' }); return; }
+    if (candidate.action === 'ROLL') {
+      await recordRecommendationDecision({ recommendationSetId: canonicalRecommendation.id, candidateId: candidate.id, decision: 'ACCEPTED', selectedPlanId: activePlanId, reason: 'Roll decision recorded before deadline' });
+      setToast({ message: 'Roll decision recorded for prospective evaluation.', tone: 'success' });
+      return;
+    }
     if (candidate.action === 'CHIP') {
       await recordRecommendationDecision({ recommendationSetId: canonicalRecommendation.id, candidateId: candidate.id, decision: 'ACCEPTED', selectedPlanId: activePlanId, reason: 'Chip plan accepted for manual execution in official FPL' });
       setToast({ message: 'Chip decision recorded. Activate the chip manually in official FPL.', tone: "success" });
@@ -1573,6 +1614,14 @@ function App() {
     await recordRecommendationDecision({ recommendationSetId: canonicalRecommendation.id, candidateId: candidate.id, decision, reason: 'Recorded from the recommendation surface' });
     setToast({ message: `${decision === 'REJECTED' ? 'Rejected' : 'Ignored'} recommendation recorded in Review.`, tone: "success" });
   };
+  const autoRecommendationKeyRef = useRef('');
+  useEffect(() => {
+    if (draftMode || !activePlanId || !forecastSummary?.id || canonicalRecommendationLoading) return;
+    const key = [activePlanId, forecastSummary.id, horizon, recommendationAssumptions.freeTransfersConfirmed, recommendationAssumptions.exactSellingPrices].join(':');
+    if (autoRecommendationKeyRef.current === key) return;
+    autoRecommendationKeyRef.current = key;
+    void generateCanonicalRecommendation();
+  }, [draftMode, activePlanId, forecastSummary?.id, horizon, recommendationAssumptions.freeTransfersConfirmed, recommendationAssumptions.exactSellingPrices]);
   const requestTransfer = (outId: number, inId: number) => {
     const out = squad.find((p) => p.id === outId);
     const incoming = catalog.find((p) => p.id === inId);
@@ -1727,7 +1776,14 @@ function App() {
   const saveManager = (next: ManagerSettings) => {
     const applied = fplAccount ? { ...next, bank: manager.bank } : next;
     setManager(applied);
-    if (fplAccount) void saveManagerAssumptions(fplAccount.teamId, { freeTransfers: applied.freeTransfers });
+    if (fplAccount) void saveManagerAssumptions(fplAccount.teamId, { freeTransfers: applied.freeTransfers }).then(result => {
+      if (!result.ok) { setToast({ message: 'Free-transfer confirmation could not be saved.', tone: 'error' }); return; }
+      if (result.activePlan?.id) {
+        setActivePlanId(result.activePlan.id);
+        setActivePlanParentId(result.activePlan.parentPlanId || null);
+      }
+      setRecommendationAssumptions(current => ({ freeTransfersConfirmed: true, exactSellingPrices: result.exactSellingPrices ?? current.exactSellingPrices }));
+    });
     else void saveUserPreferences(applied);
     setSettingsOpen(false);
   };
@@ -1970,6 +2026,7 @@ function App() {
           snapshotMetadata: prof.snapshotMetadata,
           planBank: res.planBank,
           planFreeTransfers: res.planFreeTransfers,
+          recommendationAssumptions: res.recommendationAssumptions,
         });
       } else {
         if (prof.snapshotMetadata) {
@@ -1978,6 +2035,7 @@ function App() {
           setSeasonModeSeason(prof.snapshotMetadata.snapshotSeason);
         }
         setFplAccount(res.account);
+        setRecommendationAssumptions(res.recommendationAssumptions);
         setActivePlanId(res.planId || null);
         setActivePlanParentId(res.parentPlanId || null);
         setOfficialSellingPrices(res.sellingPrices);
@@ -2104,6 +2162,7 @@ function App() {
           snapshotMetadata: prof.snapshotMetadata,
           planBank: res.planBank,
           planFreeTransfers: res.planFreeTransfers,
+          recommendationAssumptions: res.recommendationAssumptions,
         });
       } else {
         if (prof.snapshotMetadata) {
@@ -2112,6 +2171,7 @@ function App() {
           setSeasonModeSeason(prof.snapshotMetadata.snapshotSeason);
         }
         setFplAccount(res.account);
+        setRecommendationAssumptions(res.recommendationAssumptions);
         setActivePlanId(res.planId || null);
         setActivePlanParentId(res.parentPlanId || null);
         setOfficialSellingPrices(res.sellingPrices);
@@ -2187,8 +2247,8 @@ function App() {
             >
               <Icon size={17} />
               <span className="nav-label">{label}</span>
-              {label === "Transfers" && topTransfers.length > 0 && (
-                <span className="nav-badge">{topTransfers.length}</span>
+              {label === "Transfers" && canonicalPrimary?.action === 'TRANSFER' && (
+                <span className="nav-badge">{canonicalPrimary.apiMoves.length}</span>
               )}
               {label === "Signals" && pendingSignalCount > 0 && (
                 <span className="nav-badge" aria-label={`${pendingSignalCount} pending signals`}>
@@ -2245,9 +2305,11 @@ function App() {
                   ? draftPlan
                     ? "A coordinated GW1 restructure improves this draft."
                     : "Your locked-core draft is optimised within the £100m cap."
-                  : decision.roll
-                    ? "Your current plan looks strong. Rolling is the best move."
-                    : "One move leads your plan this week."
+                  : !recommendationSafety.actionable
+                    ? "Confirm manager assumptions and repair degraded inputs before acting on projections."
+                    : decision.roll
+                      ? "Your current plan looks strong. Rolling is the best move."
+                      : "One stored, uncertainty-adjusted plan leads this week."
                 : draftMode
                   ? "Build freely before the GW1 deadline; no transfer hits apply."
                   : "Plan with projections, then make the final change on the official FPL site."}
@@ -2289,6 +2351,7 @@ function App() {
                   if (!trans) return;
                   if (trans.snapshotMetadata) setSnapshotMeta(trans.snapshotMetadata);
                   if (trans.account) setFplAccount(trans.account);
+                  if (trans.recommendationAssumptions) setRecommendationAssumptions(trans.recommendationAssumptions);
                   const activeAccId = trans.account?.managerAccountId || trans.account?.id || trans.snapshotMetadata?.managerAccountId || null;
                   setSeasonModeManagerAccountId(activeAccId);
                   setSeasonModeSeason(currentSeason);
@@ -2469,6 +2532,12 @@ function App() {
             unreadSignalCounts={unreadSignalCounts}
             playerSignals={playerSignals}
             onOpenSignals={() => setTab("Signals")}
+            canonicalRecommendation={canonicalRecommendation}
+            canonicalLoading={canonicalRecommendationLoading}
+            recommendationSafety={recommendationSafety}
+            catalog={catalog}
+            onApplyCanonical={applyCanonicalCandidate}
+            onOpenSettings={() => setSettingsOpen(true)}
           />
         ) : tab === "Leagues" ? (
           <LeaguesView
@@ -2510,7 +2579,7 @@ function App() {
           />
         ) : tab === "Transfers" ? (
           <TransfersV2
-            data={topTransfers}
+            data={[]}
             horizon={horizon}
             onWhy={setExplanationTransfer}
             onApply={requestTransfer}
@@ -2525,6 +2594,7 @@ function App() {
             onGenerateCanonical={generateCanonicalRecommendation}
             onApplyCanonical={applyCanonicalCandidate}
             onDismissCanonical={dismissCanonicalCandidate}
+            recommendationSafety={recommendationSafety}
           />
         ) : null}
       </main>
@@ -4450,7 +4520,7 @@ function ReviewView() {
   const [error, setError] = useState<string | null>(null);
   useEffect(() => {
     let active = true;
-    Promise.all([fetchBacktest(), fetchDecisionHistory()]).then(([nextBacktest, nextDecisions]) => {
+    Promise.all([fetchBacktest(), evaluatePendingDecisionHistory().then(() => fetchDecisionHistory())]).then(([nextBacktest, nextDecisions]) => {
       if (active) { setBacktest(nextBacktest); setDecisions(nextDecisions); }
     }).catch(reason => { if (active) setError(reason instanceof Error ? reason.message : 'Review data unavailable'); });
     return () => { active = false; };
@@ -4461,7 +4531,11 @@ function ReviewView() {
       {error && <div className="panel"><p className="muted">{error}</p></div>}
       {backtest && <div className="panel">
         <div className="panel-head"><div><h2>Backtest status</h2><p>{backtest.observationCount ? `${backtest.observationCount} eligible pre-deadline observations` : 'Insufficient sample: no completed eligible forecasts yet.'}</p></div><span className={`pill ${backtest.status === 'CALIBRATED' ? 'green' : 'amber'}`}>{backtest.status === 'CALIBRATED' ? 'CALIBRATED' : 'UNCALIBRATED'}</span></div>
-        {backtest.models?.map((model: any) => <div className="review-strip" key={model.modelVersion}><span><b>Model</b>{model.modelVersion}</span><span><b>Sample</b>{model.observationCount}</span><span><b>Training cutoff</b>{model.trainingCutoff || '—'}</span><span><b>MAE</b>{Number(model.summary?.mae || 0).toFixed(2)}</span><span><b>Coverage</b>{Math.round(Number(model.summary?.intervalCoverage || 0) * 100)}%</span></div>)}
+        {backtest.models?.map((model: any) => <div key={model.modelVersion}>
+          <div className="review-strip"><span><b>Model</b>{model.modelVersion}</span><span><b>Sample</b>{model.observationCount}</span><span><b>Training cutoff</b>{model.trainingCutoff || '—'}</span><span><b>MAE</b>{Number(model.summary?.mae || 0).toFixed(2)}</span><span><b>Rank correlation</b>{model.summary?.rankCorrelation == null ? '—' : Number(model.summary.rankCorrelation).toFixed(3)}</span></div>
+          {model.baselines?.map((baseline: any) => <div className="review-strip baseline-strip" key={baseline.name}><span><b>Baseline</b>{String(baseline.name).replace('FPL_', '').replaceAll('_', ' ')}</span><span><b>Sample</b>{baseline.sampleSize}</span><span><b>MAE</b>{Number(baseline.mae || 0).toFixed(2)}</span><span><b>RMSE</b>{Number(baseline.rmse || 0).toFixed(2)}</span><span><b>Rank correlation</b>{baseline.rankCorrelation == null ? '—' : Number(baseline.rankCorrelation).toFixed(3)}</span></div>)}
+          {model.gameweeks?.length > 0 && <details className="audit-info-details"><summary className="audit-info-summary">Gameweek-by-gameweek comparison</summary><div className="audit-info-body">{model.gameweeks.map((gameweek: any) => <p key={gameweek.gameweekId}>{gameweek.gameweekId}: model MAE {Number(gameweek.model?.mae || 0).toFixed(2)} across {gameweek.sampleSize} forecasts · EP_NEXT MAE {Number(gameweek.baselines?.find((baseline: any) => baseline.name === 'FPL_EP_NEXT')?.mae || 0).toFixed(2)}</p>)}</div></details>}
+        </div>)}
       </div>}
       <div className="panel">
         <div className="panel-head"><div><h2>Decision history</h2><p>Expected values at decision time versus realized saved-plan outcomes.</p></div><span className="filter-pill">{decisions.length} records</span></div>
@@ -5023,6 +5097,12 @@ function MyTeamV2({
   unreadSignalCounts,
   playerSignals,
   onOpenSignals,
+  canonicalRecommendation,
+  canonicalLoading,
+  recommendationSafety,
+  catalog,
+  onApplyCanonical,
+  onOpenSettings,
 }: {
   squad: Player[];
   xi: Player[];
@@ -5066,9 +5146,21 @@ function MyTeamV2({
   unreadSignalCounts: Record<number, number>;
   playerSignals: PlayerSignal[];
   onOpenSignals: () => void;
+  canonicalRecommendation: CanonicalRecommendation | null;
+  canonicalLoading: boolean;
+  recommendationSafety: RecommendationSafety;
+  catalog: Player[];
+  onApplyCanonical: (candidate: CanonicalRecommendation['candidates'][number]) => void;
+  onOpenSettings: () => void;
 }) {
+  const canonicalPrimary = canonicalRecommendation?.candidates.find(candidate => candidate.id === canonicalRecommendation.primaryCandidateId) || null;
+  const canonicalMoveNames = canonicalPrimary?.apiMoves?.map(move => {
+    const outgoing = catalog.find(player => player.id === move.outId)?.name || `#${move.outId}`;
+    const incoming = catalog.find(player => player.id === move.inId)?.name || `#${move.inId}`;
+    return `${outgoing} → ${incoming}`;
+  }) || [];
   const starters = new Set(xi.map((p) => p.id));
-  const bench = benchOrder(horizon, squad, xi);
+  const bench = benchOrder(1, squad, xi);
   const auditTargetCount = Math.min(
     6,
     squad.filter(
@@ -5086,14 +5178,14 @@ function MyTeamV2({
   const vice = [...xi]
     .filter((p) => p.id !== captain?.id)
     .sort(
-      (a, b) => horizonProjection(b, horizon) - horizonProjection(a, horizon),
+      (a, b) => horizonProjection(b, 1) - horizonProjection(a, 1),
     )[0];
   const issues = draftMode
     ? validateInitialSquad(squad)
     : validateSquad(squad, bank);
   const squadValue = squad.reduce((sum, p) => sum + p.price, 0);
   const totalScore = projectedTeamScore(
-    horizon,
+    1,
     squad,
     captain?.id,
     vice?.id,
@@ -5110,16 +5202,18 @@ function MyTeamV2({
       <section className="panel recommend-card primary-recommend team-verdict">
         <div className="card-top">
           <span className="label">THIS WEEK'S VERDICT</span>
-          <span className={"pill " + (decision.roll ? "green" : "amber")}>
+          <span className={"pill " + (decision.roll && recommendationSafety.actionable ? "green" : "amber")}>
             {draftMode
               ? forecastLoading
                 ? "CALCULATING"
                 : draftPlan
                   ? "DRAFT IMPROVEMENT"
                   : "DRAFT OPTIMISED"
-              : decision.roll
-                ? "ROLL TRANSFER"
-                : "RECOMMENDED MOVE"}
+              : canonicalLoading
+                ? "CALCULATING"
+                : !recommendationSafety.actionable
+                  ? recommendationSafety.confidence === 'PROVISIONAL' ? 'PROVISIONAL' : 'NEEDS CONFIRMATION'
+                  : canonicalPrimary?.action === 'TRANSFER' ? "RECOMMENDED PLAN" : "ROLL TRANSFER"}
           </span>
         </div>
         <h2>
@@ -5129,9 +5223,13 @@ function MyTeamV2({
               : draftPlan
                 ? `Re-optimise ${draftPlan.changes.length} squad places`
                 : "No better £100m structure found"
-            : weakest
-              ? `${weakest.out.name} → ${weakest.in.name}`
-              : "Roll your transfer"}
+            : canonicalLoading
+              ? 'Evaluating the stored roll and transfer alternatives…'
+              : !recommendationSafety.actionable
+                ? 'Actionable recommendation paused'
+                : canonicalPrimary?.action === 'TRANSFER'
+                  ? canonicalMoveNames.join(' · ')
+                  : canonicalPrimary?.action === 'ROLL' ? "Roll your transfer" : 'Recommendation unavailable'}
         </h2>
         <p className="recommend-gain">
           {draftMode
@@ -5140,9 +5238,11 @@ function MyTeamV2({
               : draftPlan
                 ? `+${draftPlan.gain} lineup-aware objective points over ${horizon} GWs`
                 : "The whole-squad search preserved your locks and respected the hard budget cap."
-            : weakest
-              ? `+${weakest.net} projected points over ${horizon} GWs`
-              : `No direct swap clears the ${TRANSFER_GAIN_THRESHOLDS[(horizon >= 5 ? 5 : horizon >= 3 ? 3 : 1) as 1 | 3 | 5].toFixed(1)}-point threshold.`}
+            : !recommendationSafety.actionable
+              ? recommendationSafety.reasons.join(' ')
+              : canonicalPrimary?.action === 'TRANSFER'
+                ? `+${canonicalPrimary.netExpectedGain.toFixed(2)} net expected points over ${horizon} GWs · ${canonicalPrimary.probabilityBeatsRoll == null ? 'probability unavailable' : `${Math.round(canonicalPrimary.probabilityBeatsRoll * 100)}% chance of beating roll`}`
+                : canonicalPrimary?.action === 'ROLL' ? 'No exact, uncertainty-adjusted plan clears the 60% decision rule.' : 'No safe recommendation is available.'}
         </p>
         <div className="recommend-meta">
           <span>
@@ -5151,16 +5251,29 @@ function MyTeamV2({
               : `${freeTransfers} free transfer${freeTransfers === 1 ? "" : "s"}`}
           </span>
           <span>£{bank.toFixed(1)}m in bank</span>
-          <span>{horizon}-GW horizon</span>
+          <span>{horizon}-GW transfer horizon</span>
+          {!draftMode && <span>Confidence: {recommendationSafety.confidence}</span>}
         </div>
-        {weakest && !draftMode && (
+        {canonicalPrimary?.action === 'TRANSFER' && !draftMode && recommendationSafety.actionable && (
           <div className="recommend-actions">
-            <button className="dark-btn" onClick={() => onWhy(weakest)}>
-              Why this move? <ArrowRight size={14} />
+            <button className="dark-btn" onClick={() => onApplyCanonical(canonicalPrimary)}>
+              Apply local plan <ArrowRight size={14} />
             </button>
             <button className="ghost-btn" onClick={() => setTab("Transfers")}>
-              Compare transfers
+              Review evidence
             </button>
+          </div>
+        )}
+        {canonicalPrimary?.action === 'ROLL' && !draftMode && recommendationSafety.actionable && (
+          <div className="recommend-actions">
+            <button className="dark-btn" onClick={() => onApplyCanonical(canonicalPrimary)}>Record roll decision</button>
+            <button className="ghost-btn" onClick={() => setTab("Transfers")}>Review alternatives</button>
+          </div>
+        )}
+        {!draftMode && !recommendationSafety.actionable && (
+          <div className="recommend-actions">
+            <button className="dark-btn" onClick={onOpenSettings}>Confirm free transfers</button>
+            <button className="ghost-btn" onClick={() => setTab("Admin")}>Repair forecast inputs</button>
           </div>
         )}
         {draftMode && draftPlan && (
@@ -5221,8 +5334,8 @@ function MyTeamV2({
         </div>
         <div className="recommend-card">
           <div className="card-top">
-            <span className="label">STARTING XI PROJECTION</span>
-            <span className="pill green">{horizon} GW Horizon</span>
+            <span className="label">NEXT GAMEWEEK XI PROJECTION</span>
+            <span className="pill green">1 GW</span>
           </div>
           <div className="big-number">
             {totalScore.toFixed(1)} <small>pts</small>
@@ -5240,7 +5353,7 @@ function MyTeamV2({
           <div className="panel-head">
             <div>
               <h2>Recommended XI & Bench</h2>
-              <p>Model-selected lineup for the next {horizon} GW(s)</p>
+              <p>Model-selected executable lineup for the next gameweek</p>
             </div>
             <button className="text-btn" onClick={onEdit}>
               Edit planned squad <ArrowRight size={14} />
@@ -5272,7 +5385,7 @@ function MyTeamV2({
                         </small>
                       </span>
                       <strong>
-                        {horizonProjection(p, horizon).toFixed(1)}
+                        {horizonProjection(p, 1).toFixed(1)}
                       </strong>
                     </button>
                   ))}
@@ -5301,7 +5414,7 @@ function MyTeamV2({
                     {p.club} · £{p.price.toFixed(1)}m
                   </small>
                 </span>
-                <strong>{horizonProjection(p, horizon).toFixed(1)}</strong>
+                <strong>{horizonProjection(p, 1).toFixed(1)}</strong>
               </button>
             ))}
           </div>
@@ -5322,14 +5435,14 @@ function MyTeamV2({
                 <small>
                   Captain ·{" "}
                   {captain
-                    ? (horizonProjection(captain, horizon) * 2).toFixed(1)
+                    ? (horizonProjection(captain, 1) * 2).toFixed(1)
                     : "0"}{" "}
                   pts (2× multiplier)
                 </small>
                 {captain && leagueCoverage && leagueCoverage[String(captain.id)] != null && (
                   <small className="captain-diff">
                     Rival EO {Math.round(Number(leagueCoverage[String(captain.id)]))}%
-                    {leagueName ? ` in ${leagueName}` : ""} · captaining adds +{(horizonProjection(captain, horizon) * (2 - Number(leagueCoverage[String(captain.id)]) / 100)).toFixed(1)} differential vs field
+                    {leagueName ? ` in ${leagueName}` : ""} · captaining adds +{(horizonProjection(captain, 1) * (2 - Number(leagueCoverage[String(captain.id)]) / 100)).toFixed(1)} differential vs field
                   </small>
                 )}
               </div>
@@ -5341,7 +5454,7 @@ function MyTeamV2({
                 <b>{vice?.name}</b>
                 <small>
                   Vice-captain ·{" "}
-                  {vice ? horizonProjection(vice, horizon).toFixed(1) : "0"}{" "}
+                  {vice ? horizonProjection(vice, 1).toFixed(1) : "0"}{" "}
                   base pts
                 </small>
               </div>
@@ -7711,7 +7824,7 @@ function DashboardV2({
           <div className="panel-head">
             <div>
               <h2>Captain</h2>
-              <p>Best projected captain for {horizon} GW horizon</p>
+              <p>Best projected captain for the next gameweek</p>
             </div>
             <Trophy className="gold" size={20} />
           </div>
@@ -7721,7 +7834,7 @@ function DashboardV2({
               <b>{captain?.name}</b>
               <small>
                 {captain
-                  ? `${horizonProjection(captain, horizon).toFixed(1)} base pts · 2× captain multiplier`
+                  ? `${horizonProjection(captain, 1).toFixed(1)} base pts · 2× captain multiplier`
                   : ""}
               </small>
             </div>
@@ -8079,6 +8192,7 @@ function TransfersV2({
   onGenerateCanonical,
   onApplyCanonical,
   onDismissCanonical,
+  recommendationSafety,
 }: {
   data: Transfer[];
   horizon: number;
@@ -8095,6 +8209,7 @@ function TransfersV2({
   onGenerateCanonical?: (chip?: 'TRIPLE_CAPTAIN' | 'BENCH_BOOST' | 'FREE_HIT' | 'WILDCARD' | null) => void;
   onApplyCanonical?: (candidate: CanonicalRecommendation['candidates'][number]) => void;
   onDismissCanonical?: (candidate: CanonicalRecommendation['candidates'][number], decision: 'REJECTED' | 'IGNORED') => void;
+  recommendationSafety: RecommendationSafety;
 }) {
   const [limit, setLimit] = useState(8);
   const visibleData = data.slice(0, limit);
@@ -8148,6 +8263,7 @@ function TransfersV2({
         <div className="recommend-actions">
           {([['TRIPLE_CAPTAIN','TC'],['BENCH_BOOST','BB'],['FREE_HIT','FH'],['WILDCARD','WC']] as const).map(([chip,label]) => <button className="ghost-btn" disabled={canonicalLoading} onClick={() => onGenerateCanonical?.(chip)} key={chip}>{label} counterfactual</button>)}
         </div>
+        {!recommendationSafety.actionable && <div className="evidence-warning" role="status"><b>Actionable advice paused.</b> {recommendationSafety.reasons.join(' ')}</div>}
         {canonicalRecommendation && <>
           <p className="muted">Forecast {canonicalRecommendation.forecastRunId.slice(0, 8)} · status {canonicalRecommendation.status} · {canonicalRecommendation.cacheStatus === 'HIT' ? 'reused stored result' : 'new result stored'} · ordering saved for reproducibility{canonicalRecommendation.league?.leagueName ? ` · vs ${canonicalRecommendation.league.leagueName}` : ''}</p>
           {canonicalRecommendation.candidates.map(candidate => {
@@ -8161,7 +8277,7 @@ function TransfersV2({
               )}
               {candidate.p10Points != null && candidate.p90Points != null && <small>Outcome range under current assumptions: {Number(candidate.p10Points).toFixed(1)}–{Number(candidate.p90Points).toFixed(1)} pts (p10–p90)</small>}
               <div className="recommend-actions">
-                {(candidate.apiMoves?.length || candidate.action === 'CHIP') ? <button className="dark-btn" onClick={() => onApplyCanonical?.(candidate)}>{candidate.action === 'CHIP' ? 'Record chip plan' : 'Apply local plan'}</button> : null}
+                {(candidate.apiMoves?.length || candidate.action === 'CHIP' || candidate.action === 'ROLL') ? <button className="dark-btn" disabled={!recommendationSafety.actionable} onClick={() => onApplyCanonical?.(candidate)}>{candidate.action === 'CHIP' ? 'Record chip plan' : candidate.action === 'ROLL' ? 'Record roll' : 'Apply local plan'}</button> : null}
                 <button className="ghost-btn" onClick={() => onDismissCanonical?.(candidate, 'REJECTED')}>Reject</button><button className="ghost-btn" onClick={() => onDismissCanonical?.(candidate, 'IGNORED')}>Ignore</button>
               </div>
             </article>;
@@ -8171,10 +8287,9 @@ function TransfersV2({
       <div className="page-intro">
         <div>
           <p className="eyebrow">TRANSFER PLAN</p>
-          <h2>Moves that improve your squad</h2>
+          <h2>Direct-swap explorer</h2>
           <p className="muted">
-            Ranked by projected net gain over {horizon} GWs. Review a move
-            before saving it to your local plan.
+            User-directed comparisons only. The stored optimizer above is the single recommendation source.
           </p>
         </div>
         <div className="filter-pill">
@@ -8322,15 +8437,9 @@ function TransfersV2({
         )}
         {data.length === 0 && (
           <div className="empty">
-            <b>No qualifying one-player swaps.</b>
+            <b>No exploratory swap selected.</b>
             <p>
-              No affordable same-position replacement clears the{" "}
-              {TRANSFER_GAIN_THRESHOLDS[
-                (horizon >= 5 ? 5 : horizon >= 3 ? 3 : 1) as 1 | 3 | 5
-              ].toFixed(1)}
-              -point threshold over {horizon} GWs with £
-              {manager.bank.toFixed(1)}m in the bank. A multi-transfer funding
-              route may still improve the squad.
+              Select a player from My Team to compare same-position replacements. Prescriptive roll and transfer advice comes only from the stored probabilistic plan above.
             </p>
           </div>
         )}
@@ -9343,7 +9452,7 @@ function DecisionSummary({
   score: number;
   tab: string;
 }) {
-  const captainBonus = captain ? horizonProjection(captain, horizon) : 0;
+  const captainBonus = captain ? horizonProjection(captain, 1) : 0;
   return (
     <div
       className={"decision-summary " + (tab === "Ask" ? "summary-hidden" : "")}

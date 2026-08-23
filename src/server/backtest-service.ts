@@ -1,6 +1,6 @@
 import { createHash } from 'node:crypto'
 import { canonicalJson } from '../../scripts/feed-run.mjs'
-import { evaluateBacktestMetrics, summarizeBacktestRows, type BacktestMetric, type BacktestRow } from '../backtest.ts'
+import { evaluateBacktestMetrics, evaluateBaselineMetrics, summarizeBacktestRows, type BacktestMetric, type BacktestRow, type BaselineMetric } from '../backtest.ts'
 
 type Database = { query(sql: string, params?: unknown[]): Promise<{ rows: any[] }> }
 
@@ -16,7 +16,7 @@ export type BacktestResult = {
   observationCount: number
   status: 'UNCALIBRATED' | 'CALIBRATED'
   trainingCutoff: string | null
-  models: Array<{ modelVersion: string; calibrationSetId: string | null; status: 'UNCALIBRATED' | 'CALIBRATED'; trainingCutoff: string | null; observationCount: number; metrics: BacktestMetric[]; summary: BacktestMetric }>
+  models: Array<{ modelVersion: string; calibrationSetId: string | null; status: 'UNCALIBRATED' | 'CALIBRATED'; trainingCutoff: string | null; observationCount: number; metrics: BacktestMetric[]; summary: BacktestMetric; baselines: BaselineMetric[]; gameweeks: Array<{ gameweekId: string; sampleSize: number; model: BacktestMetric; baselines: BaselineMetric[] }> }>
 }
 
 const number = (value: unknown) => Number(value)
@@ -33,7 +33,7 @@ export async function eligibleBacktestObservations(db: Database, modelVersion?: 
       run."id" AS forecast_run_id, run."model_version", run."created_at", result."gameweek_id",
       forecast."player_id", forecast."fixture_id", forecast."mean_points", forecast."p10_points", forecast."p90_points",
       forecast."minutes_confidence", forecast."strength_method", result."total_points",
-      player_observation."position",
+      player_observation."position", player_observation."ep_next", player_observation."form", player_observation."points_per_game",
       gameweek."fpl_id" - target_gameweek."fpl_id" + 1 AS horizon,
       (SELECT deadline_observation."deadline_at" FROM "GameweekObservation" deadline_observation
         JOIN "FeedRun" deadline_feed ON deadline_feed."id"=deadline_observation."feed_run_id"
@@ -65,6 +65,7 @@ export async function eligibleBacktestObservations(db: Database, modelVersion?: 
     modelVersion: String(row.model_version), forecastRunId: String(row.forecast_run_id), gameweekId: String(row.gameweek_id), deadlineAt: String(row.deadline_at), createdAt: String(row.created_at),
     position: row.position, expectedPoints: number(row.mean_points), actualPoints: number(row.total_points), p10Points: number(row.p10_points), p90Points: number(row.p90_points),
     horizon: Math.max(1, number(row.horizon)), minutesConfidence: String(row.minutes_confidence), strengthMethod: String(row.strength_method),
+    baselines: { FPL_EP_NEXT: number(row.ep_next), FPL_FORM: number(row.form), FPL_POINTS_PER_GAME: number(row.points_per_game) },
   })).sort((left, right) => left.modelVersion.localeCompare(right.modelVersion) || left.gameweekId.localeCompare(right.gameweekId) || left.forecastRunId.localeCompare(right.forecastRunId))
 }
 
@@ -101,7 +102,11 @@ export async function runBacktest(db: Database, options: { modelVersion?: string
     const metrics = evaluateBacktestMetrics(rows)
     const summary = summarizeBacktestRows(rows, { position: 'ALL', horizon: 1, confidenceBand: 'ALL', strengthMethod: 'ALL' })
     const saved = rows.length ? await persistCalibration(db, modelVersion, rows, metrics) : null
-    summaries.push({ modelVersion, calibrationSetId: saved?.id || null, status: saved?.status || 'UNCALIBRATED', trainingCutoff: saved?.cutoff || null, observationCount: rows.length, metrics, summary })
+    const gameweeks = [...new Set(rows.map(row => row.gameweekId))].sort().map(gameweekId => {
+      const gameweekRows = rows.filter(row => row.gameweekId === gameweekId)
+      return { gameweekId, sampleSize: gameweekRows.length, model: summarizeBacktestRows(gameweekRows, { position: 'ALL', horizon: 1, confidenceBand: 'ALL', strengthMethod: 'ALL' }), baselines: evaluateBaselineMetrics(gameweekRows) }
+    })
+    summaries.push({ modelVersion, calibrationSetId: saved?.id || null, status: saved?.status || 'UNCALIBRATED', trainingCutoff: saved?.cutoff || null, observationCount: rows.length, metrics, summary, baselines: evaluateBaselineMetrics(rows), gameweeks })
   }
   return { observationCount: observations.length, status: summaries.some(model => model.status === 'CALIBRATED') ? 'CALIBRATED' : 'UNCALIBRATED', trainingCutoff: observations.map(row => row.deadlineAt).sort().at(-1) || null, models: summaries }
 }

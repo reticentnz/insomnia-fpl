@@ -41,7 +41,12 @@ export function deriveForecastReadiness(system: ForecastStatusInput | null, fore
   const warnings: string[] = []
   if (forecast?.quality && forecast.quality.fallbackFixtureRatio >= .5) warnings.push(`${Math.round(forecast.quality.fallbackFixtureRatio * 100)}% of fixture forecasts use FDR fallback strength.`)
   if (forecast?.quality && forecast.quality.lowMinutesFixtureRatio >= .25) warnings.push(`${Math.round(forecast.quality.lowMinutesFixtureRatio * 100)}% of fixture forecasts have low minutes confidence.`)
-  if (forecast?.quality && forecast.quality.underlyingPlayerRatio === 0) warnings.push('Underlying performance data is missing.')
+  if (forecast?.quality && forecast.quality.underlyingPlayerRatio < .5) warnings.push(`Underlying performance coverage is only ${Math.round(forecast.quality.underlyingPlayerRatio * 100)}%.`)
+  if (forecast?.quality && forecast.quality.marketFixtureRatio < .5) warnings.push(`Market-strength coverage is only ${Math.round(forecast.quality.marketFixtureRatio * 100)}%.`)
+  const recommendedActions: string[] = []
+  if (forecast?.quality && (forecast.quality.fallbackFixtureRatio >= .5 || forecast.quality.marketFixtureRatio < .5)) recommendedActions.push('Run Admin → Sync performance + odds and check the odds feed configuration.')
+  if (forecast?.quality && forecast.quality.underlyingPlayerRatio < .5) recommendedActions.push('Run Admin → Sync performance + odds and review unmatched Understat players.')
+  if (forecast?.quality && forecast.quality.lowMinutesFixtureRatio >= .25) recommendedActions.push('Review current role and availability evidence in Signals.')
   return {
     state,
     ageHours,
@@ -50,5 +55,6 @@ export function deriveForecastReadiness(system: ForecastStatusInput | null, fore
     fixtureCount: forecast?.players.reduce((sum, player) => sum + Number(player.fixtureCount || 0), 0) || 0,
     coveredGameweeks: forecast?.gameweeks.length || 0,
     warnings,
+    recommendedActions,
   }
 }

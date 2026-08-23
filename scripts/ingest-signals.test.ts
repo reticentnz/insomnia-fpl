@@ -4,7 +4,7 @@ import path from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
 import { closeDb, getDb } from './db.mjs'
 import { ingestOfficialFpl } from './ingest-fpl.mjs'
-import { canonicalTeamIdentity, cleanSheetProbabilities, deriveExpectedGoals, eventTeamTotalsUrl, featuredOddsUrl, ingestMarketEvents, ingestUnderlyingRows, loadUnderstatRows, matchUnderlyingPlayer, resolveSignalSeason } from './ingest-signals.mjs'
+import { canonicalTeamIdentity, cleanSheetProbabilities, deriveExpectedGoals, eventTeamTotalsUrl, featuredOddsUrl, ingestMarketEvents, ingestUnderlyingRows, loadUnderstatRows, matchUnderlyingPlayer, redactedProviderUrl, resolveSignalSeason } from './ingest-signals.mjs'
 
 const directories: string[] = []
 const fixtureDirectory = path.resolve('scripts', 'fixtures')
@@ -61,6 +61,12 @@ describe('WP-07 optional source ingestion', () => {
     const eventUrl = new URL(eventTeamTotalsUrl({ eventId: 'event/one', apiKey: 'secret', regions: 'uk' }))
     expect(eventUrl.pathname).toContain('/events/event%2Fone/odds')
     expect(eventUrl.searchParams.get('markets')).toBe('btts,team_totals')
+  })
+
+  it('redacts provider credentials from diagnostic URLs', () => {
+    const value = redactedProviderUrl('https://example.test/odds?apiKey=super-secret&regions=uk')
+    expect(value).not.toContain('super-secret')
+    expect(value).toContain('%5BREDACTED%5D')
   })
 
   it('de-vigs opponent Under 0.5 team totals into clean-sheet probabilities', () => {

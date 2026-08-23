@@ -205,15 +205,23 @@ export function deriveExpectedGoals(probabilities) {
   return { homeExpectedGoals: Number(best.home.toFixed(2)), awayExpectedGoals: Number(best.away.toFixed(2)), derivationMethod: MARKET_XG_METHOD }
 }
 
+export function redactedProviderUrl(value) {
+  try {
+    const url = new URL(String(value))
+    for (const key of ['apiKey', 'api_key', 'key', 'token']) if (url.searchParams.has(key)) url.searchParams.set(key, '[REDACTED]')
+    return url.toString()
+  } catch { return 'provider endpoint' }
+}
+
 async function fetchJson(url, fetchImpl) {
   const response = await fetchImpl(url, { headers })
-  if (!response.ok) throw new Error(`${url} returned HTTP ${response.status}`)
+  if (!response.ok) throw new Error(`${redactedProviderUrl(url)} returned HTTP ${response.status}`)
   return response.json()
 }
 
 async function fetchText(url, fetchImpl) {
   const response = await fetchImpl(url, { headers })
-  if (!response.ok) throw new Error(`${url} returned HTTP ${response.status}`)
+  if (!response.ok) throw new Error(`${redactedProviderUrl(url)} returned HTTP ${response.status}`)
   return response.text()
 }
 

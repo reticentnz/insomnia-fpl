@@ -39,7 +39,7 @@ import { migrateDatabase } from './db-migrate.mjs'
 import { fetchManagerPayload, fetchManagerRankHistory, getCurrentManager, importManagerPayload, linkManagerAccount, unlinkCurrentManager, updateManagerAssumptions } from './manager-service.mjs'
 import { createPlan, getActivePlan, selectPlan } from './plan-service.mjs'
 import { createRecommendationSet } from './recommendation-service.mjs'
-import { evaluateDecision, listDecisions, recordDecision } from './decision-journal-service.mjs'
+import { evaluateDecision, evaluatePendingDecisions, listDecisions, recordDecision } from './decision-journal-service.mjs'
 import { getUserState, updateAiState, updateUserState } from './user-state-service.mjs'
 import { assembleProjectionInputCatalog, projectionCatalogInputVersions } from '../src/server/catalog-service.ts'
 import { runBacktest } from '../src/server/backtest-service.ts'
@@ -1284,11 +1284,12 @@ function compactClientCatalog(catalogue, fixtureHorizon = 5) {
     .flatMap(player => player.fixtures || [])
     .filter(fixture => fixture.gameweekId && fixture.kickoffAt && Date.parse(fixture.kickoffAt) >= asOfMs)
     .sort((left, right) => (left.gameweekFplId || Infinity) - (right.gameweekFplId || Infinity))
-  const currentGameweek = futureFixtures[0]?.gameweekFplId || null
+  const knownGameweeks = (catalogue.players || []).flatMap(player => player.fixtures || []).map(fixture => Number(fixture.gameweekFplId)).filter(Number.isFinite)
+  const currentGameweek = futureFixtures[0]?.gameweekFplId || (knownGameweeks.length ? Math.max(...knownGameweeks) : null)
   const players = (catalogue.players || []).map(item => {
     const official = item.official || {}
     const fixtures = (item.fixtures || [])
-      .filter(fixture => fixture.kickoffAt && Date.parse(fixture.kickoffAt) >= asOfMs)
+      .filter(fixture => fixture.kickoffAt && (Date.parse(fixture.kickoffAt) >= asOfMs || (futureFixtures.length === 0 && Number(fixture.gameweekFplId) === Number(currentGameweek))))
       .sort((left, right) => (left.gameweekFplId || Infinity) - (right.gameweekFplId || Infinity))
       .slice(0, horizon)
       .map(fixture => ({
@@ -2686,6 +2687,16 @@ function startServerOnAvailablePort(targetPort) {
         sendJson(res, 201, { schemaVersion: 1, ...decision })
       } catch (error) {
         sendJson(res, 400, { schemaVersion: 1, error: error instanceof Error ? error.message : 'Decision could not be recorded' })
+      }
+      return
+    }
+
+    if (request === '/api/decisions/evaluate-pending' && req.method === 'POST') {
+      try {
+        const evaluated = await evaluatePendingDecisions(await getDb())
+        sendJson(res, 200, { schemaVersion: 1, evaluatedCount: evaluated.length })
+      } catch (error) {
+        sendJson(res, 400, { schemaVersion: 1, error: error instanceof Error ? error.message : 'Pending decisions could not be evaluated' })
       }
       return
     }

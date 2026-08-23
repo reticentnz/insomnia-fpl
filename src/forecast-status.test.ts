@@ -22,7 +22,9 @@ describe('forecast operational readiness', () => {
     expect(result.state).toBe('DEGRADED')
     expect(result.warnings).toEqual(expect.arrayContaining([
       expect.stringContaining('100% of fixture forecasts use FDR fallback'),
-      expect.stringContaining('Underlying performance data is missing'),
+      expect.stringContaining('Underlying performance coverage is only 0%'),
+      expect.stringContaining('Market-strength coverage is only 0%'),
     ]))
+    expect(result.recommendedActions).toEqual(expect.arrayContaining([expect.stringContaining('Sync performance + odds')]))
   })
 })

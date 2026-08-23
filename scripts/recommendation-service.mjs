@@ -157,12 +157,12 @@ async function forecastPlayers(db, forecastRunId, horizon, { aggregate = true } 
   })
 }
 
-function recommendationSetIdentityQuery() {
+function recommendationSetIdentityQuery(requireVerified = false) {
   return `SELECT "id" FROM "RecommendationSet"
     WHERE "plan_id"=$1 AND "forecast_run_id"=$2 AND "horizon"=$3 AND "max_transfers"=$4
       AND COALESCE("chip", '')=COALESCE($5, '') AND "uncertainty_penalty_rate"=$6 AND "input_hash"=$7
       AND COALESCE("league_id", 0)=COALESCE($8, 0)
-      AND "status" IN ('SUCCEEDED','INSUFFICIENT_DATA')
+      ${requireVerified ? 'AND "free_transfers_confirmed"=1 AND "exact_selling_prices"=1 AND "status"=\'SUCCEEDED\'' : 'AND "free_transfers_confirmed"=$9 AND "exact_selling_prices"=$10 AND "status" IN (\'SUCCEEDED\',\'INSUFFICIENT_DATA\')'}
     ORDER BY datetime("created_at") DESC,"id" DESC LIMIT 1`
 }
 
@@ -176,6 +176,7 @@ export async function planSquad(db, planId, runPlayers) {
   const official = await db.query(`SELECT "player_id", "selling_price_tenths" FROM "OfficialSquadPlayer" WHERE "squad_snapshot_id"=$1`, [rows.rows[0].official_squad_snapshot_id])
   const officialByPlayer = new Map(official.rows.map(row => [String(row.player_id), row.selling_price_tenths === null ? null : Number(row.selling_price_tenths)]))
   const assumptions = await db.query(`SELECT "value_json" FROM "ManagerAssumption" WHERE "manager_account_id"=$1 AND "gameweek_id"=$2 AND "kind"='SELLING_PRICE' ORDER BY "created_at" ASC, "id" ASC`, [rows.rows[0].manager_account_id, rows.rows[0].gameweek_id])
+  const freeTransferAssumption = await db.query(`SELECT 1 FROM "ManagerAssumption" WHERE "manager_account_id"=$1 AND "gameweek_id"=$2 AND "kind"='FREE_TRANSFERS' ORDER BY "created_at" DESC LIMIT 1`, [rows.rows[0].manager_account_id, rows.rows[0].gameweek_id])
   const confirmedSellingByPlayer = new Map()
   for (const row of assumptions.rows) {
     const value = parse(row.value_json)
@@ -191,7 +192,13 @@ export async function planSquad(db, planId, runPlayers) {
       : asNumber(row.planned_purchase_price_tenths)
     return { id: playerId, fplId: forecast.fplId, club: String(forecast.teamId), position: forecast.position, active: forecast.active, purchasePriceTenths: forecast.purchasePriceTenths, sellingPriceTenths, locked: Boolean(row.locked) }
   })
-  return { squad, bankBeforeTenths: asNumber(rows.rows[0].bank_tenths), freeTransfers: Number(rows.rows[0].free_transfers) }
+  return {
+    squad,
+    bankBeforeTenths: asNumber(rows.rows[0].bank_tenths),
+    freeTransfers: Number(rows.rows[0].free_transfers),
+    freeTransfersConfirmed: Boolean(freeTransferAssumption.rows[0]),
+    exactSellingPrices: squad.every(player => player.sellingPriceTenths !== null),
+  }
 }
 
 export async function createRecommendationSet(db, { planId, forecastRunId, horizon = 1, maxTransfers = 5, uncertaintyPenaltyRate = .15, chip = null, league = null, createdAt = new Date().toISOString() }) {
@@ -203,11 +210,13 @@ export async function createRecommendationSet(db, { planId, forecastRunId, horiz
   const resolvedForecastRunId = run.rows[0]?.id
   if (!resolvedForecastRunId) throw new Error(`No succeeded forecast run is available`)
   const leagueId = league?.leagueId ?? null
-  const cached = await db.query(recommendationSetIdentityQuery(), [planId, resolvedForecastRunId, horizon, maxTransfers, chip, uncertaintyPenaltyRate, run.rows[0].input_hash, leagueId])
-  if (cached.rows[0]) return { ...(await getRecommendationSet(db, cached.rows[0].id)), cacheStatus: 'HIT' }
+  const verifiedCached = await db.query(recommendationSetIdentityQuery(true), [planId, resolvedForecastRunId, horizon, maxTransfers, chip, uncertaintyPenaltyRate, run.rows[0].input_hash, leagueId])
+  if (verifiedCached.rows[0]) return { ...(await getRecommendationSet(db, verifiedCached.rows[0].id)), cacheStatus: 'HIT' }
   const players = await forecastPlayers(db, resolvedForecastRunId, horizon)
   const fixtureForecasts = chip ? await forecastPlayers(db, resolvedForecastRunId, horizon, { aggregate: false }) : null
   const plan = await planSquad(db, planId, players)
+  const cached = await db.query(recommendationSetIdentityQuery(), [planId, resolvedForecastRunId, horizon, maxTransfers, chip, uncertaintyPenaltyRate, run.rows[0].input_hash, leagueId, plan.freeTransfersConfirmed ? 1 : 0, plan.exactSellingPrices ? 1 : 0])
+  if (cached.rows[0]) return { ...(await getRecommendationSet(db, cached.rows[0].id)), cacheStatus: 'HIT' }
   const id = randomUUID()
   const common = { squad: plan.squad, candidates: players.map(row => ({ id: row.playerId, fplId: row.fplId, club: String(row.teamId), position: row.position, active: row.active, purchasePriceTenths: row.purchasePriceTenths, sellingPriceTenths: row.purchasePriceTenths })), forecasts: players, bankBeforeTenths: plan.bankBeforeTenths, freeTransfers: plan.freeTransfers, uncertaintyPenaltyRate, maxTransfers }
   if (league?.coverageByFplId && (league.coverageByFplId instanceof Map ? league.coverageByFplId.size : Object.keys(league.coverageByFplId || {}).length)) {
@@ -223,7 +232,10 @@ export async function createRecommendationSet(db, { planId, forecastRunId, horiz
   }
   let drafts
   let status = 'SUCCEEDED'
-  if (chip) {
+  if (!chip && (!plan.freeTransfersConfirmed || !plan.exactSellingPrices)) {
+    drafts = []
+    status = 'INSUFFICIENT_DATA'
+  } else if (chip) {
     const chipName = ({ TRIPLE_CAPTAIN: 'TC', BENCH_BOOST: 'BB', FREE_HIT: 'FH', WILDCARD: 'WC' })[chip] || chip
     const gameweekIds = [...new Set(fixtureForecasts.map(row => row.gameweekId))]
     const estimate = evaluateChipCounterfactual({ chip: chipName, baselineSquad: plan.squad, candidatePool: common.candidates, forecasts: fixtureForecasts, bankBeforeTenths: plan.bankBeforeTenths, targetGameweekId: gameweekIds[0], horizonGameweekIds: gameweekIds })
@@ -232,7 +244,7 @@ export async function createRecommendationSet(db, { planId, forecastRunId, horiz
   } else if (plan.bankBeforeTenths === null) { drafts = []; status = 'INSUFFICIENT_DATA' } else drafts = boundedTransferSearch(common)
   await db.query('BEGIN IMMEDIATE')
   try {
-    await db.query(`INSERT INTO "RecommendationSet" ("id","plan_id","forecast_run_id","horizon","max_transfers","chip","uncertainty_penalty_rate","created_at","status","primary_candidate_id","input_hash","league_id","league_name") VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,NULL,$10,$11,$12)`, [id, planId, resolvedForecastRunId, horizon, maxTransfers, chip, uncertaintyPenaltyRate, createdAt, status, run.rows[0].input_hash, leagueId, league?.leagueName ?? null])
+    await db.query(`INSERT INTO "RecommendationSet" ("id","plan_id","forecast_run_id","horizon","max_transfers","chip","uncertainty_penalty_rate","created_at","status","primary_candidate_id","input_hash","league_id","league_name","free_transfers_confirmed","exact_selling_prices") VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,NULL,$10,$11,$12,$13,$14)`, [id, planId, resolvedForecastRunId, horizon, maxTransfers, chip, uncertaintyPenaltyRate, createdAt, status, run.rows[0].input_hash, leagueId, league?.leagueName ?? null, plan.freeTransfersConfirmed ? 1 : 0, plan.exactSellingPrices ? 1 : 0])
     if (!drafts.length) drafts = [{ moves: [], affordabilityStatus: 'AFFORDABILITY_UNKNOWN', bankAfterTenths: null, hitCost: 0, rawGain: 0, uncertaintyPenalty: 0, netExpectedGain: 0, probabilityBeatsRoll: null, expectedTeamPoints: 0, p10Points: null, p50Points: null, p90Points: null, action: 'INSUFFICIENT_DATA', leagueDifferential: null }]
     const roll = drafts.find(draft => draft.moves.length === 0)
     const primary = drafts.find(draft => draft.moves.length > 0 && draft.affordabilityStatus === 'EXACT' && draft.netExpectedGain > 0 && draft.probabilityBeatsRoll >= .6) || roll || drafts[0]
@@ -272,6 +284,10 @@ export async function getRecommendationSet(db, id) {
     status: set.rows[0].status,
     primaryCandidateId: set.rows[0].primary_candidate_id,
     inputHash: set.rows[0].input_hash,
+    assumptions: {
+      freeTransfersConfirmed: Boolean(set.rows[0].free_transfers_confirmed),
+      exactSellingPrices: Boolean(set.rows[0].exact_selling_prices),
+    },
     league: set.rows[0].league_id == null ? null : { leagueId: Number(set.rows[0].league_id), leagueName: set.rows[0].league_name || null },
     candidates: parsedCandidates.map(({ row, detail }) => ({
       id: row.id,

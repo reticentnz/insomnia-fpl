@@ -4,7 +4,7 @@ import path from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
 import { closeDb, getDb } from '../../scripts/db.mjs'
 import { ingestOfficialFpl } from '../../scripts/ingest-fpl.mjs'
-import { summarizeBacktestRows } from '../backtest.ts'
+import { evaluateBaselineMetrics, summarizeBacktestRows } from '../backtest.ts'
 import { MODEL_VERSION } from '../core/projection.ts'
 import { createForecastRun } from './forecast-service.ts'
 import { eligibleBacktestObservations, runBacktest } from './backtest-service.ts'
@@ -24,6 +24,14 @@ async function seeded() {
 afterEach(async () => { await closeDb(); while (directories.length) fs.rmSync(directories.pop()!, { recursive: true, force: true }) })
 
 describe('WP-12 deadline-safe backtesting and calibration', () => {
+  it('compares forecasts with simple pre-deadline FPL baselines', () => {
+    const metrics = evaluateBaselineMetrics([
+      { position: 'MID', expectedPoints: 6, actualPoints: 8, baselines: { FPL_EP_NEXT: 7, FPL_FORM: 4, FPL_POINTS_PER_GAME: 5 } },
+      { position: 'MID', expectedPoints: 3, actualPoints: 2, baselines: { FPL_EP_NEXT: 3, FPL_FORM: 2, FPL_POINTS_PER_GAME: 4 } },
+    ])
+    expect(metrics.find(metric => metric.name === 'FPL_EP_NEXT')).toMatchObject({ sampleSize: 2, mae: 1 })
+  })
+
   it('selects only the latest eligible pre-deadline baseline for each model and is idempotent', async () => {
     const db = await seeded()
     const early = await createForecastRun(db, { modelVersion: 'model-a', asOf: '2026-08-13T12:00:00Z', createdAt: '2026-08-13T13:00:00Z' })

@@ -213,13 +213,13 @@ export function buildExplanationContext(args:ExplanationContext,question='') {
     return {...base,intent:'named_player_transfer',target:compactPlayer(plan.target,args.horizon),alreadyOwned:plan.alreadyOwned,directShortfall:plan.directShortfall,routes:plan.routes.map(route=>({moves:route.moves.map(move=>({out:compactPlayer(move.out,args.horizon),in:compactPlayer(move.in,args.horizon)})),rawGain:route.rawGain,hitCost:route.hitCost,netGain:route.netGain,bankAfter:route.bankAfter}))}
   }
 
-  const captainRankings=args.squad.map(player=>compactPlayer(player,args.horizon)).sort((a,b)=>b.xPts-a.xPts).slice(0,3)
-  if(wantsCaptain)return {...base,intent:'captaincy',captainOptions:captainRankings}
+  const captainRankings=args.squad.map(player=>compactPlayer(player,1)).sort((a,b)=>b.xPts-a.xPts).slice(0,3)
+  if(wantsCaptain)return {...base,intent:'captaincy',captainGameweeks:1,captainOptions:captainRankings}
 
   const starters=args.startingXI||args.squad.slice(0,11)
   if(wantsLineup){
     const starterIds=new Set(starters.map(player=>player.id))
-    return {...base,intent:'lineup',startingXI:starters.map(player=>compactPlayer(player,args.horizon)),bench:args.squad.filter(player=>!starterIds.has(player.id)).map(player=>compactPlayer(player,args.horizon)),captainOptions:captainRankings}
+    return {...base,intent:'lineup',lineupGameweeks:1,startingXI:starters.map(player=>compactPlayer(player,1)),bench:args.squad.filter(player=>!starterIds.has(player.id)).map(player=>compactPlayer(player,1)),captainOptions:captainRankings}
   }
 
   if(primaryMentioned)return {
@@ -436,6 +436,7 @@ export async function fetchFplAccount(teamId: number, gameweek?: number): Promis
   planFreeTransfers: number;
   squadAvailable: boolean;
   notice?: string;
+  recommendationAssumptions: { freeTransfersConfirmed: boolean; exactSellingPrices: boolean };
 }> {
   const response = await fetch('/api/manager/import', {
     method: 'POST',
@@ -489,6 +490,7 @@ export async function fetchFplAccount(teamId: number, gameweek?: number): Promis
     planFreeTransfers: Number(data.activePlan?.freeTransfers ?? 0),
     squadAvailable: data.importStatus?.squadAvailable !== false,
     notice: typeof data.importStatus?.message === 'string' ? data.importStatus.message : undefined,
+    recommendationAssumptions: { freeTransfersConfirmed: data.freeTransfersSource === 'USER_CONFIRMED', exactSellingPrices: data.economics?.exactSellingPrices === true },
   }
 }
 
@@ -501,7 +503,7 @@ export async function fetchFplRankHistory(teamId: number): Promise<FplRankHistor
   })).filter((entry: FplRankHistoryEntry) => Number.isInteger(entry.gameweek) && entry.gameweek > 0 && Number.isInteger(entry.rank) && entry.rank > 0) : []
 }
 
-export async function getUserProfile(): Promise<{ account: FplAccount | null; selectedIds: number[] | null; planId?: string | null; parentPlanId?: string | null; sellingPrices?: Record<number, number | null>; preferences?: UserPreferences; snapshotMetadata?: { officialSnapshotId: string; snapshotSeason: string; officialPlayerCount: number; managerAccountId: string } | null }> {
+export async function getUserProfile(): Promise<{ account: FplAccount | null; selectedIds: number[] | null; planId?: string | null; parentPlanId?: string | null; sellingPrices?: Record<number, number | null>; preferences?: UserPreferences; snapshotMetadata?: { officialSnapshotId: string; snapshotSeason: string; officialPlayerCount: number; managerAccountId: string } | null; recommendationAssumptions?: { freeTransfersConfirmed: boolean; exactSellingPrices: boolean } }> {
   try {
     const [res, preferenceRes] = await Promise.all([fetch('/api/manager/current'), fetch('/api/user-preferences')])
     const storedPreferences = preferenceRes.ok ? await preferenceRes.json() : null
@@ -521,6 +523,7 @@ export async function getUserProfile(): Promise<{ account: FplAccount | null; se
         parentPlanId: data.activePlan?.parentPlanId || null,
         sellingPrices: Object.fromEntries((Array.isArray(data.squad) ? data.squad : []).map((player: any) => [Number(player.fplId), player.sellingPriceTenths == null ? null : Number(player.sellingPriceTenths)])),
         snapshotMetadata: data.snapshotMetadata || null,
+        recommendationAssumptions: { freeTransfersConfirmed: data.freeTransfersSource === 'USER_CONFIRMED', exactSellingPrices: data.economics?.exactSellingPrices === true },
         preferences: {
           userName: storedPreferences?.userName || data.account?.managerName || '',
           selectedIds,
@@ -595,16 +598,17 @@ export async function selectPlanRevision(planId: string): Promise<{ ok: boolean;
   } catch { return { ok: false } }
 }
 
-export async function saveManagerAssumptions(teamId: number, update: { bank?: number; freeTransfers?: number }): Promise<boolean> {
+export async function saveManagerAssumptions(teamId: number, update: { bank?: number; freeTransfers?: number }): Promise<{ ok: boolean; activePlan?: any; exactSellingPrices?: boolean }> {
   try {
     const body: Record<string, unknown> = { teamId }
     if (Number.isInteger(update.freeTransfers)) body.freeTransfers = update.freeTransfers
-    if (!Object.prototype.hasOwnProperty.call(body, 'freeTransfers')) return true
+    if (!Object.prototype.hasOwnProperty.call(body, 'freeTransfers')) return { ok: true }
     const res = await fetch('/api/manager/assumptions', {
       method: 'PATCH', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body),
     })
-    return res.ok
-  } catch { return false }
+    const data = await res.json().catch(() => ({}))
+    return { ok: res.ok, activePlan: data.activePlan, exactSellingPrices: data.economics?.exactSellingPrices === true }
+  } catch { return { ok: false } }
 }
 
 export async function fetchPublicSquad(teamId:number, gameweek?:number):Promise<{picks:Array<{element:number}>; gameweek:number}> {
@@ -686,10 +690,17 @@ export async function fetchDecisionHistory(limit = 50): Promise<any[]> {
   return data.decisions || []
 }
 
+export async function evaluatePendingDecisionHistory(): Promise<void> {
+  const response = await fetch('/api/decisions/evaluate-pending', { method: 'POST' })
+  const data = await response.json().catch(() => null)
+  if (!response.ok) throw new Error(apiErrorMessage(data, `Decision evaluation unavailable: HTTP ${response.status}`))
+}
+
 export type CanonicalRecommendationCandidate = { id: string; rank: number; action: string; apiMoves: Array<{ outId: number; inId: number }>; netExpectedGain: number; rawGain: number; hitCost: number; uncertaintyPenalty: number; probabilityBeatsRoll: number | null; affordabilityStatus: string; bankAfterTenths: number | null; p10Points: number | null; p50Points: number | null; p90Points: number | null; leagueDifferential?: number | null; chip?: string; chipReason?: string };
 
 export type CanonicalRecommendation = {
   id: string; planId: string; forecastRunId: string; horizon: number; status: string; primaryCandidateId: string; cacheStatus: 'HIT' | 'MISS';
+  assumptions: { freeTransfersConfirmed: boolean; exactSellingPrices: boolean };
   league?: { leagueId: number; leagueName: string | null; coverageByFplId?: Record<string, number> } | null;
   candidates: CanonicalRecommendationCandidate[];
 }

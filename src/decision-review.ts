@@ -18,8 +18,8 @@ const confidence=(gain:number,concerns:number):Confidence=>gain>=5&&concerns===0
 const signedMoney=(value:number)=>value===0?'no price change':value>0?`costs £${value.toFixed(1)}m more`:`frees £${Math.abs(value).toFixed(1)}m`
 const priceSignal=(value:'RISING_SOON'|'FALLING_SOON'|'STABLE'|undefined)=>value==='RISING_SOON'?'rising':value==='FALLING_SOON'?'falling':'stable'
 
-export async function reviewDecision(question:string,horizon:Horizon,ctx:ToolContext,provider:AgentProvider={},preferredTransfer:Transfer|null=null):Promise<DecisionReview>{
-  const transfers=getBestTransfers(horizon,10,ctx);const upgrades=getUpgradeOpportunities(horizon,ctx);const lineup=getBestLineup(ctx.currentGameweek||0,ctx);const best=preferredTransfer||transfers.data.transfers[0]||null;const toolTrace=[transfers.tool,upgrades.tool,lineup.tool]
+export async function reviewDecision(question:string,horizon:Horizon,ctx:ToolContext,provider:AgentProvider={},preferredTransfer:Transfer|null=null,allowRankedFallback=true):Promise<DecisionReview>{
+  const transfers=getBestTransfers(horizon,10,ctx);const upgrades=getUpgradeOpportunities(horizon,ctx);const lineup=getBestLineup(ctx.currentGameweek||0,ctx);const best=preferredTransfer||(allowRankedFallback?transfers.data.transfers[0]:null)||null;const toolTrace=[transfers.tool,upgrades.tool,lineup.tool]
   const mentioned=resolveMultiplePlayerMentions(question,ctx.players)
   const isComparisonQuery=/\b(vs|versus|or|compare|better|between|prefer|against)\b/i.test(question)
   const isLineupQuery=/starting|lineup|xi|team|starters/i.test(question)
@@ -82,7 +82,7 @@ export async function reviewDecision(question:string,horizon:Horizon,ctx:ToolCon
     const diff = (winXpts - loseXpts).toFixed(1)
     const isWinnerOwned = ctx.squad.some(s => s.id === winner.id)
 
-    recommendation = isWinnerOwned ? 'KEEP' : 'BUY'
+    recommendation = isWinnerOwned ? 'KEEP' : allowRankedFallback ? 'BUY' : 'CAUTION'
     mainArgumentOverride = `${winner.name} (${winner.club}) is projected for ${winXpts.toFixed(1)} pts over ${horizon} GWs versus ${loser.name}'s ${loseXpts.toFixed(1)} pts (+${diff} pts advantage).`
     counterweightOverride = `${loser.name} (£${loser.price.toFixed(1)}m) offers alternative fixture or price upside compared to ${winner.name} (£${winner.price.toFixed(1)}m).`
     quantArgs = [
@@ -94,7 +94,7 @@ export async function reviewDecision(question:string,horizon:Horizon,ctx:ToolCon
     const p = mentioned[0]
     const pXpts = horizonProjection(p, horizon)
     const isOwned = ctx.squad.some(s => s.id === p.id)
-    recommendation = isOwned ? 'KEEP' : 'BUY'
+    recommendation = isOwned ? 'KEEP' : allowRankedFallback ? 'BUY' : 'CAUTION'
     mainArgumentOverride = `${p.name} (${p.club}, £${p.price.toFixed(1)}m) is projected for ${pXpts.toFixed(1)} pts over ${horizon} GWs.`
     counterweightOverride = `Monitor ${p.name}'s expected minutes (${p.expectedMinutes ?? 90}%) and upcoming fixture difficulty before locking in transfers.`
     quantArgs = [
@@ -147,4 +147,3 @@ export async function reviewDecision(question:string,horizon:Horizon,ctx:ToolCon
   const arbiter={...arbiterBase,...(provider.arbiter?await provider.arbiter({question,facts:{transfers:transfers.data,upgrades:upgrades.data,recentMinutes:recent?.data},quant,skeptic}):{}),agent:'arbiter' as const,horizon}
   return {quant,skeptic,arbiter,rounds:3,toolTrace}
 }
-

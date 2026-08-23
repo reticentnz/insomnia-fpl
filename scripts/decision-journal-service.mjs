@@ -112,3 +112,11 @@ export async function listDecisions(db, { limit = 50 } = {}) {
   const rows = await db.query('SELECT "id" FROM "DecisionRecord" ORDER BY "created_at" DESC, "id" DESC LIMIT $1', [limit])
   return Promise.all(rows.rows.map(row => getDecision(db, row.id)))
 }
+
+export async function evaluatePendingDecisions(db, { limit = 200 } = {}) {
+  if (!Number.isInteger(limit) || limit < 1 || limit > 500) throw new Error('limit must be an integer between 1 and 500')
+  const rows = await db.query('SELECT "id" FROM "DecisionRecord" WHERE "evaluated_at" IS NULL ORDER BY "created_at" ASC, "id" ASC LIMIT $1', [limit])
+  const evaluated = []
+  for (const row of rows.rows) evaluated.push(await evaluateDecision(db, row.id))
+  return evaluated
+}

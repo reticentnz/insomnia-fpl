@@ -247,7 +247,7 @@ export async function latestForecastSummary(db: Database, { horizon = 1 }: { hor
   if (![1, 3, 5].includes(Number(horizon))) throw new Error('horizon must be 1, 3, or 5')
   const run = (await db.query(`SELECT * FROM "ForecastRun" WHERE "status"='SUCCEEDED' ORDER BY datetime("created_at") DESC, "id" DESC LIMIT 1`)).rows[0]
   if (!run) return null
-  const rows = (await db.query(`SELECT forecast.*, player."fpl_id", gameweek."fpl_id" AS "gameweek_fpl_id", player_obs."position"
+  const rows = (await db.query(`SELECT forecast.*, player."fpl_id", gameweek."fpl_id" AS "gameweek_fpl_id", player_obs."position", player_obs."active"
     FROM "PlayerFixtureForecast" forecast
     JOIN "Player" player ON player."id"=forecast."player_id"
     JOIN "FixtureObservation" fixture ON fixture."fixture_id"=forecast."fixture_id"
@@ -283,16 +283,20 @@ export async function latestForecastSummary(db: Database, { horizon = 1 }: { hor
     }
     players.set(id, current)
   }
-  const fixtureCount = selected.length
-  const playerIds = new Set(selected.map(row => Number(row.fpl_id)))
-  const underlyingPlayerIds = new Set(selected.filter(row => {
+  // Coverage should describe decision-relevant players, not hundreds of
+  // inactive or sub-30-minute catalogue entries that cannot realistically be
+  // selected by the optimizer.
+  const qualityRows = selected.filter(row => Boolean(row.active) && Number(row.expected_minutes) >= 30)
+  const fixtureCount = qualityRows.length
+  const playerIds = new Set(qualityRows.map(row => Number(row.fpl_id)))
+  const underlyingPlayerIds = new Set(qualityRows.filter(row => {
     try { return Boolean(JSON.parse(String(row.input_provenance_json || '{}')).underlyingObservationId) } catch { return false }
   }).map(row => Number(row.fpl_id)))
   const quality = {
-    fallbackFixtureRatio: fixtureCount ? selected.filter(row => row.strength_method === 'FDR_FALLBACK').length / fixtureCount : 1,
-    lowMinutesFixtureRatio: fixtureCount ? selected.filter(row => row.minutes_confidence === 'LOW').length / fixtureCount : 1,
+    fallbackFixtureRatio: fixtureCount ? qualityRows.filter(row => row.strength_method === 'FDR_FALLBACK').length / fixtureCount : 1,
+    lowMinutesFixtureRatio: fixtureCount ? qualityRows.filter(row => row.minutes_confidence === 'LOW').length / fixtureCount : 1,
     underlyingPlayerRatio: playerIds.size ? underlyingPlayerIds.size / playerIds.size : 0,
-    marketFixtureRatio: fixtureCount ? selected.filter(row => row.strength_method === 'MARKET_XG').length / fixtureCount : 0,
+    marketFixtureRatio: fixtureCount ? qualityRows.filter(row => row.strength_method === 'MARKET_XG').length / fixtureCount : 0,
   }
   return { id: run.id, modelVersion: run.model_version, asOf: run.as_of, createdAt: run.created_at, horizon: Number(horizon), gameweeks, quality, players: [...players.values()].map(player => {
     if (!player.samplesAvailable) {

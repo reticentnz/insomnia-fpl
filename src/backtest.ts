@@ -13,7 +13,11 @@ export type BacktestRow = {
   horizon?: number
   minutesConfidence?: string
   strengthMethod?: string
+  baselines?: Partial<Record<BaselineName, number>>
 }
+
+export type BaselineName = 'FPL_EP_NEXT' | 'FPL_FORM' | 'FPL_POINTS_PER_GAME'
+export type BaselineMetric = { name: BaselineName; sampleSize: number; mae: number; rmse: number; bias: number; rankCorrelation: number | null }
 
 export type CalibrationResult = {
   position: Position | 'ALL'
@@ -102,6 +106,25 @@ export function evaluateBacktestMetrics(rows: BacktestRow[]): BacktestMetric[] {
     const [position, horizon, confidenceBand, strengthMethod] = key.split('\u0000')
     return summarizeBacktestRows(group, { position: position as Position, horizon: Number(horizon), confidenceBand, strengthMethod })
   }).sort((left, right) => left.position.localeCompare(right.position) || left.horizon - right.horizon || left.confidenceBand.localeCompare(right.confidenceBand) || left.strengthMethod.localeCompare(right.strengthMethod))
+}
+
+/** Compare the model with simple values that were available before deadline. */
+export function evaluateBaselineMetrics(rows: BacktestRow[]): BaselineMetric[] {
+  return (['FPL_EP_NEXT', 'FPL_FORM', 'FPL_POINTS_PER_GAME'] as BaselineName[]).map(name => {
+    const eligible = rows.flatMap(row => {
+      const prediction = row.baselines?.[name]
+      return Number.isFinite(prediction) ? [{ predicted: Number(prediction), actual: row.actualPoints }] : []
+    })
+    if (!eligible.length) return { name, sampleSize: 0, mae: 0, rmse: 0, bias: 0, rankCorrelation: null }
+    const errors = eligible.map(row => row.predicted - row.actual)
+    return {
+      name, sampleSize: eligible.length,
+      mae: round(errors.reduce((sum, error) => sum + Math.abs(error), 0) / eligible.length),
+      rmse: round(Math.sqrt(errors.reduce((sum, error) => sum + error * error, 0) / eligible.length)),
+      bias: round(errors.reduce((sum, error) => sum + error, 0) / eligible.length),
+      rankCorrelation: spearmanRankCorrelation(eligible.map(row => row.predicted), eligible.map(row => row.actual)),
+    }
+  })
 }
 
 /** Compatibility-facing position summaries now use the same threshold and caps. */
