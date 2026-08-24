@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { createRecommendationSet, forecastPlayers, getRecommendationSet, planSquad } from './recommendation-service.mjs'
+import { createRecommendationSet, forecastPlayers, getRecommendationSet, planSquad, recommendationInputHash } from './recommendation-service.mjs'
 import { SIMULATION_ENGINE_VERSION } from '../src/core/uncertainty.ts'
 
 const runPlayers = [{ playerId: 'player-1', teamId: 'team-1', position: 'MID', active: true, purchasePriceTenths: 75 }]
@@ -56,6 +56,12 @@ describe('recommendation plan economics', () => {
 })
 
 describe('recommendation forecast metadata', () => {
+  it('versions recommendation caches independently from immutable forecast inputs', () => {
+    expect(recommendationInputHash('forecast-input')).toMatch(/^[a-f0-9]{64}$/)
+    expect(recommendationInputHash('forecast-input')).not.toBe('forecast-input')
+    expect(recommendationInputHash('forecast-input')).toBe(recommendationInputHash('forecast-input'))
+  })
+
   it('preserves current-event transfer activity through player-gameweek aggregation', async () => {
     const db = { async query() { return { rows: [{
       player_id: 'player-1', fixture_id: 'fixture-1', forecast_run_id: 'run-1', mean_points: 5, standard_deviation: 1,
@@ -73,7 +79,7 @@ describe('recommendation forecast metadata', () => {
 })
 
 describe('stored recommendation retrieval', () => {
-  const storedSet = { id: 'set-1', plan_id: 'plan-1', forecast_run_id: 'run-1', horizon: 3, max_transfers: 2, chip: null, uncertainty_penalty_rate: .15, created_at: '2026-08-11T00:00:00Z', status: 'SUCCEEDED', primary_candidate_id: 'candidate-1', input_hash: 'forecast-input' }
+  const storedSet = { id: 'set-1', plan_id: 'plan-1', forecast_run_id: 'run-1', horizon: 3, max_transfers: 2, chip: null, uncertainty_penalty_rate: .15, created_at: '2026-08-11T00:00:00Z', status: 'SUCCEEDED', primary_candidate_id: 'candidate-1', input_hash: recommendationInputHash('forecast-input') }
   const storedCandidate = { id: 'candidate-1', rank: 1, action: 'TRANSFER', moves_json: JSON.stringify({ moves: [{ outId: 'player-out', inId: 'player-in' }], sensitivity: { earlySeasonSensitive: true, roleLatestMatchSensitive: true, latestMatchSensitive: true, latestMatchSensitivity: 'HIGH', sensitivityFlags: ['EARLY_SEASON', 'LATEST_MATCH_SENSITIVE', 'RATE_SAMPLE_LATEST_MATCH_SENSITIVE'] }, priceTiming: { verdict: 'WAIT', robustness: 'SENSITIVE', incomingPressure: { description: 'High upward price pressure; this is not a price-rise prediction.' }, outgoingPressure: { description: 'Moderate downward price pressure; this is not a price-fall prediction.' }, adverseScenarios: [{ adverseSwingTenths: 1, status: 'UNAFFORDABLE' }], reasons: ['Price pressure cannot create urgency because this recommendation is not independently robust.'] } }), raw_gain: 6, hit_cost: 0, uncertainty_penalty: 1, net_expected_gain: 5, probability_beats_roll: .7, bank_after_tenths: 3, affordability_status: 'EXACT', expected_team_points: 100, p10_points: 85, p50_points: 100, p90_points: 115 }
 
   it('hydrates the stable public shape and FPL identifiers from stored rows', async () => {
@@ -90,10 +96,10 @@ describe('stored recommendation retrieval', () => {
 
   it('returns an identical stored request before loading forecasts or optimizing', async () => {
     const queries: string[] = []
-    const db = { async query(sql: string) {
+    const db = { async query(sql: string, params: unknown[] = []) {
       queries.push(sql)
       if (sql.includes('FROM "ForecastRun"')) return { rows: [{ id: 'run-1', input_hash: 'forecast-input' }] }
-      if (sql.startsWith('SELECT "id" FROM "RecommendationSet"')) return { rows: [{ id: 'set-1' }] }
+      if (sql.startsWith('SELECT "id" FROM "RecommendationSet"')) return { rows: params[6] === storedSet.input_hash ? [{ id: 'set-1' }] : [] }
       if (sql.includes('SELECT * FROM "RecommendationSet"')) return { rows: [storedSet] }
       if (sql.includes('FROM "RecommendationCandidate"')) return { rows: [storedCandidate] }
       if (sql.includes('FROM "Player"')) return { rows: [{ id: 'player-out', fpl_id: 10 }, { id: 'player-in', fpl_id: 20 }] }

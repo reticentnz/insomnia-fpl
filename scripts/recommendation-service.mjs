@@ -1,4 +1,4 @@
-import { randomUUID } from 'node:crypto'
+import { createHash, randomUUID } from 'node:crypto'
 import { canonicalJson } from './feed-run.mjs'
 import { applyOneStepLookahead, boundedTransferSearch } from '../src/core/optimizer.ts'
 import { evaluateChipCounterfactual } from '../src/core/chips.ts'
@@ -8,6 +8,8 @@ import { combineSampleStreams, simulateFromStoredForecast, summarizeSampleDistri
 
 const parse = value => { try { return JSON.parse(value || '{}') } catch { return {} } }
 const asNumber = value => value == null ? null : Number(value)
+const RECOMMENDATION_ENGINE_VERSION = 'recommendation-v3-price-timing-activity'
+export const recommendationInputHash = forecastInputHash => createHash('sha256').update(`${forecastInputHash}:${RECOMMENDATION_ENGINE_VERSION}`).digest('hex')
 const uniquePlayers = rows => [...new Map(rows.map(row => [String(row.playerId), row])).values()]
 const sensitivityFromCalibrations = (roleCalibrations, sampleCalibrations) => {
   const roleLatestMatchSensitive = roleCalibrations.some(calibration => calibration?.sensitivity === 'LATEST_MATCH_SENSITIVE')
@@ -313,8 +315,9 @@ export async function createRecommendationSet(db, { planId, forecastRunId, horiz
     : await db.query(`SELECT * FROM "ForecastRun" WHERE "status"='SUCCEEDED' ORDER BY datetime("created_at") DESC,"id" DESC LIMIT 1`)
   const resolvedForecastRunId = run.rows[0]?.id
   if (!resolvedForecastRunId) throw new Error(`No succeeded forecast run is available`)
+  const inputHash = recommendationInputHash(run.rows[0].input_hash)
   const leagueId = league?.leagueId ?? null
-  const verifiedCached = await db.query(recommendationSetIdentityQuery(true), [planId, resolvedForecastRunId, horizon, maxTransfers, chip, uncertaintyPenaltyRate, run.rows[0].input_hash, leagueId])
+  const verifiedCached = await db.query(recommendationSetIdentityQuery(true), [planId, resolvedForecastRunId, horizon, maxTransfers, chip, uncertaintyPenaltyRate, inputHash, leagueId])
   if (verifiedCached.rows[0]) return { ...(await getRecommendationSet(db, verifiedCached.rows[0].id)), cacheStatus: 'HIT' }
   // Keep forecasts split by gameweek: optimizer selects its legal XI, captain
   // and vice independently each week instead of locking one horizon XI.
@@ -322,7 +325,7 @@ export async function createRecommendationSet(db, { planId, forecastRunId, horiz
   const roster = uniquePlayers(players)
   const fixtureForecasts = chip ? players : null
   const plan = await planSquad(db, planId, roster)
-  const cached = await db.query(recommendationSetIdentityQuery(), [planId, resolvedForecastRunId, horizon, maxTransfers, chip, uncertaintyPenaltyRate, run.rows[0].input_hash, leagueId, plan.freeTransfersConfirmed ? 1 : 0, plan.exactSellingPrices ? 1 : 0])
+  const cached = await db.query(recommendationSetIdentityQuery(), [planId, resolvedForecastRunId, horizon, maxTransfers, chip, uncertaintyPenaltyRate, inputHash, leagueId, plan.freeTransfersConfirmed ? 1 : 0, plan.exactSellingPrices ? 1 : 0])
   if (cached.rows[0]) return { ...(await getRecommendationSet(db, cached.rows[0].id)), cacheStatus: 'HIT' }
   // This is deliberately a fixed-input, one-gameweek lookahead.  It uses the
   // following stored gameweek only; prices and future news are not invented.
@@ -362,7 +365,7 @@ export async function createRecommendationSet(db, { planId, forecastRunId, horiz
   }
   await db.query('BEGIN IMMEDIATE')
   try {
-    await db.query(`INSERT INTO "RecommendationSet" ("id","plan_id","forecast_run_id","horizon","max_transfers","chip","uncertainty_penalty_rate","created_at","status","primary_candidate_id","input_hash","league_id","league_name","free_transfers_confirmed","exact_selling_prices","roll_option_version") VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,NULL,$10,$11,$12,$13,$14,2)`, [id, planId, resolvedForecastRunId, horizon, maxTransfers, chip, uncertaintyPenaltyRate, createdAt, status, run.rows[0].input_hash, leagueId, league?.leagueName ?? null, plan.freeTransfersConfirmed ? 1 : 0, plan.exactSellingPrices ? 1 : 0])
+    await db.query(`INSERT INTO "RecommendationSet" ("id","plan_id","forecast_run_id","horizon","max_transfers","chip","uncertainty_penalty_rate","created_at","status","primary_candidate_id","input_hash","league_id","league_name","free_transfers_confirmed","exact_selling_prices","roll_option_version") VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,NULL,$10,$11,$12,$13,$14,2)`, [id, planId, resolvedForecastRunId, horizon, maxTransfers, chip, uncertaintyPenaltyRate, createdAt, status, inputHash, leagueId, league?.leagueName ?? null, plan.freeTransfersConfirmed ? 1 : 0, plan.exactSellingPrices ? 1 : 0])
     if (!drafts.length) drafts = [{ moves: [], affordabilityStatus: 'AFFORDABILITY_UNKNOWN', bankAfterTenths: null, hitCost: 0, rawGain: 0, uncertaintyPenalty: 0, netExpectedGain: 0, probabilityBeatsRoll: null, expectedTeamPoints: 0, p10Points: null, p50Points: null, p90Points: null, action: 'INSUFFICIENT_DATA', leagueDifferential: null, savedTransferValue: 0, lookaheadAvailable: false, nextWeekFreeTransfers: null, nextWeekBestNetGain: null }]
     const roll = drafts.find(draft => draft.moves.length === 0)
     const primary = drafts.find(draft => draft.moves.length > 0 && draft.affordabilityStatus === 'EXACT' && draft.netExpectedGain > 0 && draft.probabilityBeatsRoll >= .6) || roll || drafts[0]
