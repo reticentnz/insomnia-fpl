@@ -35,6 +35,38 @@ export async function recordDecision(db, { recommendationSetId, candidateId = nu
   await candidate(db, set.id, candidateId)
   if ((decision === 'ACCEPTED' || decision === 'CUSTOM') && !selected) throw new Error(`${decision} decisions require selectedPlanId`)
   if (decision === 'ACCEPTED' && !candidateId) throw new Error('ACCEPTED decisions require candidateId')
+
+  // A regenerated recommendation set can contain the same candidate for the
+  // same manager and target gameweek. Candidate IDs are regenerated too, so
+  // the database's per-recommendation-set unique index cannot catch that case.
+  // Treat the canonical candidate payload as the action identity instead.
+  const existingForGameweek = await db.query(
+    `SELECT existing."id"
+     FROM "DecisionRecord" existing
+     JOIN "RecommendationSet" existing_set ON existing_set."id"=existing."recommendation_set_id"
+     JOIN "Plan" existing_baseline ON existing_baseline."id"=existing_set."plan_id"
+     JOIN "ForecastRun" existing_run ON existing_run."id"=existing_set."forecast_run_id"
+     LEFT JOIN "RecommendationCandidate" existing_candidate ON existing_candidate."id"=existing."candidate_id"
+     JOIN "ForecastRun" current_run ON current_run."id"=$1
+     LEFT JOIN "RecommendationCandidate" current_candidate ON current_candidate."id"=$2
+     WHERE existing_baseline."manager_account_id"=$3
+       AND existing_run."gameweek_id"=current_run."gameweek_id"
+       AND existing."decision"=$4
+       AND (
+         (existing."candidate_id" IS NOT NULL
+          AND current_candidate."id" IS NOT NULL
+          AND existing_candidate."action"=current_candidate."action"
+          AND existing_candidate."moves_json"=current_candidate."moves_json")
+         OR (existing."candidate_id" IS NULL
+             AND $2 IS NULL
+             AND existing."selected_plan_id" IS $5)
+       )
+     ORDER BY existing."created_at" ASC, existing."id" ASC
+     LIMIT 1`,
+    [set.forecast_run_id, candidateId, baseline.manager_account_id, decision, selected?.id ?? null],
+  )
+  if (existingForGameweek.rows[0]) return { ...(await getDecision(db, existingForGameweek.rows[0].id)), created: false }
+
   const id = randomUUID()
   const inserted = await db.query(
     `INSERT INTO "DecisionRecord" ("id","recommendation_set_id","candidate_id","decision","selected_plan_id","reason","created_at","evaluated_at","realized_points_delta","outcome_json")
@@ -111,13 +143,16 @@ export async function evaluateDecision(db, decisionId, evaluatedAt = new Date().
 export async function getDecision(db, id) {
   const result = await db.query(
     `SELECT decision.*, recommendation."plan_id" AS "baseline_plan_id", recommendation."forecast_run_id", recommendation."horizon", recommendation."created_at" AS "recommendation_created_at",
+            gameweek."fpl_id" AS "gameweek_fpl_id",
             candidate."expected_team_points" AS "candidate_expected_points", candidate."net_expected_gain" AS "candidate_expected_gain"
      FROM "DecisionRecord" decision
      JOIN "RecommendationSet" recommendation ON recommendation."id"=decision."recommendation_set_id"
+     JOIN "ForecastRun" forecast_run ON forecast_run."id"=recommendation."forecast_run_id"
+     JOIN "Gameweek" gameweek ON gameweek."id"=forecast_run."gameweek_id"
      LEFT JOIN "RecommendationCandidate" candidate ON candidate."id"=decision."candidate_id"
      WHERE decision."id"=$1`, [id])
   const row = result.rows[0]; if (!row) return null
-  return { id: row.id, recommendationSetId: row.recommendation_set_id, candidateId: row.candidate_id, decision: row.decision, baselinePlanId: row.baseline_plan_id, selectedPlanId: row.selected_plan_id, forecastRunId: row.forecast_run_id, horizon: Number(row.horizon), reason: row.reason, createdAt: row.created_at, evaluatedAt: row.evaluated_at, realizedPointsDelta: number(row.realized_points_delta), expectedCandidatePoints: number(row.candidate_expected_points), expectedCandidateGain: number(row.candidate_expected_gain), outcome: row.outcome_json ? parse(row.outcome_json) : { status: 'PENDING', wording: 'Outcome is pending completed results; this is not a causal claim.' } }
+  return { id: row.id, recommendationSetId: row.recommendation_set_id, candidateId: row.candidate_id, decision: row.decision, baselinePlanId: row.baseline_plan_id, selectedPlanId: row.selected_plan_id, forecastRunId: row.forecast_run_id, gameweek: Number(row.gameweek_fpl_id), horizon: Number(row.horizon), reason: row.reason, createdAt: row.created_at, evaluatedAt: row.evaluated_at, realizedPointsDelta: number(row.realized_points_delta), expectedCandidatePoints: number(row.candidate_expected_points), expectedCandidateGain: number(row.candidate_expected_gain), outcome: row.outcome_json ? parse(row.outcome_json) : { status: 'PENDING', wording: 'Outcome is pending completed results; this is not a causal claim.' } }
 }
 
 export async function listDecisions(db, { limit = 50 } = {}) {

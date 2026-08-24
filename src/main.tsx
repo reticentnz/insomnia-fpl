@@ -4713,7 +4713,10 @@ function ReviewView() {
               {decisions.map(decision => (
                 <div className="review-card" key={decision.id}>
                   <div className="card-agent-header">
-                    <b>{decision.decision}</b>
+                    <div>
+                      <b>{decision.decision}</b>
+                      <small className="muted">GW {decision.gameweek ?? '—'} · {decision.createdAt ? new Date(decision.createdAt).toLocaleString() : 'Recorded time unavailable'}</small>
+                    </div>
                     <span className={`pill ${decision.outcome?.status === 'EVALUATED' ? 'green' : 'amber'}`}>
                       {decision.outcome?.status || 'PENDING'}
                     </span>

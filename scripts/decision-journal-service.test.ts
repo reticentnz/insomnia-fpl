@@ -51,6 +51,17 @@ describe('WP-13 decision journal', () => {
     expect((await db.query('SELECT "id" FROM "DecisionRecord"')).rows).toHaveLength(1)
   })
 
+  it('deduplicates the same action when its recommendation set is regenerated for the gameweek', async () => {
+    const { db, baseline, chosen, run } = await seeded()
+    const first = await recordDecision(db, { recommendationSetId: 'set', candidateId: 'candidate', decision: 'ACCEPTED', selectedPlanId: chosen.id })
+    await db.query(`INSERT INTO "RecommendationSet" ("id","plan_id","forecast_run_id","horizon","max_transfers","chip","uncertainty_penalty_rate","created_at","status","primary_candidate_id","input_hash") VALUES ('regenerated-set', $1, $2, 1, 1, NULL, 0, $3, 'SUCCEEDED', 'regenerated-candidate', 'regenerated-input')`, [baseline.id, run.id, '2026-08-15T19:02:00Z'])
+    await db.query(`INSERT INTO "RecommendationCandidate" ("id","recommendation_set_id","rank","action","moves_json","raw_gain","hit_cost","uncertainty_penalty","net_expected_gain","probability_beats_roll","bank_after_tenths","affordability_status","expected_team_points","p10_points","p50_points","p90_points") VALUES ('regenerated-candidate','regenerated-set',1,'TRANSFER','[]',1,0,0,1,.7,0,'EXACT',10,8,10,12)`)
+    const repeated = await recordDecision(db, { recommendationSetId: 'regenerated-set', candidateId: 'regenerated-candidate', decision: 'ACCEPTED', selectedPlanId: chosen.id })
+    expect(repeated.id).toBe(first.id)
+    expect(repeated.created).toBe(false)
+    expect((await db.query('SELECT "id" FROM "DecisionRecord"')).rows).toHaveLength(1)
+  })
+
   it('evaluates saved plans and separates forecast error from the recorded decision result', async () => {
     const { db, chosen, run } = await seeded()
     const rows = await db.query('SELECT "player_id", "fixture_id" FROM "PlayerFixtureForecast" WHERE "forecast_run_id"=$1', [run.id])
