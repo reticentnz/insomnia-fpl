@@ -117,7 +117,7 @@ export function inferSuggestedInterpretation(category, text){
   }
   return null
 }
-const autoApprovedContextClasses=new Set(['FPL_SELECTION','CREATOR_RATING','VALUE_OPINION','STATISTICAL_CONTEXT','PERFORMANCE_FORECAST','TRANSFER_OPINION','SET_PIECES','PENALTIES','REAL_WORLD_ROLE','INJURY','ROTATION','AVAILABILITY'])
+const autoApprovedContextClasses=new Set(['FPL_SELECTION','CREATOR_RATING','VALUE_OPINION','STATISTICAL_CONTEXT','PERFORMANCE_FORECAST','TRANSFER_OPINION','SET_PIECES','PENALTIES','UNKNOWN'])
 const roleCapableCategories=new Set(['ROLE','ROTATION','TACTICS','PRESEASON','INJURY'])
 const roleEvidencePattern=/\b(?:first[ -]?choice|regular starter|starting (?:xi|line[- ]?up|striker|keeper|goalkeeper|centre-back)|number one|no real competition|nailed(?: on| down)?|guaranteed (?:to )?start|undisputed starter|main man|first on the team sheet|clear first choice|preferred starter|lock in the (?:xi|lineup)|lead the (?:line|attack)|spearhead the attack|set to start|likely to start|expected to start|will start|assured of (?:his|her|their) place|all positions are up for grabs|not expected to|regular starts?|rotation|rotat(?:e|ion)|bench risk|rotation risk|minutes (?:risk|concern|managed)|split minutes|share minutes|one of two|compete? for minutes|competition for minutes|may not start|unavailable|ruled out|will miss|out for|sidelined|out injured|back[ -]?up|second[ -]?choice|third[ -]?choice|reserve (?:keeper|goalkeeper)|\d{1,3}(?:\.\d+)?\s*%?\s*(?:chance|probability|starts?|minutes?))\b/i
 
@@ -156,6 +156,20 @@ export function shouldAutoApproveSignal(draft){
 
 export function shouldAutoApproveCreatorContext(draft){
   return shouldAutoApproveSignal(draft)
+}
+
+export function finalizeCreatorSignalDraft(draft){
+  if(shouldAutoApproveSignal(draft))return {...draft,status:'VERIFIED'}
+  const value=draft?.value&&typeof draft.value==='object'?draft.value:{}
+  const contextValue=Object.fromEntries(['note','forecastMetric','forecastDirection','forecastProbability','forecastHorizon','setPieceRole'].filter(key=>value[key]!=null).map(key=>[key,value[key]]))
+  return {
+    ...draft,
+    claimClass:'VALUE_OPINION',
+    modelImpact:'NONE',
+    value:contextValue,
+    interpretationRationale:'Automated review did not find sufficiently reliable structured role evidence; retained as context only.',
+    status:'VERIFIED',
+  }
 }
 
 export function normalizeCreatorPayload(payload){

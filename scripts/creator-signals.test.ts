@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import { expandSqlParams } from './db.mjs'
-import { interpretManualSignalText, matchCreatorClaim, normalizeCreatorPayload, signalDraftFromClaim, shouldAutoApproveCreatorContext } from './creator-signals.mjs'
+import { finalizeCreatorSignalDraft, interpretManualSignalText, matchCreatorClaim, normalizeCreatorPayload, signalDraftFromClaim, shouldAutoApproveCreatorContext } from './creator-signals.mjs'
 
 const catalog=[
   {id:10,name:'Kai Havertz',club:'ARS',clubName:'Arsenal',position:'FWD',price:8},
@@ -156,7 +156,7 @@ describe('creator signal ingestion helpers',()=>{
     expect(shouldAutoApproveCreatorContext(draft)).toBe(true)
   })
 
-  it('auto-approves safe context and high-confidence role evidence while retaining ambiguous items',()=>{
+  it('automatically finalizes context and high-confidence role evidence without applying uncertain roles',()=>{
     const opinion=signalDraftFromClaim({category:'VALUE',summary:'Cheap upside'},10,{})
     const selection=signalDraftFromClaim({category:'FPL_SELECTION',summary:'In my team'},10,{})
     const unknown=signalDraftFromClaim({category:'OTHER',summary:'Worth monitoring'},10,{})
@@ -164,9 +164,12 @@ describe('creator signal ingestion helpers',()=>{
     const lowConfRole=signalDraftFromClaim({category:'ROTATION',summary:'May not start',confidence:.3,suggestedInterpretation:{role:'ROTATION_HIGH'}},10,{})
     expect(shouldAutoApproveCreatorContext(opinion)).toBe(true)
     expect(shouldAutoApproveCreatorContext(selection)).toBe(true)
-    expect(shouldAutoApproveCreatorContext(unknown)).toBe(false)
+    expect(shouldAutoApproveCreatorContext(unknown)).toBe(true)
     expect(shouldAutoApproveCreatorContext(role)).toBe(true)
     expect(shouldAutoApproveCreatorContext(lowConfRole)).toBe(false)
+    expect(finalizeCreatorSignalDraft(unknown)).toMatchObject({status:'VERIFIED',claimClass:'UNKNOWN',modelImpact:'NONE'})
+    expect(finalizeCreatorSignalDraft(lowConfRole)).toMatchObject({status:'VERIFIED',claimClass:'VALUE_OPINION',modelImpact:'NONE',value:{note:'May not start'}})
+    expect(finalizeCreatorSignalDraft(lowConfRole).value).not.toHaveProperty('startProbability')
   })
 
   it('derives backup, nailed starter, bench risk, and surgery/sidelined interpretations from wording',()=>{
