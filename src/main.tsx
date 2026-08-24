@@ -2,7 +2,8 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { createRoot } from "react-dom/client";
 import { compareSortValues, nextSortDirection, type SortDirection, type SortValue } from "./table-sorting";
 import { deriveRecommendationRepairActions, deriveRecommendationSafety, type RecommendationAssumptions, type RecommendationSafety } from "./decision-safety";
-import { formatAccounting, formatSigned, optionalRecommendationLabel, recommendationAccounting, recommendationInputStatus, recommendationSensitivity, recommendationTiming } from "./recommendation-presentation";
+import { formatAccounting, formatSigned, formatTimingBadge, optionalRecommendationLabel, recommendationAccounting, recommendationClassificationBadge, recommendationInputStatus, recommendationSensitivity, recommendationTiming } from "./recommendation-presentation";
+import { classifyRecommendation } from "./recommendation-policy";
 import {
   bestXI,
   benchOrder,
@@ -17,6 +18,9 @@ import {
   horizonProjection,
   leagueLivePredictedPoints,
   leagueLineupExpectedPoints,
+  formatDeadlineDate,
+  formatDeadlineRemaining,
+  formatDeadlineText,
   gameweekProjection,
   getPlayerUpcomingFixtures,
   initialSquadBank,
@@ -619,21 +623,6 @@ function getInitials(name: string) {
   return (name.trim().slice(0, 2) || "A").toUpperCase();
 }
 
-function formatDeadlineText(deadlineIso: string | null): string {
-  const remaining = formatDeadlineRemaining(deadlineIso);
-  return remaining === "Deadline passed" ? remaining : `${remaining} until deadline`;
-}
-
-function formatDeadlineRemaining(deadlineIso: string | null): string {
-  const targetIso = deadlineIso || "2026-08-21T17:30:00.000Z";
-  const deadlineMs = new Date(targetIso).getTime();
-  const diffMs = deadlineMs - Date.now();
-  if (diffMs <= 0) return "Deadline passed";
-  const diffHours = Math.floor(diffMs / (1000 * 60 * 60));
-  if (diffHours >= 48) return `${Math.floor(diffHours / 24)} days`;
-  return `${diffHours} hours`;
-}
-
 function formatOperationalTime(value?: string | null) {
   if (!value) return "not scheduled";
   const time = Date.parse(value);
@@ -863,6 +852,8 @@ function App() {
   >(() => initialCatalog ? "cached" : "loading");
   const [currentGameweek, setCurrentGameweek] = useState<number | null>(() => initialCatalog?.currentGameweek ?? null);
   const [deadlineTime, setDeadlineTime] = useState<string | null>(() => initialCatalog?.deadline ?? null);
+  const [nextGameweek, setNextGameweek] = useState<number | null>(() => initialCatalog?.nextGameweek ?? null);
+  const [currentGameweekDeadline, setCurrentGameweekDeadline] = useState<string | null>(() => initialCatalog?.currentGameweekDeadline ?? null);
   const [capturedAt, setCapturedAt] = useState<string | null>(() => initialCatalog?.capturedAt ?? null);
   const [llmAnswer, setLlmAnswer] = useState<string | null>(null);
   const [llmProvider, setLlmProvider] = useState<string>(
@@ -1032,7 +1023,7 @@ function App() {
     isMetadataLoaded,
   });
   const draftMode = planningMode === "DRAFT";
-  const initialDraftPeriod = isInitialDraftPeriod(currentGameweek, deadlineTime);
+  const initialDraftPeriod = isInitialDraftPeriod(currentGameweek, currentGameweekDeadline || (nextGameweek && nextGameweek > 1 ? "1970-01-01T00:00:00Z" : deadlineTime));
   const awaitingOfficialSquad = draftMode && !initialDraftPeriod;
 
   const selectedIdsRef = useRef(selectedIds);
@@ -1212,13 +1203,15 @@ function App() {
         setCapturedAt(data.capturedAt || null);
         if (data.season) setCatalogSeason(data.season);
         if (data.currentGameweek) setCurrentGameweek(data.currentGameweek);
-        if (data.deadline) setDeadlineTime(data.deadline);
+        if (data.deadline !== undefined) setDeadlineTime(data.deadline);
+        if (data.nextGameweek !== undefined) setNextGameweek(data.nextGameweek);
+        if (data.currentGameweekDeadline !== undefined) setCurrentGameweekDeadline(data.currentGameweekDeadline);
         const mapped = selectedIds
           .map((id) => data.players.find((p) => p.id === id))
           .filter(Boolean) as Player[];
         const incomingDraftMode = isInitialDraftPeriod(
           data.currentGameweek,
-          data.deadline,
+          data.currentGameweekDeadline || (data.nextGameweek && data.nextGameweek > 1 ? "1970-01-01T00:00:00Z" : data.deadline),
         );
         const issues = incomingDraftMode
           ? validateInitialSquad(mapped)
@@ -2325,12 +2318,14 @@ function App() {
             </div>
             <p className="eyebrow">
               GAMEWEEK {currentGameweek ?? 1} <span>·</span>{" "}
-              {formatDeadlineText(deadlineTime)}
+              {formatDeadlineText(deadlineTime, nextGameweek, currentGameweek)}
             </p>
             <h1>{tab === "My Team" ? getGreeting(userName) : tab}</h1>
             <p className="muted">
               {tab === "Admin"
                 ? "Run and audit data maintenance tasks from one place."
+                : tab === "Review"
+                ? "Retrospective model accuracy, baseline comparisons, and manager decision outcomes."
                 : tab === "My Team"
                 ? awaitingOfficialSquad
                   ? "Your saved draft will be replaced when the official FPL squad import completes."
@@ -2456,7 +2451,7 @@ function App() {
             }}
           />
         )}
-        {tab !== "Ask" && tab !== "Model Debug" && tab !== "Leagues" && tab !== "Signals" && tab !== "Admin" && (
+        {tab !== "Ask" && tab !== "Model Debug" && tab !== "Leagues" && tab !== "Signals" && tab !== "Admin" && tab !== "Review" && (
           <>
             <PlanControls
               horizon={horizon}
@@ -4559,32 +4554,142 @@ function ReviewView() {
   const [backtest, setBacktest] = useState<any>(null);
   const [decisions, setDecisions] = useState<any[]>([]);
   const [error, setError] = useState<string | null>(null);
+  const [loading, setLoading] = useState<boolean>(true);
+
   useEffect(() => {
     let active = true;
-    Promise.all([fetchBacktest(), evaluatePendingDecisionHistory().then(() => fetchDecisionHistory())]).then(([nextBacktest, nextDecisions]) => {
-      if (active) { setBacktest(nextBacktest); setDecisions(nextDecisions); }
-    }).catch(reason => { if (active) setError(reason instanceof Error ? reason.message : 'Review data unavailable'); });
+    setLoading(true);
+    setError(null);
+
+    const loadBacktest = fetchBacktest()
+      .then(nb => { if (active) setBacktest(nb); })
+      .catch(reason => {
+        console.warn('Backtest fetch issue:', reason);
+      });
+
+    const loadDecisions = evaluatePendingDecisionHistory()
+      .catch(err => {
+        console.warn('Pending decision evaluation deferred:', err);
+      })
+      .then(() => fetchDecisionHistory())
+      .then(nd => { if (active) setDecisions(nd || []); })
+      .catch(reason => {
+        console.warn('Decision history fetch issue:', reason);
+      });
+
+    Promise.allSettled([loadBacktest, loadDecisions]).then(() => {
+      if (active) setLoading(false);
+    }).catch(reason => {
+      if (active) {
+        setError(reason instanceof Error ? reason.message : 'Review data unavailable');
+        setLoading(false);
+      }
+    });
+
     return () => { active = false; };
   }, []);
+
   return (
     <div className="content">
-      <div className="page-intro"><div><p className="eyebrow">MEASUREMENT · SAVED EVIDENCE</p><h2>Decision and model review</h2><p className="muted">Forecast accuracy and saved manager choices remain separate; retrospective differences are not causal proof.</p></div></div>
-      {error && <div className="panel"><p className="muted">{error}</p></div>}
-      {backtest && <div className="panel">
-        <div className="panel-head"><div><h2>Backtest status</h2><p>{backtest.observationCount ? `${backtest.observationCount} eligible pre-deadline observations` : 'Insufficient sample: no completed eligible forecasts yet.'}</p></div><span className={`pill ${backtest.status === 'CALIBRATED' ? 'green' : 'amber'}`}>{backtest.status === 'CALIBRATED' ? 'CALIBRATED' : 'UNCALIBRATED'}</span></div>
-        {backtest.models?.map((model: any) => <div key={model.modelVersion}>
-          <div className="review-strip"><span><b>Model</b>{model.modelVersion}</span><span><b>Sample</b>{model.observationCount}</span><span><b>Training cutoff</b>{model.trainingCutoff || '—'}</span><span><b>MAE</b>{Number(model.summary?.mae || 0).toFixed(2)}</span><span><b>Rank correlation</b>{model.summary?.rankCorrelation == null ? '—' : Number(model.summary.rankCorrelation).toFixed(3)}</span></div>
-          {model.baselines?.map((baseline: any) => <div className="review-strip baseline-strip" key={baseline.name}><span><b>Baseline</b>{String(baseline.name).replace('FPL_', '').replaceAll('_', ' ')}</span><span><b>Sample</b>{baseline.sampleSize}</span><span><b>MAE</b>{Number(baseline.mae || 0).toFixed(2)}</span><span><b>RMSE</b>{Number(baseline.rmse || 0).toFixed(2)}</span><span><b>Rank correlation</b>{baseline.rankCorrelation == null ? '—' : Number(baseline.rankCorrelation).toFixed(3)}</span></div>)}
-          {model.gameweeks?.length > 0 && <details className="audit-info-details"><summary className="audit-info-summary">Gameweek-by-gameweek comparison</summary><div className="audit-info-body">{model.gameweeks.map((gameweek: any) => <p key={gameweek.gameweekId}>{gameweek.gameweekId}: model MAE {Number(gameweek.model?.mae || 0).toFixed(2)} across {gameweek.sampleSize} forecasts · EP_NEXT MAE {Number(gameweek.baselines?.find((baseline: any) => baseline.name === 'FPL_EP_NEXT')?.mae || 0).toFixed(2)}</p>)}</div></details>}
-        </div>)}
-      </div>}
+      <div className="page-intro">
+        <div>
+          <p className="eyebrow">MEASUREMENT · SAVED EVIDENCE</p>
+          <h2>Decision and model review</h2>
+          <p className="muted">Forecast accuracy and saved manager choices remain separate; retrospective differences are not causal proof.</p>
+        </div>
+      </div>
+
+      {error && (
+        <div className="validation-warning conflict-banner" style={{ marginBottom: "16px" }}>
+          <span>{error}</span>
+        </div>
+      )}
+
+      {loading && !backtest && !decisions.length && (
+        <div className="panel draft-empty draft-loading" role="status" aria-live="polite">
+          <p className="muted">Loading review metrics and decision history…</p>
+        </div>
+      )}
+
+      {backtest && (
+        <div className="panel" style={{ marginBottom: "20px" }}>
+          <div className="panel-head">
+            <div>
+              <h2>Backtest status</h2>
+              <p>{backtest.observationCount ? `${backtest.observationCount} eligible pre-deadline observations` : 'Insufficient sample: no completed eligible forecasts yet.'}</p>
+            </div>
+            <span className={`pill ${backtest.status === 'CALIBRATED' ? 'green' : 'amber'}`}>
+              {backtest.status === 'CALIBRATED' ? 'CALIBRATED' : 'UNCALIBRATED'}
+            </span>
+          </div>
+          <div className="review-panel-body">
+            {backtest.models?.map((model: any) => (
+              <div key={model.modelVersion}>
+                <div className="review-strip">
+                  <span><b>Model</b>{model.modelVersion}</span>
+                  <span><b>Sample</b>{model.observationCount}</span>
+                  <span><b>Training cutoff</b>{model.trainingCutoff || '—'}</span>
+                  <span><b>MAE</b>{Number(model.summary?.mae || 0).toFixed(2)}</span>
+                  <span><b>Rank correlation</b>{model.summary?.rankCorrelation == null ? '—' : Number(model.summary.rankCorrelation).toFixed(3)}</span>
+                </div>
+                {model.baselines?.map((baseline: any) => (
+                  <div className="review-strip baseline-strip" key={baseline.name}>
+                    <span><b>Baseline</b>{String(baseline.name).replace('FPL_', '').replaceAll('_', ' ')}</span>
+                    <span><b>Sample</b>{baseline.sampleSize}</span>
+                    <span><b>MAE</b>{Number(baseline.mae || 0).toFixed(2)}</span>
+                    <span><b>RMSE</b>{Number(baseline.rmse || 0).toFixed(2)}</span>
+                    <span><b>Rank correlation</b>{baseline.rankCorrelation == null ? '—' : Number(baseline.rankCorrelation).toFixed(3)}</span>
+                  </div>
+                ))}
+                {model.gameweeks?.length > 0 && (
+                  <details className="audit-info-details">
+                    <summary className="audit-info-summary">Gameweek-by-gameweek comparison</summary>
+                    <div className="audit-info-body">
+                      {model.gameweeks.map((gameweek: any) => (
+                        <p key={gameweek.gameweekId}>
+                          {gameweek.gameweekId}: model MAE {Number(gameweek.model?.mae || 0).toFixed(2)} across {gameweek.sampleSize} forecasts · EP_NEXT MAE {Number(gameweek.baselines?.find((baseline: any) => baseline.name === 'FPL_EP_NEXT')?.mae || 0).toFixed(2)}
+                        </p>
+                      ))}
+                    </div>
+                  </details>
+                )}
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
       <div className="panel">
-        <div className="panel-head"><div><h2>Decision history</h2><p>Expected values at decision time versus realized saved-plan outcomes.</p></div><span className="filter-pill">{decisions.length} records</span></div>
-        {!decisions.length ? <p className="muted">No accepted, rejected, ignored, or custom decisions have been recorded yet.</p> : decisions.map(decision => <div className="review-card" key={decision.id}>
-          <div className="card-agent-header"><b>{decision.decision}</b><span className="pill">{decision.outcome?.status || 'PENDING'}</span></div>
-          <p>Expected candidate gain: {decision.expectedCandidateGain == null ? '—' : Number(decision.expectedCandidateGain).toFixed(2)} pts · Realized manager decision result: {decision.realizedPointsDelta == null ? 'Pending' : `${Number(decision.realizedPointsDelta).toFixed(2)} pts`}</p>
-          <small>Model forecast error: {decision.outcome?.modelForecastError == null ? 'Pending' : Number(decision.outcome.modelForecastError).toFixed(2)} · {decision.outcome?.wording}</small>
-        </div>)}
+        <div className="panel-head">
+          <div>
+            <h2>Decision history</h2>
+            <p>Expected values at decision time versus realized saved-plan outcomes.</p>
+          </div>
+          <span className="filter-pill">{decisions.length} records</span>
+        </div>
+        <div className="review-panel-body">
+          {!decisions.length ? (
+            <div className="review-empty-state">
+              <p>No accepted, rejected, ignored, or custom decisions have been recorded yet.</p>
+              <small>When you accept or record transfer recommendations in the planner, their outcomes and counterfactuals will appear here once gameweeks conclude.</small>
+            </div>
+          ) : (
+            <div className="review-decision-list">
+              {decisions.map(decision => (
+                <div className="review-card" key={decision.id}>
+                  <div className="card-agent-header">
+                    <b>{decision.decision}</b>
+                    <span className={`pill ${decision.outcome?.status === 'EVALUATED' ? 'green' : 'amber'}`}>
+                      {decision.outcome?.status || 'PENDING'}
+                    </span>
+                  </div>
+                  <p>Expected candidate gain: {decision.expectedCandidateGain == null ? '—' : Number(decision.expectedCandidateGain).toFixed(2)} pts · Realized manager decision result: {decision.realizedPointsDelta == null ? 'Pending' : `${Number(decision.realizedPointsDelta).toFixed(2)} pts`}</p>
+                  <small className="muted">Model forecast error: {decision.outcome?.modelForecastError == null ? 'Pending' : Number(decision.outcome.modelForecastError).toFixed(2)} · {decision.outcome?.wording || 'Pending fixture completion'}</small>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
       </div>
     </div>
   );
@@ -5294,7 +5399,7 @@ function MyTeamV2({
               ? recommendationSafety.reasons.join(' ')
               : canonicalPrimary?.action === 'TRANSFER'
                 ? `+${canonicalPrimary.netExpectedGain.toFixed(2)} net expected points over ${horizon} GWs · ${canonicalPrimary.probabilityBeatsRoll == null ? 'probability unavailable' : `${Math.round(canonicalPrimary.probabilityBeatsRoll * 100)}% chance of beating roll`}`
-                : canonicalPrimary?.action === 'ROLL' ? 'No exact, uncertainty-adjusted plan clears the 60% decision rule.' : 'No safe recommendation is available.'}
+                : canonicalPrimary?.action === 'ROLL' ? 'No exact, uncertainty-adjusted plan clears the robust action threshold.' : 'No safe recommendation is available.'}
         </p>
         {!draftMode && canonicalAccounting && <p className="recommend-accounting">{canonicalAccounting}</p>}
         {!draftMode && canonicalPrimary?.probabilityBeatsRoll != null && (
@@ -7323,7 +7428,9 @@ function LeaguesView({
             <div className="preseason-banner" style={{ background: "rgba(59, 130, 246, 0.12)", border: "1px solid rgba(59, 130, 246, 0.3)", borderRadius: "10px", padding: "12px 16px", marginBottom: "16px", display: "flex", alignItems: "center", gap: "12px" }}>
               <span style={{ fontSize: "20px" }}>🔒</span>
               <div>
-                <b style={{ color: "#60a5fa", fontSize: "14px" }}>Pre-Season Mode (Gameweek 1 Deadline in {formatDeadlineRemaining(deadlineIso)})</b>
+                <b style={{ color: "#60a5fa", fontSize: "14px" }}>
+                  Pre-Season Mode (Gameweek 1 Deadline: {formatDeadlineDate(deadlineIso)} · {formatDeadlineRemaining(deadlineIso)} left)
+                </b>
                 <p style={{ margin: "2px 0 0 0", fontSize: "13px", color: "#cbd5e1" }}>
                   FPL hides rival team picks until the Gameweek 1 deadline. Standings display all <b>{details.standings.length} members</b> who have joined your league so far. Live points, transfers, chip burn, and Effective Ownership (EO) will calculate live once GW1 kicks off!
                 </p>
@@ -8382,6 +8489,7 @@ function PrimaryHeroRecommendationCard({
   squad,
   horizon,
   recommendationSafety,
+  hasPositiveAlternatives,
   onApply,
   onDismiss,
 }: {
@@ -8391,6 +8499,7 @@ function PrimaryHeroRecommendationCard({
   squad?: Player[];
   horizon: number;
   recommendationSafety: RecommendationSafety;
+  hasPositiveAlternatives?: boolean;
   onApply?: (candidate: CanonicalRecommendation['candidates'][number]) => void;
   onDismiss?: (candidate: CanonicalRecommendation['candidates'][number], decision: 'REJECTED' | 'IGNORED') => void;
 }) {
@@ -8400,8 +8509,20 @@ function PrimaryHeroRecommendationCard({
   const stability = optionalRecommendationLabel(candidate, ['stability', 'horizonStability']);
   const affordabilityLabel = candidate.affordabilityStatus === 'EXACT' ? 'Exact Affordability' : candidate.affordabilityStatus.replaceAll('_', ' ');
 
+  const classification = candidate.classification || classifyRecommendation({
+    action: candidate.action,
+    actionable: recommendationSafety.actionable,
+    affordabilityStatus: candidate.affordabilityStatus,
+    netExpectedGain: candidate.netExpectedGain,
+    probabilityBeatsRoll: candidate.probabilityBeatsRoll,
+    roleLatestMatchSensitive: candidate.roleLatestMatchSensitive,
+    latestMatchSensitive: candidate.latestMatchSensitive,
+    latestMatchSensitivity: candidate.latestMatchSensitivity,
+  });
+  const classificationBadge = recommendationClassificationBadge(classification);
+
   const probabilityBeatsRollPct = candidate.probabilityBeatsRoll != null ? Math.round(candidate.probabilityBeatsRoll * 100) : null;
-  const clearsDecisionRule = probabilityBeatsRollPct != null ? probabilityBeatsRollPct >= 60 : null;
+  const isRobust = classification === 'ROBUST';
 
   return (
     <article className="primary-hero-card" aria-label="Optimal transfer recommendation">
@@ -8414,14 +8535,19 @@ function PrimaryHeroRecommendationCard({
               ? '🛡️ ROLL TRANSFER'
               : isPrimary
               ? '★ PRIMARY RECOMMENDATION'
-              : `OPTION #${candidate.rank}`}
+              : 'TRANSFER OPTION'}
           </span>
+          {candidate.action === 'TRANSFER' && classificationBadge && (
+            <span className={`pill ${classificationBadge.pillClass}`}>
+              {classificationBadge.label}
+            </span>
+          )}
           <span className={`pill ${candidate.affordabilityStatus === 'EXACT' ? 'green' : 'amber'}`}>
             {affordabilityLabel}
           </span>
           {timing && (
             <span className="pill cyan" title={timing.details.join(' ')}>
-              ⚡ {timing.verdict}
+              ⚡ {formatTimingBadge(timing.verdict)}
             </span>
           )}
           {candidate.leagueDifferential != null && candidate.leagueDifferential !== 0 && (
@@ -8517,7 +8643,9 @@ function PrimaryHeroRecommendationCard({
           <div className="roll-action-copy">
             <b>Roll your free transfer</b>
             <p>
-              No immediate move beats the strategic option value of carrying 2 free transfers into the next gameweek.
+              {hasPositiveAlternatives
+                ? 'Some alternatives have positive expected value, but none clears the robust action threshold.'
+                : 'No immediate move beats the strategic option value of carrying 2 free transfers into the next gameweek.'}
             </p>
           </div>
         </div>
@@ -8554,13 +8682,15 @@ function PrimaryHeroRecommendationCard({
             <span className="hero-metric-val">
               {probabilityBeatsRollPct != null ? `${probabilityBeatsRollPct}%` : '—'}
             </span>
-            {clearsDecisionRule !== null && (
-              <span className={`pill ${clearsDecisionRule ? 'green' : 'amber'}`} style={{ fontSize: '10px' }}>
-                {clearsDecisionRule ? 'Clears 60% rule ✓' : 'Below 60% rule'}
+            {candidate.action === 'TRANSFER' && (
+              <span className={`pill ${isRobust ? 'green' : 'amber'}`} style={{ fontSize: '10px' }}>
+                {isRobust ? 'Clears 75% action threshold ✓' : 'Does not clear 75% action threshold'}
               </span>
             )}
           </div>
-          <span className="hero-metric-sub">Chance of finishing ahead of roll</span>
+          <span className="hero-metric-sub">
+            {probabilityBeatsRollPct != null ? `${probabilityBeatsRollPct}% chance of beating roll` : 'Chance of finishing ahead of roll'}
+          </span>
         </div>
 
         {candidate.bankAfterTenths != null && (
@@ -8874,7 +9004,7 @@ function TransfersV2({
           <div className="panel-head">
             <div>
               <h2>Stored multi-transfer recommendation</h2>
-              <p>Uses the latest immutable forecast run, exact selling economics, hit costs, uncertainty penalty, and the 60% decision rule.</p>
+              <p>Uses the latest immutable forecast run, exact selling economics, hit costs, uncertainty penalty, and robust action thresholds.</p>
             </div>
             <button className="dark-btn" disabled={canonicalLoading} onClick={() => onGenerateCanonical?.(selectedChip)}>
               {canonicalLoading ? 'Calculating…' : 'Recalculate plan'}
@@ -8925,6 +9055,7 @@ function TransfersV2({
                   squad={squad}
                   horizon={horizon}
                   recommendationSafety={recommendationSafety}
+                  hasPositiveAlternatives={alternativeCandidates.some(c => c.action === 'TRANSFER' && c.netExpectedGain > 0)}
                   onApply={onApplyCanonical}
                   onDismiss={onDismissCanonical}
                 />
@@ -8944,11 +9075,27 @@ function TransfersV2({
                         return `${outName} → ${inName}`;
                       }) || [];
                       const affordabilityLabel = candidate.affordabilityStatus === 'EXACT' ? 'Exact' : candidate.affordabilityStatus.replaceAll('_', ' ');
+                      const classification = candidate.classification || classifyRecommendation({
+                        action: candidate.action,
+                        actionable: recommendationSafety.actionable,
+                        affordabilityStatus: candidate.affordabilityStatus,
+                        netExpectedGain: candidate.netExpectedGain,
+                        probabilityBeatsRoll: candidate.probabilityBeatsRoll,
+                        roleLatestMatchSensitive: candidate.roleLatestMatchSensitive,
+                        latestMatchSensitive: candidate.latestMatchSensitive,
+                        latestMatchSensitivity: candidate.latestMatchSensitivity,
+                      });
+                      const classificationBadge = recommendationClassificationBadge(classification);
 
                       return (
                         <article className="alternative-candidate-card" key={candidate.id}>
                           <div className="card-agent-header">
                             <b>Option #{candidate.rank} · {candidate.action}</b>
+                            {candidate.action === 'TRANSFER' && classificationBadge && (
+                              <span className={`pill ${classificationBadge.pillClass}`}>
+                                {classificationBadge.label}
+                              </span>
+                            )}
                             <span className={`pill ${candidate.affordabilityStatus === 'EXACT' ? 'green' : 'amber'}`}>
                               {affordabilityLabel}
                             </span>
@@ -10890,7 +11037,7 @@ class ErrorBoundary extends Component<{ children: ReactNode }, { hasError: boole
   }
 }
 
-const rootEl = document.getElementById("root");
+const rootEl = typeof document !== "undefined" ? document.getElementById("root") : null;
 if (rootEl) {
   createRoot(rootEl).render(
     <ErrorBoundary>

@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { bestXI, bestXIForGameweek, buildDraftImprovementPlan, buildLegalDefaultSquad, buildLegalRemainingSquad, computeDraftFingerprint, computeDraftPlayerFingerprint, draftSquadScore, evaluateModeTransition, findTransferRoutesToTarget, getSquad, groupLegalChangeBundles, horizonProjection, initialSquadBank, isInitialDraftPeriod, isLegalTransfer, isPlayerInjured, isPlayerFlagged, leagueLivePredictedPoints, leagueLineupExpectedPoints, optimizeInitialSquad, players, resolvePlanningMode, resolveSquadSaveTarget, transferDecision, transfers, validateInitialSquad, validateSquad, CLUB_FIXTURES, getPlayerUpcomingFixtures, gameweekProjection, INITIAL_SQUAD_BUDGET, TRANSFER_GAIN_THRESHOLDS, calculateChipImpact, generateSquadExportText, getPlayerFixtureTicker, getDifferentialsAndEnablers, getCaptaincyBreakdown, calculateRivalEO, getTeamColor, getPlayerShirtColor } from './domain'
+import { bestXI, bestXIForGameweek, buildDraftImprovementPlan, buildLegalDefaultSquad, buildLegalRemainingSquad, computeDraftFingerprint, computeDraftPlayerFingerprint, draftSquadScore, evaluateModeTransition, findTransferRoutesToTarget, findTransferRoutesFromOut, getSquad, groupLegalChangeBundles, horizonProjection, initialSquadBank, isInitialDraftPeriod, formatDeadlineDate, formatDeadlineRemaining, formatDeadlineText, isLegalTransfer, isPlayerInjured, isPlayerFlagged, leagueLivePredictedPoints, leagueLineupExpectedPoints, optimizeInitialSquad, players, resolvePlanningMode, resolveSquadSaveTarget, transferDecision, transfers, validateInitialSquad, validateSquad, CLUB_FIXTURES, getPlayerUpcomingFixtures, gameweekProjection, INITIAL_SQUAD_BUDGET, TRANSFER_GAIN_THRESHOLDS, calculateChipImpact, generateSquadExportText, getPlayerFixtureTicker, getDifferentialsAndEnablers, getCaptaincyBreakdown, calculateRivalEO, getTeamColor, getPlayerShirtColor } from './domain'
 
 import { createToolContext, getBestTransfers, simulateTransfers } from './intelligence'
 import { reviewDecision } from './decision-review'
@@ -274,8 +274,32 @@ describe('Recommendation context and transfer sequencing', () => {
     const decision=transferDecision(5,1.2,1,squad,catalog)
     const context=buildExplanationContext({modelVersion:'test',horizon:5,squad,catalog,captain:null,transfers:transfers(5,1.2,1,squad,catalog),decision,bank:1.2,freeTransfers:1},'how can we get bruno fernandez into the team?')
     expect(context.intent).toBe('named_player_transfer')
+    expect((context as Record<string, unknown>).transferDirection).toBe('in')
     expect(context).not.toHaveProperty('catalog')
     expect(JSON.stringify(context).length).toBeLessThan(6000)
+  })
+  it('builds named_player_transfer context with transferDirection out when transferring out an owned player', () => {
+    const squad=getSquad()
+    const mbeumo=squad.find(p=>p.name==='Mbeumo')!
+    expect(mbeumo).toBeDefined()
+    const decision=transferDecision(5,1.2,1,squad,players)
+    const context=buildExplanationContext({modelVersion:'test',horizon:5,squad,catalog:players,captain:null,transfers:transfers(5,1.2,1,squad,players),decision,bank:1.2,freeTransfers:1},'should I transfer Mbeumo out or wait?')
+    expect(context.intent).toBe('named_player_transfer')
+    const ctx = context as Record<string, unknown>
+    expect(ctx.transferDirection).toBe('out')
+    expect(ctx.alreadyOwned).toBe(true)
+    const routes = ctx.routes as Array<{moves: Array<{out: {name: string}; in: {name: string}}>}>
+    expect(routes.length).toBeGreaterThan(0)
+    expect(routes[0].moves[0].out.name).toBe('Mbeumo')
+  })
+  it('finds replacement routes for an owned outgoing player using findTransferRoutesFromOut', () => {
+    const squad=getSquad()
+    const mbeumo=squad.find(p=>p.name==='Mbeumo')!
+    const plan=findTransferRoutesFromOut(mbeumo,squad,players,5,1.2,1)
+    expect(plan.alreadyOwned).toBe(true)
+    expect(plan.routes.length).toBeGreaterThan(0)
+    expect(plan.routes[0].moves[0].out.id).toBe(mbeumo.id)
+    expect(plan.routes[0].moves[0].in.position).toBe('MID')
   })
   it('resolves multiple player mentions and builds player_comparison context', () => {
     const squad=getSquad()
@@ -731,3 +755,52 @@ describe('GW1 locked-core squad optimisation',()=>{
     expect(leagueLivePredictedPoints(players, [{ element: player.id, position: 1, multiplier: 1 }], 12)).toBeNull()
   })
 })
+
+describe('deadline formatters and context display', () => {
+  const targetIso = '2026-08-28T17:30:00.000Z'
+
+  it('formats exact date and time and handles invalid/null values', () => {
+    const formatted = formatDeadlineDate(targetIso)
+    expect(formatted).toBeTruthy()
+    expect(typeof formatted).toBe('string')
+    expect(formatDeadlineDate(null)).toBe('')
+    expect(formatDeadlineDate('invalid')).toBe('')
+  })
+
+  it('formats remaining countdown correctly for days, hours, and minutes', () => {
+    const now3d = Date.parse('2026-08-25T12:30:00.000Z')
+    expect(formatDeadlineRemaining(targetIso, now3d)).toBe('3d 5h')
+
+    const now5h = Date.parse('2026-08-28T12:10:00.000Z')
+    expect(formatDeadlineRemaining(targetIso, now5h)).toBe('5h 20m')
+
+    const now25m = Date.parse('2026-08-28T17:05:00.000Z')
+    expect(formatDeadlineRemaining(targetIso, now25m)).toBe('25m')
+
+    const nowPassed = Date.parse('2026-08-28T17:31:00.000Z')
+    expect(formatDeadlineRemaining(targetIso, nowPassed)).toBe('Deadline passed')
+  })
+
+  it('formats headline deadline text with target gameweek context', () => {
+    const now = Date.parse('2026-08-25T12:30:00.000Z')
+
+    // When viewing during GW1 live matches, target next GW2 deadline
+    const textNextGw = formatDeadlineText(targetIso, 2, 1, now)
+    expect(textNextGw).toContain('GW2 Deadline:')
+    expect(textNextGw).toContain('3d 5h left')
+
+    // When viewing before current GW deadline
+    const textCurrentGw = formatDeadlineText(targetIso, 1, 1, now)
+    expect(textCurrentGw).toContain('Deadline:')
+    expect(textCurrentGw).not.toContain('GW1 Deadline:')
+    expect(textCurrentGw).toContain('3d 5h left')
+
+    // When season is complete / null
+    expect(formatDeadlineText(null, null, 38, now)).toBe('Season complete')
+
+    // When deadline passed
+    const passed = Date.parse('2026-08-29T00:00:00.000Z')
+    expect(formatDeadlineText(targetIso, 2, 2, passed)).toBe('Deadline passed')
+  })
+})
+

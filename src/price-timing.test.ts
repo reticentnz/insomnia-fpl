@@ -68,7 +68,7 @@ describe('price timing', () => {
   })
 
   it('defines robustness independently of price pressure', () => {
-    expect(deriveRecommendationRobustness({ action: 'ROLL' })).toBe('MARGINAL')
+    expect(deriveRecommendationRobustness({ action: 'ROLL', netExpectedGain: 0, probabilityBeatsRoll: 0 })).toBe('INELIGIBLE')
     expect(deriveRecommendationRobustness({ action: 'TRANSFER', actionable: true, netExpectedGain: 3, probabilityBeatsRoll: .8, latestMatchSensitivity: 'LOW' })).toBe('ROBUST')
   })
 

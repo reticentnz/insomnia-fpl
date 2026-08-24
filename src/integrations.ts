@@ -1,6 +1,7 @@
-import { findTransferRoutesToTarget, getTeamColor, horizonProjection, type Player, type Transfer } from './domain.ts'
+import { findTransferRoutesToTarget, findTransferRoutesFromOut, getTeamColor, horizonProjection, type Player, type Transfer } from './domain.ts'
 import type { PlayerSignal } from './player-signals'
 import type { ProjectionInputCatalog } from './core/types'
+import type { RecommendationClassification } from './recommendation-policy.ts'
 
 // Keep the public FPL response shape outside the domain layer. A server-side
 // ingestion job can use the same normalizer and persist snapshots later.
@@ -209,8 +210,25 @@ export function buildExplanationContext(args:ExplanationContext,question='') {
   }
 
   if(primaryMentioned&&wantsTransfer){
-    const plan=findTransferRoutesToTarget(primaryMentioned,args.squad,catalog,args.horizon,args.bank,args.freeTransfers,5)
-    return {...base,intent:'named_player_transfer',target:compactPlayer(plan.target,args.horizon),alreadyOwned:plan.alreadyOwned,directShortfall:plan.directShortfall,routes:plan.routes.map(route=>({moves:route.moves.map(move=>({out:compactPlayer(move.out,args.horizon),in:compactPlayer(move.in,args.horizon)})),rawGain:route.rawGain,hitCost:route.hitCost,netGain:route.netGain,bankAfter:route.bankAfter}))}
+    const isOwned=args.squad.some(player=>player.id===primaryMentioned.id)
+    const plan=isOwned
+      ? findTransferRoutesFromOut(primaryMentioned,args.squad,catalog,args.horizon,args.bank,args.freeTransfers,5)
+      : findTransferRoutesToTarget(primaryMentioned,args.squad,catalog,args.horizon,args.bank,args.freeTransfers,5)
+    return {
+      ...base,
+      intent:'named_player_transfer',
+      transferDirection:isOwned?'out':'in',
+      target:compactPlayer(plan.target,args.horizon),
+      alreadyOwned:plan.alreadyOwned,
+      directShortfall:plan.directShortfall,
+      routes:plan.routes.map(route=>({
+        moves:route.moves.map(move=>({out:compactPlayer(move.out,args.horizon),in:compactPlayer(move.in,args.horizon)})),
+        rawGain:route.rawGain,
+        hitCost:route.hitCost,
+        netGain:route.netGain,
+        bankAfter:route.bankAfter
+      }))
+    }
   }
 
   const captainRankings=args.squad.map(player=>compactPlayer(player,1)).sort((a,b)=>b.xPts-a.xPts).slice(0,3)
@@ -626,12 +644,22 @@ type ClientCatalogResponse = {
   capturedAt: string
   currentGameweek: number | null
   deadline: string | null
+  nextGameweek?: number | null
+  currentGameweekDeadline?: string | null
   season?: string
   currentSeason?: string
   players: Array<Omit<Player, 'colour'> & { colour?: string }>
 }
 
-export async function fetchLiveCatalog(retries = 3): Promise<{capturedAt:string;currentGameweek:number|null;deadline:string|null;season:string|null;players:Player[]}> {
+export async function fetchLiveCatalog(retries = 3): Promise<{
+  capturedAt: string
+  currentGameweek: number | null
+  deadline: string | null
+  nextGameweek: number | null
+  currentGameweekDeadline: string | null
+  season: string | null
+  players: Player[]
+}> {
   let lastError: Error | null = null
   for (let attempt = 0; attempt <= retries; attempt++) {
     const controller = new AbortController()
@@ -646,7 +674,15 @@ export async function fetchLiveCatalog(retries = 3): Promise<{capturedAt:string;
           expectedMinutes: player.expectedMinutes ?? Math.min(90, 90 * (player.minutes / 100)),
           dataConfidence: player.dataConfidence ?? player.roleProfile?.confidence ?? 'MEDIUM',
         }))
-        return { capturedAt: catalogue.capturedAt, currentGameweek: catalogue.currentGameweek, deadline: catalogue.deadline, season: catalogue.season || catalogue.currentSeason || null, players }
+        return {
+          capturedAt: catalogue.capturedAt,
+          currentGameweek: catalogue.currentGameweek,
+          deadline: catalogue.deadline,
+          nextGameweek: catalogue.nextGameweek ?? null,
+          currentGameweekDeadline: catalogue.currentGameweekDeadline ?? null,
+          season: catalogue.season || catalogue.currentSeason || null,
+          players,
+        }
       }
       lastError = new Error(`Live FPL data unavailable: ${response.status}`)
     } catch (err) {
@@ -691,12 +727,12 @@ export async function fetchDecisionHistory(limit = 50): Promise<any[]> {
 }
 
 export async function evaluatePendingDecisionHistory(): Promise<void> {
-  const response = await fetch('/api/decisions/evaluate-pending', { method: 'POST' })
+  const response = await fetch('/api/decisions/evaluate-pending', { method: 'POST', headers: { 'content-type': 'application/json' } })
   const data = await response.json().catch(() => null)
   if (!response.ok) throw new Error(apiErrorMessage(data, `Decision evaluation unavailable: HTTP ${response.status}`))
 }
 
-export type CanonicalRecommendationCandidate = { id: string; rank: number; action: string; apiMoves: Array<{ outId: number; inId: number }>; netExpectedGain: number; rawGain: number; hitCost: number; uncertaintyPenalty: number; savedTransferValue: number; lookaheadAvailable: boolean; nextWeekFreeTransfers: number | null; nextWeekBestNetGain: number | null; probabilityBeatsRoll: number | null; affordabilityStatus: string; bankAfterTenths: number | null; p10Points: number | null; p50Points: number | null; p90Points: number | null; leagueDifferential?: number | null; chip?: string; chipReason?: string; timingAdvice?: string; priceTiming?: unknown; earlySeasonSensitive?: boolean; roleLatestMatchSensitive?: boolean; latestMatchSensitive?: boolean; latestMatchSensitivity?: 'LOW' | 'MEDIUM' | 'HIGH'; sensitivityFlags?: string[] };
+export type CanonicalRecommendationCandidate = { id: string; rank: number; action: string; apiMoves: Array<{ outId: number; inId: number }>; netExpectedGain: number; rawGain: number; hitCost: number; uncertaintyPenalty: number; savedTransferValue: number; lookaheadAvailable: boolean; nextWeekFreeTransfers: number | null; nextWeekBestNetGain: number | null; probabilityBeatsRoll: number | null; affordabilityStatus: string; bankAfterTenths: number | null; p10Points: number | null; p50Points: number | null; p90Points: number | null; leagueDifferential?: number | null; chip?: string; chipReason?: string; classification?: RecommendationClassification; timingAdvice?: string; priceTiming?: unknown; earlySeasonSensitive?: boolean; roleLatestMatchSensitive?: boolean; latestMatchSensitive?: boolean; latestMatchSensitivity?: 'LOW' | 'MEDIUM' | 'HIGH'; sensitivityFlags?: string[] };
 
 export type CanonicalRecommendation = {
   id: string; planId: string; forecastRunId: string; horizon: number; status: string; primaryCandidateId: string; cacheStatus: 'HIT' | 'MISS'; createdAt?: string;

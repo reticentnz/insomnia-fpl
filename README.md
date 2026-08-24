@@ -30,7 +30,8 @@ docker run -d \
   -e APP_DATA_DIR='/app/data' \
   -e SIGNAL_CONFIG_FILE='/app/data/signal-config.json' \
   -e FPL_INGEST_CACHE_PATH='/app/data/cache/fpl-official.json' \
-  -e FPL_CATALOG_CACHE_FILE='/app/data/cache/projection-catalog.json' \
+  -e FPL_DATA_CACHE_FILE='/app/data/cache/fpl-data.json' \
+  -e SIGNAL_CACHE_DIR='/app/data/cache/signal-feeds' \
   -e ODDS_API_KEY='optional-the-odds-api-key' \
   -e ODDS_API_REGIONS='uk' \
   -v "$PWD/data:/app/data" \
@@ -62,7 +63,7 @@ The **Transfers** tab becomes the **GW1 Draft Lab** before the opening deadline 
 
 ## Database
 
-The canonical schema is in `db/migrations/001_initial_rebuild.sql`. The app uses SQLite through Node's built-in SQLite driver. Put a local path such as `DATABASE_URL="file:./dev.db"` in the ignored `.env.local` file, then run the checksum-aware migration workflow:
+The database schema is managed through checksum-aware SQL migrations in `db/migrations/`, beginning with the base rebuild `001_initial_rebuild.sql` and tracking incremental updates in `SchemaMigration`. The app uses SQLite through Node's built-in SQLite driver. Put a local path such as `DATABASE_URL="file:./dev.db"` in the ignored `.env.local` file, then run the checksum-aware migration workflow:
 
 ```bash
 npm run db:migrate
@@ -75,6 +76,12 @@ To refresh the live public FPL data and append immutable official observations, 
 ```bash
 npm run ingest:fpl
 npm run db:verify
+```
+
+To manually generate an immutable offline forecast run:
+
+```bash
+npm run forecast
 ```
 
 The ingestion derives the season from the official Gameweek 1 deadline. Set `FPL_SEASON` (for example, `2026/27`) or `FPL_SEASON_START_YEAR` only when an explicit override is needed.
@@ -118,13 +125,23 @@ The server keeps successful `/api/catalog` assemblies in a keyed memory cache fo
 
 `src/decision-review.ts` implements a bounded Quant → Skeptic → Arbiter workflow. The default path is deterministic and works without an LLM provider; optional provider callbacks can critique and explain the supplied evidence but cannot replace the underlying calculations.
 
+### Decision journal and counterfactual history
+
+`scripts/decision-journal-service.mjs` records manager decisions (`accepted`, `rejected`, `ignored`, `custom`) against immutable recommendation sets, baseline plans, and chosen plans via `POST /api/decisions` and `GET /api/decisions`. Once gameweek fixtures conclude, decisions are evaluated against realized FPL points via `POST /api/decisions/:id/evaluate`. The service computes model forecast error and provides an audit-proof, non-causal counterfactual comparison between baseline and chosen actions.
+
 The `Model Debug` view is intentionally developer-only and is available by adding `?debug=1` to the local URL. It ranks every loaded player and exposes the projection model version, baseline, fixture adjustment, expected-minutes adjustment, attacking contribution, clean-sheet contribution, bonus, card deduction and final xPts across the selected 1/3/5 gameweek horizon. The scorer also handles appearance thresholds, goals conceded, saves, penalty saves/misses, own goals, defensive contributions and official BPS tie allocation.
 
 ## Role evidence and squad challenge
 
 The projection model separates a start, substitute appearance and no-show for every player. Verified current evidence can update those probabilities; expired, rejected and merely pending claims cannot. Recent transfers deliberately fall back to a low-confidence role prior until evidence establishes the new depth-chart position. The optimiser chooses a legal XI, captain, vice-captain and bench cover separately for every gameweek in the planning horizon.
 
-On **My Team**, **Challenge squad** uses the OpenAI Responses API with web search and strict structured output to look for current role, injury, set-piece and minutes risks. Set `OPENAI_API_KEY` and optionally `OPENAI_RESEARCH_MODEL` in `.env.local`, or use the app's personal API-key setting. Results are accepted only when their URL appears in the API's actual web-search sources, then stored as `PENDING`. A manager must approve a finding before it can affect projections; the next catalogue and forecast resolve the canonical signal ledger directly. This is intentionally an evidence workflow, not a second optimiser or a mechanism that treats an LLM's prose as truth.
+On **My Team**, **Challenge squad** uses structured LLM search to identify current role, injury, set-piece and minutes risks. Supported LLM providers include:
+* **OpenAI**: Configure `OPENAI_API_KEY` and optionally `OPENAI_RESEARCH_MODEL` (defaults to `gpt-5-mini`).
+* **DeepSeek**: Configure `DEEPSEEK_API_KEY` and optionally `DEEPSEEK_MODEL` / `DEEPSEEK_RESEARCH_MODEL` (defaults to `deepseek-v4-flash`).
+* **Anthropic**: Configure `ANTHROPIC_API_KEY` and optionally `ANTHROPIC_MODEL`.
+* **Google Gemini**: Configure `GEMINI_API_KEY` and optionally `GEMINI_MODEL`.
+
+Keys can also be configured per-session in the in-app user settings. Results are accepted only when citations match verified web-search sources and are stored as `PENDING`. A manager must approve a finding before it can affect projections; the next catalogue and forecast resolve the canonical signal ledger directly. This is intentionally an evidence workflow, not a second optimiser or a mechanism that treats an LLM's prose as truth.
 
 Source priority is enforced by a curated domain registry: official FPL/club/Premier League material first, followed by reputable journalists and established predicted-lineup sources. Same-origin updates supersede older claims and materially weaker conflicting sources cannot pull the role estimate away from stronger evidence. A commercial editorial feed such as FPL Scout can be added later as a licensed provider, but the architecture does not require one and should not scrape or republish subscriber content. User-submitted feedback is stored as low-confidence `PENDING` evidence through `/api/player-signals`; manual overrides are explicit, fully trusted records rather than silently inferred from chat.
 
@@ -148,20 +165,32 @@ The application header shows the operational state of that boundary: forecast re
 
 Container startup applies all pending SQL migrations before reporting the database ready. When upgrading an existing container, retain and back up the mounted `/app/data` volume; no separate manual migration command is required under the standard Docker configuration.
 
-## Verification
+## Repository documentation
+
+Detailed specifications and architectural documentation are maintained in the [`docs/`](file:///Users/stew/Documents/ChatGPT/fplgod/docs) directory:
+
+* [`docs/IMPLEMENTATION_BLUEPRINT.md`](file:///Users/stew/Documents/ChatGPT/fplgod/docs/IMPLEMENTATION_BLUEPRINT.md) — Comprehensive technical architecture, service boundaries, and state flow.
+* [`docs/DATA_DICTIONARY.md`](file:///Users/stew/Documents/ChatGPT/fplgod/docs/DATA_DICTIONARY.md) — Full schema definitions, table relations, and domain types.
+* [`docs/ACCEPTANCE_TESTS.md`](file:///Users/stew/Documents/ChatGPT/fplgod/docs/ACCEPTANCE_TESTS.md) — Acceptance criteria and deterministic verification tests.
+* [`docs/WORK_PACKAGES.md`](file:///Users/stew/Documents/ChatGPT/fplgod/docs/WORK_PACKAGES.md) — Work package roadmap and task dependencies.
+* [`docs/IMPLEMENTATION_NOTES.md`](file:///Users/stew/Documents/ChatGPT/fplgod/docs/IMPLEMENTATION_NOTES.md) — Historical development logs and changelog entries.
+
+## Verification and scripts
 
 All tests use saved fixtures or temporary databases and do not require a network connection:
 
 ```bash
-npm test
-npm run typecheck
-npm run test:integration
-npm run test:e2e
-npm run build
-npm run db:reset -- --yes-reset-development-data
-npm run db:migrate
-npm run db:verify
-npm run backtest
+npm test                      # Run all domain, intelligence, and vitest suites
+npm run typecheck             # TypeScript type validation
+npm run test:integration      # Run migration, ingestion, manager, and plan integration tests
+npm run test:e2e              # Run deterministic fixture end-to-end smoke tests
+npm run build                 # Verify domain rules and create production bundle
+npm run preview               # Serve the production build locally
+npm run forecast              # Generate an immutable offline forecast run
+npm run db:reset -- --yes-reset-development-data  # Discard development database safely
+npm run db:migrate            # Apply pending schema migrations
+npm run db:verify             # Verify database integrity and active schema
+npm run backtest              # Run pre-deadline projection backtesting and calibration
 ```
 
 For command-line database verification, set `DATABASE_URL` to a repository-local or application-data SQLite file. The reset command intentionally refuses broad or unresolved paths.

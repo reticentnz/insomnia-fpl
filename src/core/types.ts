@@ -53,9 +53,19 @@ export type ProjectionCatalogPlayer = {
   dataConfidence?: string
 }
 
+export type ProjectionCatalogGameweek = {
+  id: string
+  gameweek: number
+  deadline: string | null
+  isCurrent: boolean
+  isNext: boolean
+  finished: boolean
+}
+
 export type ProjectionInputCatalog = {
   asOf: string
   season: string
+  gameweeks?: ProjectionCatalogGameweek[]
   players: ProjectionCatalogPlayer[]
   sourceRunIds: { official: string[]; underlying: string[]; market: string[] }
   freshness: Record<'official' | 'underlying' | 'market' | 'signals', SourceFreshness>

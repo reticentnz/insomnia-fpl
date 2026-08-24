@@ -8,10 +8,12 @@
  * marginal (or roll) recommendation into a transfer.
  */
 
+import { classifyRecommendation, type RecommendationClassification } from './recommendation-policy.ts'
+
 export type PricePressure = 'UNKNOWN' | 'LOW' | 'MODERATE' | 'HIGH'
 export type PricePressureDirection = 'UPWARD' | 'DOWNWARD' | 'NEUTRAL' | 'UNKNOWN'
 export type PriceTimingVerdict = 'WAIT' | 'CHECK_AGAIN' | 'ACT_SOON' | 'DEADLINE_PASSED'
-export type RecommendationRobustness = 'ROBUST' | 'MARGINAL' | 'SENSITIVE' | 'UNKNOWN'
+export type RecommendationRobustness = RecommendationClassification | 'UNKNOWN'
 export type ScenarioAffordability = 'AFFORDABLE' | 'UNAFFORDABLE' | 'UNKNOWN'
 
 export type TransferActivity = {
@@ -41,6 +43,7 @@ export type TimingRecommendation = {
   probabilityBeatsRoll?: number | null
   actionable?: boolean
   /** Role-evidence sensitivity can be high even when the rate sample is not. */
+  roleLatestMatchSensitive?: boolean
   latestMatchSensitive?: boolean
   latestMatchSensitivity?: 'LOW' | 'MEDIUM' | 'HIGH'
 }
@@ -169,13 +172,20 @@ function scenario(input: PriceTimingInput, swingTenths: 1 | 2): AdversePriceScen
 }
 
 export function deriveRecommendationRobustness(recommendation: TimingRecommendation): RecommendationRobustness {
-  if (recommendation.action !== 'TRANSFER' || recommendation.actionable === false) return 'MARGINAL'
-  if (recommendation.latestMatchSensitive || recommendation.latestMatchSensitivity === 'HIGH') return 'SENSITIVE'
   const gain = recommendation.netExpectedGain
   const probability = recommendation.probabilityBeatsRoll
   if (typeof gain !== 'number' || !Number.isFinite(gain) || typeof probability !== 'number' || !Number.isFinite(probability)) return 'UNKNOWN'
-  if (gain >= 2 && probability >= .75) return 'ROBUST'
-  return 'MARGINAL'
+
+  return classifyRecommendation({
+    action: recommendation.action,
+    actionable: recommendation.actionable !== false,
+    affordabilityStatus: 'EXACT',
+    netExpectedGain: gain,
+    probabilityBeatsRoll: probability,
+    roleLatestMatchSensitive: recommendation.roleLatestMatchSensitive,
+    latestMatchSensitive: recommendation.latestMatchSensitive,
+    latestMatchSensitivity: recommendation.latestMatchSensitivity,
+  })
 }
 
 function deadlineStatus(deadlineAt: string | null | undefined, now: number): PriceTimingAssessment['deadlineStatus'] {

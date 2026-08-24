@@ -219,6 +219,58 @@ export function isInitialDraftPeriod(
   return Number.isFinite(deadlineTime) && now < deadlineTime;
 }
 
+export function formatDeadlineDate(deadlineIso: string | null): string {
+  if (!deadlineIso) return "";
+  const time = Date.parse(deadlineIso);
+  if (!Number.isFinite(time)) return "";
+  const date = new Date(time);
+  return date.toLocaleString([], {
+    weekday: "short",
+    day: "numeric",
+    month: "short",
+    hour: "2-digit",
+    minute: "2-digit",
+  });
+}
+
+export function formatDeadlineRemaining(deadlineIso: string | null, now = Date.now()): string {
+  if (!deadlineIso) return "";
+  const deadlineMs = new Date(deadlineIso).getTime();
+  if (!Number.isFinite(deadlineMs)) return "";
+  const diffMs = deadlineMs - now;
+  if (diffMs <= 0) return "Deadline passed";
+  const diffMins = Math.floor(diffMs / (1000 * 60));
+  const diffHours = Math.floor(diffMs / (1000 * 60 * 60));
+  const diffDays = Math.floor(diffHours / 24);
+  const remHours = diffHours % 24;
+  if (diffDays >= 2) {
+    return remHours > 0 ? `${diffDays}d ${remHours}h` : `${diffDays} days`;
+  }
+  if (diffHours >= 1) {
+    const remMins = diffMins % 60;
+    return remMins > 0 ? `${diffHours}h ${remMins}m` : `${diffHours} hours`;
+  }
+  return `${Math.max(1, diffMins)}m`;
+}
+
+export function formatDeadlineText(
+  deadlineIso: string | null,
+  nextGameweek?: number | null,
+  currentGameweek?: number | null,
+  now = Date.now(),
+): string {
+  if (!deadlineIso) return "Season complete";
+  const remaining = formatDeadlineRemaining(deadlineIso, now);
+  const formattedDate = formatDeadlineDate(deadlineIso);
+  if (remaining === "Deadline passed" || !remaining) return "Deadline passed";
+
+  const targetPrefix = nextGameweek && currentGameweek && nextGameweek > currentGameweek
+    ? `GW${nextGameweek} Deadline:`
+    : "Deadline:";
+
+  return `${targetPrefix} ${formattedDate} (${remaining} left)`;
+}
+
 export function computeDraftFingerprint(
   playerIds: number[],
   lockedIds: number[] = [],
@@ -1944,6 +1996,123 @@ export function findTransferRoutesToTarget(
     routes: selected,
   };
 }
+
+export function findTransferRoutesFromOut(
+  outPlayer: Player,
+  squad: Player[],
+  pool: Player[],
+  horizon = 5,
+  bank = 0,
+  freeTransfers = 1,
+  limit = 5,
+): TargetTransferPlan {
+  if (!squad.some((player) => player.id === outPlayer.id))
+    return { target: outPlayer, alreadyOwned: false, directShortfall: null, routes: [] };
+  if (outPlayer.sellingPrice === null)
+    return { target: outPlayer, alreadyOwned: true, directShortfall: null, routes: [] };
+
+  const routes: TargetTransferRoute[] = [];
+  const seen = new Set<string>();
+
+  const addRoute = (moves: Array<{ out: Player; in: Player }>) => {
+    const outgoingIds = new Set(moves.map((move) => move.out.id));
+    const incoming = moves.map((move) => move.in);
+    const finalSquad = [
+      ...squad.filter((player) => !outgoingIds.has(player.id)),
+      ...incoming,
+    ];
+    if (moves.some((move) => move.out.sellingPrice === null)) return;
+    const totalPriceDelta = +moves
+      .reduce((sum, move) => sum + move.in.price - (move.out.sellingPrice ?? move.out.price), 0)
+      .toFixed(1);
+    if (totalPriceDelta > bank + 0.0001 || !isLegalRouteSquad(finalSquad))
+      return;
+    const key = moves
+      .map((move) => `${move.out.id}:${move.in.id}`)
+      .sort()
+      .join("|");
+    if (seen.has(key)) return;
+    seen.add(key);
+    const detailed = moves.map((move) => ({
+      out: move.out,
+      in: move.in,
+      outProjection: +horizonProjection(move.out, horizon).toFixed(1),
+      inProjection: +horizonProjection(move.in, horizon).toFixed(1),
+      priceDelta: +(move.in.price - (move.out.sellingPrice ?? move.out.price)).toFixed(1),
+    }));
+    const rawGain = +detailed
+      .reduce((sum, move) => sum + move.inProjection - move.outProjection, 0)
+      .toFixed(1);
+    const hitCost = Math.max(0, moves.length - freeTransfers) * 4;
+    routes.push({
+      moves: detailed,
+      rawGain,
+      hitCost,
+      netGain: +(rawGain - hitCost).toFixed(1),
+      bankAfter: +(bank - totalPriceDelta).toFixed(1),
+    });
+  };
+
+  const availableReplacements = pool.filter(
+    (player) =>
+      player.active !== false &&
+      player.id !== outPlayer.id &&
+      player.position === outPlayer.position &&
+      !squad.some((owned) => owned.id === player.id),
+  );
+
+  for (const inc of availableReplacements) {
+    addRoute([{ out: outPlayer, in: inc }]);
+  }
+
+  // Also explore 2-transfer combinations with available funding players if direct options are limited or funded upgrades exist
+  const availableFundingPlayers = pool.filter(
+    (player) =>
+      player.active !== false &&
+      player.id !== outPlayer.id &&
+      !squad.some((owned) => owned.id === player.id),
+  );
+
+  for (const inc of availableReplacements) {
+    for (const fundingOut of squad) {
+      if (fundingOut.id === outPlayer.id) continue;
+      for (const fundingIn of availableFundingPlayers) {
+        if (fundingIn.id === inc.id || fundingIn.position !== fundingOut.position) continue;
+        addRoute([
+          { out: outPlayer, in: inc },
+          { out: fundingOut, in: fundingIn },
+        ]);
+      }
+    }
+  }
+
+  routes.sort(
+    (a, b) =>
+      b.netGain - a.netGain ||
+      a.hitCost - b.hitCost ||
+      b.bankAfter - a.bankAfter ||
+      a.moves.length - b.moves.length,
+  );
+  const routeLimit = Math.max(1, limit);
+  const selected = routes.slice(0, routeLimit);
+  const bestDirect = routes.find((route) => route.moves.length === 1);
+  if (bestDirect && !selected.includes(bestDirect))
+    selected.splice(Math.max(0, selected.length - 1), 1, bestDirect);
+  selected.sort(
+    (a, b) =>
+      b.netGain - a.netGain ||
+      a.hitCost - b.hitCost ||
+      b.bankAfter - a.bankAfter,
+  );
+
+  return {
+    target: outPlayer,
+    alreadyOwned: true,
+    directShortfall: 0,
+    routes: selected,
+  };
+}
+
 
 export function transfers(
   h: number,

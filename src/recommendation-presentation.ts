@@ -1,4 +1,33 @@
+import { type RecommendationClassification } from './recommendation-policy.ts'
+
 type UnknownRecord = Record<string, unknown>
+
+export type ClassificationBadge = {
+  label: string
+  pillClass: 'green' | 'amber' | 'neutral'
+}
+
+export function recommendationClassificationBadge(classification: unknown): ClassificationBadge | null {
+  if (typeof classification !== 'string') return null
+  switch (classification) {
+    case 'ROBUST':
+      return { label: 'Action threshold met', pillClass: 'green' }
+    case 'MARGINAL':
+      return { label: 'Watchlist only', pillClass: 'amber' }
+    case 'SENSITIVE':
+      return { label: 'Watchlist — sensitive inputs', pillClass: 'amber' }
+    case 'INELIGIBLE':
+      return { label: 'Not actionable', pillClass: 'neutral' }
+    default:
+      return null
+  }
+}
+
+export function formatTimingBadge(verdict: string): string {
+  const clean = verdict.replaceAll('_', ' ').trim()
+  if (clean.toUpperCase().startsWith('TIMING:')) return clean
+  return `TIMING: ${clean}`
+}
 
 const finiteNumber = (value: unknown): number | null => typeof value === 'number' && Number.isFinite(value) ? value : null
 const bool = (value: unknown): boolean => value === true

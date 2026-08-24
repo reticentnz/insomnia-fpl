@@ -10,6 +10,8 @@ export type CachedClientCatalog = {
   capturedAt: string | null;
   currentGameweek: number | null;
   deadline: string | null;
+  nextGameweek?: number | null;
+  currentGameweekDeadline?: string | null;
   season: string | null;
   players: Player[];
 };

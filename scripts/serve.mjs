@@ -1245,9 +1245,15 @@ function liveProjectionFixture(item, fixture, catalog, completedGameweeks) {
 async function refreshLiveData() {
   const db=await getDb(),asOf=new Date().toISOString()
   const catalog=await assembleProjectionInputCatalog(db,{asOf})
-  const futureFixtures=catalog.players.flatMap(player=>player.fixtures).filter(fixture=>fixture.gameweekId&&fixture.kickoffAt&&Date.parse(fixture.kickoffAt)>=Date.parse(asOf)).sort((left,right)=>(left.gameweekFplId||Infinity)-(right.gameweekFplId||Infinity))
-  const next=futureFixtures[0]||null,currentGameweek=next?.gameweekFplId||null
-  const deadline=next?.gameweekId?(await db.query(`SELECT "deadline_at" FROM "GameweekObservation" WHERE "gameweek_id"=$1 AND datetime("observed_at")<=datetime($2) ORDER BY datetime("observed_at") DESC,"id" DESC LIMIT 1`,[next.gameweekId,asOf])).rows[0]?.deadline_at||null:null
+  const asOfMs = Date.parse(asOf)
+  const gameweeks = catalog.gameweeks || []
+  const futureFixtures=catalog.players.flatMap(player=>player.fixtures).filter(fixture=>fixture.gameweekId&&fixture.kickoffAt&&Date.parse(fixture.kickoffAt)>=asOfMs).sort((left,right)=>(left.gameweekFplId||Infinity)-(right.gameweekFplId||Infinity))
+  const currentGwRow = gameweeks.find(gw => gw.isCurrent) || gameweeks.find(gw => !gw.finished)
+  const currentGameweek = currentGwRow?.gameweek || futureFixtures[0]?.gameweekFplId || null
+  const nextDeadlineRow = gameweeks.find(gw => gw.deadline && Date.parse(gw.deadline) > asOfMs)
+  const deadline = nextDeadlineRow?.deadline || null
+  const nextGameweek = nextDeadlineRow?.gameweek || null
+  const currentGameweekDeadline = gameweeks.find(gw => gw.gameweek === currentGameweek)?.deadline || null
   const players=catalog.players.map((item,index)=>{
     const official=item.official||{},first=item.fixtures[0]
     const availability=Number(official.chance_of_playing??100)
@@ -1256,7 +1262,7 @@ async function refreshLiveData() {
     const expectedMinutes=roleProfile.startProbability*roleProfile.minutesIfStarting+(1-roleProfile.startProbability)*roleProfile.substituteProbabilityWhenBenched*roleProfile.minutesIfSubstitute
     return {id:item.fplId,name:item.name,identityNames:item.identityNames||[item.name],club:item.team.shortName,clubName:item.team.name,position:official.position,price:Number(official.price_tenths||0)/10,form:Number(official.form||0),ownership:Number(official.ownership_percent||0),minutes:availability,expectedMinutes,roleProfile,fixture:first?`${first.opponent.shortName} (${first.isHome?'H':'A'})`:'Blank',difficulty:first?.difficulty||3,projection:Number(official.ep_next||0),colour:colours[index%colours.length],status:String(official.status||'a'),chanceOfPlaying:official.chance_of_playing==null?undefined:Number(official.chance_of_playing),news:official.news||null,transfersIn:Number(official.transfers_in||0),transfersOut:Number(official.transfers_out||0),active:Boolean(official.active),dataConfidence:item.provenance.underlyingObservationId?'HIGH':'MEDIUM',upcomingFixtures:item.fixtures.map(fixture=>liveProjectionFixture(item,fixture,catalog,Math.max(0,(currentGameweek||1)-1))),stats:{minutes:Number(official.minutes||0),starts:Number(official.starts||0),totalPoints:Number(official.total_points||0),goals:Number(official.goals_scored||0),assists:Number(official.assists||0),cleanSheets:Number(official.clean_sheets||0),goalsConceded:Number(official.goals_conceded||0),saves:Number(official.saves||0),bonus:Number(official.bonus||0),bps:Number(official.bps||0),yellowCards:Number(official.yellow_cards||0),redCards:Number(official.red_cards||0),ownGoals:Number(official.own_goals||0),penaltiesMissed:Number(official.penalties_missed||0),penaltiesSaved:Number(official.penalties_saved||0),expectedGoals:Number(official.expected_goals||0),expectedAssists:Number(official.expected_assists||0),expectedGoalsConceded:Number(official.expected_goals_conceded||0)}}
   })
-  return {capturedAt:catalog.freshness.official.observedAt||catalog.asOf,currentGameweek,deadline,modelVersion:MODEL_VERSION,players,freshness:catalog.freshness,inputHash:catalog.inputHash}
+  return {capturedAt:catalog.freshness.official.observedAt||catalog.asOf,currentGameweek,deadline,nextGameweek,currentGameweekDeadline,gameweeks,modelVersion:MODEL_VERSION,players,freshness:catalog.freshness,inputHash:catalog.inputHash}
 }
 
 function toCatalogRoleSignals(item) {
@@ -1298,7 +1304,13 @@ function compactClientCatalog(catalogue, fixtureHorizon = 5) {
     .filter(fixture => fixture.gameweekId && fixture.kickoffAt && Date.parse(fixture.kickoffAt) >= asOfMs)
     .sort((left, right) => (left.gameweekFplId || Infinity) - (right.gameweekFplId || Infinity))
   const knownGameweeks = (catalogue.players || []).flatMap(player => player.fixtures || []).map(fixture => Number(fixture.gameweekFplId)).filter(Number.isFinite)
-  const currentGameweek = futureFixtures[0]?.gameweekFplId || (knownGameweeks.length ? Math.max(...knownGameweeks) : null)
+  const gameweeks = catalogue.gameweeks || []
+  const currentGwRow = gameweeks.find(gw => gw.isCurrent) || gameweeks.find(gw => !gw.finished)
+  const currentGameweek = currentGwRow?.gameweek || futureFixtures[0]?.gameweekFplId || (knownGameweeks.length ? Math.max(...knownGameweeks) : null)
+  const nextDeadlineRow = gameweeks.find(gw => gw.deadline && Date.parse(gw.deadline) > asOfMs)
+  const deadline = nextDeadlineRow?.deadline || null
+  const nextGameweek = nextDeadlineRow?.gameweek || null
+  const currentGameweekDeadline = gameweeks.find(gw => gw.gameweek === currentGameweek)?.deadline || null
   const players = (catalogue.players || []).map(item => {
     const official = item.official || {}
     const fixtures = (item.fixtures || [])
@@ -1348,7 +1360,10 @@ function compactClientCatalog(catalogue, fixtureHorizon = 5) {
     currentSeason: catalogue.season || FPL_SEASON,
     capturedAt: catalogue.freshness?.official?.observedAt || catalogue.asOf,
     currentGameweek,
-    deadline: null,
+    deadline,
+    nextGameweek,
+    currentGameweekDeadline,
+    gameweeks,
     players,
   }
 }
@@ -1944,7 +1959,7 @@ function startServerOnAvailablePort(targetPort) {
     // endpoints are explicitly listed rather than silently accepting an
     // arbitrary content type.
     const isApiWrite = request.startsWith('/api/') && ['POST', 'PUT', 'PATCH'].includes(req.method || '')
-    const noBodyWrite = request === '/api/fpl-refresh' || /^\/api\/plans\/[^/]+\/select$/.test(request) || /^\/api\/decisions\/[^/]+\/evaluate$/.test(request)
+    const noBodyWrite = request === '/api/fpl-refresh' || request === '/api/decisions/evaluate-pending' || /^\/api\/plans\/[^/]+\/select$/.test(request) || /^\/api\/decisions\/[^/]+\/evaluate$/.test(request)
     if (isApiWrite && !noBodyWrite) {
       const contentLength = Number(req.headers['content-length'] || 0)
       if (Number.isFinite(contentLength) && contentLength > MAX_JSON_BODY_BYTES) {
@@ -2862,7 +2877,7 @@ function startServerOnAvailablePort(targetPort) {
           const prompt = [
             `You are Insomnia FPL, an expert Fantasy Premier League squad advisor.`,
             `Answer the exact question using only the compact deterministic context. The engine has already calculated legality, budget, hit costs and projections; do not recalculate or invent alternatives.`,
-            `For named_player_transfer, explicitly name the best route's moves, bankAfter, hitCost and netGain. Mention at most two alternatives. If routes is empty, say that no legal route was found.`,
+            `For named_player_transfer, evaluate the moves and recommendations based on transferDirection: if transferDirection is 'in', name the best route's moves, remaining bank, point hit (if any), and net projected gain, mentioning at most two alternatives (if routes is empty, state clearly in natural language that no affordable or legal transfer route was found); if transferDirection is 'out', compare the player against the best available replacements in routes. If holding the player is better (e.g. all replacements have negative net gain or the player has a strong fixture/high xPts), clearly recommend holding/keeping the player; if a replacement is clearly better, recommend the top replacement move, stating the net gain and remaining bank. Never cite internal variable names (do NOT say 'deterministic context', 'bankAfter', 'netGain', 'hitCost', or 'routes is empty' - use natural terms like 'in the bank', 'transfer hit', 'points gain', 'replacement options').`,
             `For player_comparison, complete statistics are provided in 'players' and 'comparisonSummary' for all resolved players. Compare all listed candidates directly using their projected points (xPts), price, club, and upcoming fixtures. Give a clear decision on which player to prioritize. Do NOT claim stats or data are missing for any player present in 'players' or 'comparisonSummary'.`,
             `For position_ranking, complete statistics are provided in 'rankedPlayers' and 'rankingSummary'. Directly list and analyze all candidates provided in 'rankedPlayers' in order of their projected points (xPts). Mention their price, club, xPts, and upcoming fixtures. Give a clear verdict on the best options and captaincy/transfer considerations. Do NOT claim stats or rankings are missing.`,
             `For player_question, complete statistics are provided in 'player' and 'playerSummary'. Provide a concise analysis of the player's projections, fixtures, role, and owned status. Do NOT claim stats or data are missing.`,

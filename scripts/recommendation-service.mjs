@@ -3,12 +3,13 @@ import { canonicalJson } from './feed-run.mjs'
 import { applyOneStepLookahead, boundedTransferSearch } from '../src/core/optimizer.ts'
 import { evaluateChipCounterfactual } from '../src/core/chips.ts'
 import { assessPlanPriceTiming } from '../src/price-timing.ts'
+import { classifyRecommendation } from '../src/recommendation-policy.ts'
 
 import { combineSampleStreams, simulateFromStoredForecast, summarizeSampleDistribution } from '../src/core/uncertainty.ts'
 
 const parse = value => { try { return JSON.parse(value || '{}') } catch { return {} } }
 const asNumber = value => value == null ? null : Number(value)
-const RECOMMENDATION_ENGINE_VERSION = 'recommendation-v3-price-timing-activity'
+const RECOMMENDATION_ENGINE_VERSION = 'recommendation-v4-robust-primary-policy'
 export const recommendationInputHash = forecastInputHash => createHash('sha256').update(`${forecastInputHash}:${RECOMMENDATION_ENGINE_VERSION}`).digest('hex')
 const uniquePlayers = rows => [...new Map(rows.map(row => [String(row.playerId), row])).values()]
 const sensitivityFromCalibrations = (roleCalibrations, sampleCalibrations) => {
@@ -367,12 +368,48 @@ export async function createRecommendationSet(db, { planId, forecastRunId, horiz
   try {
     await db.query(`INSERT INTO "RecommendationSet" ("id","plan_id","forecast_run_id","horizon","max_transfers","chip","uncertainty_penalty_rate","created_at","status","primary_candidate_id","input_hash","league_id","league_name","free_transfers_confirmed","exact_selling_prices","roll_option_version") VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,NULL,$10,$11,$12,$13,$14,2)`, [id, planId, resolvedForecastRunId, horizon, maxTransfers, chip, uncertaintyPenaltyRate, createdAt, status, inputHash, leagueId, league?.leagueName ?? null, plan.freeTransfersConfirmed ? 1 : 0, plan.exactSellingPrices ? 1 : 0])
     if (!drafts.length) drafts = [{ moves: [], affordabilityStatus: 'AFFORDABILITY_UNKNOWN', bankAfterTenths: null, hitCost: 0, rawGain: 0, uncertaintyPenalty: 0, netExpectedGain: 0, probabilityBeatsRoll: null, expectedTeamPoints: 0, p10Points: null, p50Points: null, p90Points: null, action: 'INSUFFICIENT_DATA', leagueDifferential: null, savedTransferValue: 0, lookaheadAvailable: false, nextWeekFreeTransfers: null, nextWeekBestNetGain: null }]
-    const roll = drafts.find(draft => draft.moves.length === 0)
-    const primary = drafts.find(draft => draft.moves.length > 0 && draft.affordabilityStatus === 'EXACT' && draft.netExpectedGain > 0 && draft.probabilityBeatsRoll >= .6) || roll || drafts[0]
-    const persisted = []
-    for (const [index, draft] of drafts.entries()) {
-      const candidateId = randomUUID(), action = draft.action || (draft.moves.length ? 'TRANSFER' : 'ROLL')
+    const evaluatedDrafts = drafts.map(draft => {
+      const action = draft.action || (draft.moves.length ? 'TRANSFER' : 'ROLL')
       const sensitivity = sensitivityForMoves(draft.moves)
+
+      const classification = classifyRecommendation({
+        action,
+        actionable:
+          plan.freeTransfersConfirmed &&
+          plan.exactSellingPrices &&
+          draft.affordabilityStatus === 'EXACT',
+        affordabilityStatus: draft.affordabilityStatus,
+        netExpectedGain: draft.netExpectedGain,
+        probabilityBeatsRoll: draft.probabilityBeatsRoll,
+        roleLatestMatchSensitive:
+          sensitivity?.roleLatestMatchSensitive === true,
+        latestMatchSensitive:
+          sensitivity?.latestMatchSensitive === true,
+        latestMatchSensitivity:
+          sensitivity?.latestMatchSensitivity || 'LOW',
+      })
+
+      return { draft, action, sensitivity, classification }
+    })
+
+    const roll = evaluatedDrafts.find(
+      candidate => candidate.draft.moves.length === 0,
+    )
+
+    const robustTransfers = evaluatedDrafts
+      .filter(candidate => candidate.classification === 'ROBUST')
+      .sort(
+        (left, right) =>
+          right.draft.netExpectedGain - left.draft.netExpectedGain ||
+          (right.draft.probabilityBeatsRoll || 0) -
+            (left.draft.probabilityBeatsRoll || 0),
+      )
+
+    const primary = robustTransfers[0] || roll || evaluatedDrafts[0]
+    const persisted = []
+    for (const [index, item] of evaluatedDrafts.entries()) {
+      const { draft, action, sensitivity, classification } = item
+      const candidateId = randomUUID()
       const priceTiming = action === 'TRANSFER' || action === 'ROLL'
         ? assessPlanPriceTiming({
           moves: draft.moves.map(move => {
@@ -384,13 +421,13 @@ export async function createRecommendationSet(db, { planId, forecastRunId, horiz
           }),
           bankBeforeTenths: plan.bankBeforeTenths,
           deadlineAt: run.rows[0].deadline_at || null,
-          recommendation: { action: action === 'TRANSFER' ? 'TRANSFER' : 'ROLL', actionable: plan.freeTransfersConfirmed && plan.exactSellingPrices && draft.affordabilityStatus === 'EXACT', netExpectedGain: draft.netExpectedGain, probabilityBeatsRoll: draft.probabilityBeatsRoll, latestMatchSensitive: sensitivity?.latestMatchSensitive === true, latestMatchSensitivity: sensitivity?.latestMatchSensitivity || 'LOW' },
+          recommendation: { action: action === 'TRANSFER' ? 'TRANSFER' : 'ROLL', actionable: plan.freeTransfersConfirmed && plan.exactSellingPrices && draft.affordabilityStatus === 'EXACT', netExpectedGain: draft.netExpectedGain, probabilityBeatsRoll: draft.probabilityBeatsRoll, roleLatestMatchSensitive: sensitivity?.roleLatestMatchSensitive === true, latestMatchSensitive: sensitivity?.latestMatchSensitive === true, latestMatchSensitivity: sensitivity?.latestMatchSensitivity || 'LOW' },
         })
         : null
-      await db.query(`INSERT INTO "RecommendationCandidate" ("id","recommendation_set_id","rank","action","moves_json","raw_gain","hit_cost","uncertainty_penalty","net_expected_gain","probability_beats_roll","bank_after_tenths","affordability_status","expected_team_points","p10_points","p50_points","p90_points","league_differential","saved_transfer_value","lookahead_available","next_week_free_transfers","next_week_best_net_gain") VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21)`, [candidateId, id, index + 1, action, canonicalJson({ moves: draft.moves.map(move => ({ outId: String(move.outId), inId: String(move.incoming.id) })), chip: draft.chip || null, reason: draft.chipReason || null, squadIds: draft.chipSquadIds || null, sensitivity, priceTiming }), draft.rawGain, draft.hitCost, draft.uncertaintyPenalty, draft.netExpectedGain, draft.probabilityBeatsRoll, draft.bankAfterTenths, draft.affordabilityStatus, draft.expectedTeamPoints, draft.p10Points, draft.p50Points, draft.p90Points, draft.leagueDifferential == null ? null : Number(draft.leagueDifferential), draft.savedTransferValue ?? 0, draft.lookaheadAvailable ? 1 : 0, draft.nextWeekFreeTransfers ?? null, draft.nextWeekBestNetGain ?? null])
-      persisted.push({ id: candidateId, ...draft, action, rank: index + 1, apiMoves: draft.moves.map(move => ({ outId: plan.squad.find(player => String(player.id) === String(move.outId))?.fplId, inId: move.incoming.fplId })) })
+      await db.query(`INSERT INTO "RecommendationCandidate" ("id","recommendation_set_id","rank","action","moves_json","raw_gain","hit_cost","uncertainty_penalty","net_expected_gain","probability_beats_roll","bank_after_tenths","affordability_status","expected_team_points","p10_points","p50_points","p90_points","league_differential","saved_transfer_value","lookahead_available","next_week_free_transfers","next_week_best_net_gain") VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21)`, [candidateId, id, index + 1, action, canonicalJson({ moves: draft.moves.map(move => ({ outId: String(move.outId), inId: String(move.incoming.id) })), chip: draft.chip || null, reason: draft.chipReason || null, squadIds: draft.chipSquadIds || null, sensitivity, classification, priceTiming }), draft.rawGain, draft.hitCost, draft.uncertaintyPenalty, draft.netExpectedGain, draft.probabilityBeatsRoll, draft.bankAfterTenths, draft.affordabilityStatus, draft.expectedTeamPoints, draft.p10Points, draft.p50Points, draft.p90Points, draft.leagueDifferential == null ? null : Number(draft.leagueDifferential), draft.savedTransferValue ?? 0, draft.lookaheadAvailable ? 1 : 0, draft.nextWeekFreeTransfers ?? null, draft.nextWeekBestNetGain ?? null])
+      persisted.push({ id: candidateId, item, ...draft, action, rank: index + 1, apiMoves: draft.moves.map(move => ({ outId: plan.squad.find(player => String(player.id) === String(move.outId))?.fplId, inId: move.incoming.fplId })) })
     }
-    const selected = persisted.find(row => row.moves === primary.moves) || persisted[0]
+    const selected = persisted.find(row => row.item === primary) || persisted[0]
     await db.query(`UPDATE "RecommendationSet" SET "primary_candidate_id"=$2 WHERE "id"=$1`, [id, selected.id])
     await db.query('COMMIT')
     return { ...(await getRecommendationSet(db, id)), cacheStatus: 'MISS' }
@@ -453,6 +490,7 @@ export async function getRecommendationSet(db, id) {
       chip: detail.chip || undefined,
       chipReason: detail.reason || undefined,
       chipSquadIds: detail.squadIds || undefined,
+      classification: typeof detail.classification === 'string' ? detail.classification : undefined,
       ...(priceTiming ? { priceTiming, timingAdvice: priceTiming.verdict } : {}),
       ...(sensitivity ? {
         earlySeasonSensitive: Boolean(sensitivity.earlySeasonSensitive),

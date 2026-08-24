@@ -234,6 +234,32 @@ export async function assembleProjectionInputCatalog(db: Database, options: {
       provenance: { officialObservationId: official.id, underlyingObservationId: underlying?.id || null, eligibleSignalIds: playerSignals.map(signal => signal.id), manualOverrideSignalIds: manualSignals.map(signal => signal.id), excluded: { underlying: [], signals: [] } },
     }
   })
+  const gameweekRows = (await db.query(
+    `SELECT gameweek."id" AS gameweek_id, gameweek."fpl_id" AS gameweek_fpl_id, observation."deadline_at", observation."is_current", observation."is_next", observation."finished"
+     FROM "Gameweek" gameweek
+     JOIN "GameweekObservation" observation ON observation."gameweek_id"=gameweek."id"
+     JOIN "FeedRun" run ON run."id"=observation."feed_run_id"
+     WHERE gameweek."season"=$1 AND datetime(observation."observed_at") <= datetime($2) AND run."status" IN ${terminalFeedStatuses}
+       AND observation."observed_at"=(
+         SELECT MAX(candidate."observed_at")
+         FROM "GameweekObservation" candidate
+         JOIN "FeedRun" candidate_run ON candidate_run."id"=candidate."feed_run_id"
+         WHERE candidate."gameweek_id"=gameweek."id"
+           AND datetime(candidate."observed_at") <= datetime($2)
+           AND candidate_run."status" IN ${terminalFeedStatuses}
+       )
+     ORDER BY gameweek."fpl_id" ASC`,
+    [season, asOf],
+  )).rows
+  const gameweeks = gameweekRows.map(row => ({
+    id: String(row.gameweek_id),
+    gameweek: Number(row.gameweek_fpl_id),
+    deadline: row.deadline_at ? String(row.deadline_at) : null,
+    isCurrent: Boolean(row.is_current),
+    isNext: Boolean(row.is_next),
+    finished: Boolean(row.finished),
+  }))
+
   const sourceRunIds = {
     official: unique([...officialRows, ...teamRows, ...fixtureRows].map(row => row.feed_run_id)),
     underlying: unique([...underlyingByPlayer.values()].map(row => row.feed_run_id)),
@@ -246,7 +272,7 @@ export async function assembleProjectionInputCatalog(db: Database, options: {
     market: sourceFreshness('MARKET', latest([...marketByFixture.values()].map(row => row.captured_at)), sourceRunIds.market, asOf, marketMaxAgeMs),
     signals: sourceFreshness('SIGNALS', latest(signals.map(row => row.observed_at)), [], asOf, options.signalsMaxAgeMs ?? Number(process.env.FPL_SIGNALS_MAX_AGE_MS || 7 * 24 * 60 * 60 * 1000)),
   }
-  const canonical = { asOf, season, players: playersOut, sourceRunIds, freshness }
+  const canonical = { asOf, season, gameweeks, players: playersOut, sourceRunIds, freshness }
   // `asOf`, feed-run identifiers, observation identifiers and market ages are
   // audit data, not model inputs. Including them made a no-op refresh look
   // different merely because the clock had moved or an upstream feed had been

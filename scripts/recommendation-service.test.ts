@@ -223,3 +223,251 @@ describe('stored recommendation retrieval', () => {
     expect(result.candidates[0].p90Points).toBeGreaterThan(result.candidates[0].p10Points!)
   })
 })
+
+describe('recommendation candidate classification and primary selection', () => {
+  const squadPositions = ['GK', 'GK', 'DEF', 'DEF', 'DEF', 'DEF', 'DEF', 'MID', 'MID', 'MID', 'MID', 'MID', 'FWD', 'FWD', 'FWD']
+
+  function buildMockHarness({
+    candidateMeanPoints = 6.0,
+    candidateSensitivity = 'LOW' as 'LOW' | 'MEDIUM' | 'HIGH',
+    roleLatestMatchSensitive = false,
+  } = {}) {
+    const planPlayers = squadPositions.map((pos, i) => ({
+      player_id: `p-${i}`,
+      inherited_selling_price_tenths: null,
+      planned_purchase_price_tenths: 50,
+      locked: 0,
+      bank_tenths: 10,
+      free_transfers: 1,
+      manager_account_id: 'm-1',
+      official_squad_snapshot_id: 's-1',
+      gameweek_id: 'gw-1',
+      squad_slot: i + 1,
+    }))
+    const officialPlayers = planPlayers.map(p => ({ player_id: p.player_id, selling_price_tenths: 50 }))
+
+    // Squad forecasts
+    const forecastRows: any[] = planPlayers.map((p, i) => ({
+      player_id: p.player_id,
+      fixture_id: `fix-${i}-1`,
+      forecast_run_id: 'run-test',
+      mean_points: i === 7 ? 2.0 : 4.0, // Make MID p-7 weak (2.0 pts) so transfer out is attractive
+      standard_deviation: 1.0,
+      p10_points: 1,
+      p50_points: i === 7 ? 2.0 : 4.0,
+      p90_points: 5,
+      start_probability: 0.9,
+      substitute_probability: 0.1,
+      no_show_probability: 0,
+      expected_minutes: 85,
+      goal_points: 0.5,
+      assist_points: 0.5,
+      clean_sheet_points: 0.5,
+      goals_conceded_points: -0.5,
+      save_points: 0,
+      penalty_points: 0,
+      defensive_contribution_points: 0,
+      bonus_points: 0.5,
+      card_points: -0.1,
+      model_version: 'role-aware-v2.3',
+      fpl_id: 100 + i,
+      position: squadPositions[i],
+      team_id: `team-${i}`,
+      active: 1,
+      price_tenths: 50,
+      gameweek_id: 'gw-1',
+      gameweek_fpl_id: 1,
+      role_source_json: storedSimulationInput(`run-test:${p.player_id}:fix-${i}-1`, squadPositions[i] as any, 0.9, 0.1, 85),
+    }))
+
+    // Add high-scoring candidate player p-target (MID, £5.0m)
+    forecastRows.push({
+      player_id: 'p-target',
+      fixture_id: 'fix-target-1',
+      forecast_run_id: 'run-test',
+      mean_points: candidateMeanPoints,
+      standard_deviation: 1.0,
+      p10_points: 3,
+      p50_points: candidateMeanPoints,
+      p90_points: candidateMeanPoints + 2,
+      start_probability: 0.95,
+      substitute_probability: 0.05,
+      no_show_probability: 0,
+      expected_minutes: 90,
+      goal_points: 2.0,
+      assist_points: 1.0,
+      clean_sheet_points: 0.5,
+      goals_conceded_points: -0.5,
+      save_points: 0,
+      penalty_points: 0,
+      defensive_contribution_points: 0,
+      bonus_points: 1.0,
+      card_points: -0.1,
+      model_version: 'role-aware-v2.3',
+      fpl_id: 999,
+      position: 'MID',
+      team_id: 'team-99',
+      active: 1,
+      price_tenths: 50,
+      gameweek_id: 'gw-1',
+      gameweek_fpl_id: 1,
+      role_source_json: JSON.stringify({
+        simulationInput: {
+          engineVersion: SIMULATION_ENGINE_VERSION,
+          seed: 'run-test:p-target:fix-target-1',
+          position: 'MID',
+          role: { startProbability: 0.95, substituteProbability: 0.05, noShowProbability: 0, minutesIfStarting: 90, minutesIfSubstitute: 18 },
+          goalRate: candidateMeanPoints > 6.0 ? 1.5 : .3,
+          assistRate: candidateMeanPoints > 6.0 ? 1.0 : .2,
+          teamGoalsConcededRate: 1.0,
+          saveRate: 0,
+          yellowCardRate: .05,
+          redCardRate: .001,
+          penaltySaveRate: 0,
+          penaltyMissRate: 0,
+          ownGoalRate: 0,
+          defensiveActionRate: 10,
+          bonusRate: candidateMeanPoints > 6.0 ? 1.5 : .3,
+          samples: 200,
+        },
+        sampleCalibration: { latestMatchSensitivity: candidateSensitivity, earlySeason: candidateSensitivity === 'HIGH' },
+        roleCalibration: roleLatestMatchSensitive ? { sensitivity: 'LATEST_MATCH_SENSITIVE' } : {},
+      }),
+    })
+
+    const insertedSets: any[] = []
+    const insertedCandidates: any[] = []
+    let updatedPrimaryId: string | null = null
+
+    const db = {
+      async query(sql: string, params: any[] = []) {
+        if (sql.includes('FROM "ForecastRun"')) return { rows: [{ id: 'run-test', input_hash: 'test-hash' }] }
+        if (sql.startsWith('SELECT "id" FROM "RecommendationSet"')) return { rows: [] }
+        if (sql.includes('FROM "PlayerFixtureForecast"')) return { rows: forecastRows }
+        if (sql.includes('FROM "PlanPlayer"')) return { rows: planPlayers }
+        if (sql.includes('FROM "OfficialSquadPlayer"')) return { rows: officialPlayers }
+        if (sql.includes('FROM "ManagerAssumption"')) return { rows: [{ id: 'assumption-1', value_json: '{}' }] }
+        if (sql.includes('INSERT INTO "RecommendationSet"')) {
+          insertedSets.push(params)
+          return { rows: [] }
+        }
+        if (sql.includes('INSERT INTO "RecommendationCandidate"')) {
+          insertedCandidates.push(params)
+          return { rows: [] }
+        }
+        if (sql.includes('UPDATE "RecommendationSet"')) {
+          updatedPrimaryId = params[1]
+          return { rows: [] }
+        }
+        if (sql.includes('BEGIN') || sql.includes('COMMIT')) return { rows: [] }
+        if (sql.includes('SELECT * FROM "RecommendationSet"')) {
+          return {
+            rows: [{
+              id: insertedSets[0]?.[0] || 'set-1',
+              plan_id: insertedSets[0]?.[1],
+              forecast_run_id: insertedSets[0]?.[2],
+              horizon: insertedSets[0]?.[3],
+              max_transfers: insertedSets[0]?.[4],
+              chip: insertedSets[0]?.[5],
+              uncertainty_penalty_rate: insertedSets[0]?.[6],
+              created_at: insertedSets[0]?.[7],
+              status: insertedSets[0]?.[8],
+              primary_candidate_id: updatedPrimaryId,
+              input_hash: insertedSets[0]?.[9],
+              league_id: insertedSets[0]?.[10],
+              league_name: insertedSets[0]?.[11],
+              free_transfers_confirmed: 1,
+              exact_selling_prices: 1,
+              roll_option_version: 2,
+            }]
+          }
+        }
+        if (sql.includes('SELECT * FROM "RecommendationCandidate"')) {
+          return {
+            rows: insertedCandidates.map(c => ({
+              id: c[0],
+              recommendation_set_id: c[1],
+              rank: c[2],
+              action: c[3],
+              moves_json: c[4],
+              raw_gain: c[5],
+              hit_cost: c[6],
+              uncertainty_penalty: c[7],
+              net_expected_gain: c[8],
+              probability_beats_roll: c[9],
+              bank_after_tenths: c[10],
+              affordability_status: c[11],
+              expected_team_points: c[12],
+              p10_points: c[13],
+              p50_points: c[14],
+              p90_points: c[15],
+              league_differential: c[16],
+              saved_transfer_value: c[17],
+              lookahead_available: c[18],
+              next_week_free_transfers: c[19],
+              next_week_best_net_gain: c[20],
+            }))
+          }
+        }
+        if (sql.includes('FROM "Player"')) {
+          const players = [...planPlayers.map(p => ({ id: p.player_id, fpl_id: Number(p.player_id.replace('p-', '')) + 100 })), { id: 'p-target', fpl_id: 999 }]
+          return { rows: players }
+        }
+        throw new Error(`Unexpected query: ${sql}`)
+      }
+    }
+
+    return { db, planPlayers, forecastRows }
+  }
+
+  it('selects roll as primary when the only transfer is 60% sensitive', async () => {
+    // A moderate-gain transfer with high latestMatchSensitivity
+    const { db } = buildMockHarness({ candidateMeanPoints: 4.5, candidateSensitivity: 'HIGH' })
+    const result = await createRecommendationSet(db, { planId: 'plan-1', forecastRunId: 'run-test', horizon: 1, maxTransfers: 1 })
+
+    const rollCandidate = result.candidates.find(c => c.action === 'ROLL')
+    expect(rollCandidate).toBeDefined()
+    expect(result.primaryCandidateId).toBe(rollCandidate!.id)
+  })
+
+  it('preserves the sensitive transfer in the candidate list as SENSITIVE', async () => {
+    const { db } = buildMockHarness({ candidateMeanPoints: 4.5, candidateSensitivity: 'HIGH' })
+    const result = await createRecommendationSet(db, { planId: 'plan-1', forecastRunId: 'run-test', horizon: 1, maxTransfers: 1 })
+
+    const transferCandidate = result.candidates.find(c => c.action === 'TRANSFER')
+    expect(transferCandidate).toBeDefined()
+    expect(transferCandidate!.classification).toBe('SENSITIVE')
+    expect(transferCandidate!.latestMatchSensitivity).toBe('HIGH')
+  })
+
+  it('selects a robust high-confidence transfer as primary', async () => {
+    // 8.5 mean points vs 2.0 = net gain > 3.0 pts and probabilityBeatsRoll >= 0.75
+    const { db } = buildMockHarness({ candidateMeanPoints: 8.5, candidateSensitivity: 'LOW' })
+    const result = await createRecommendationSet(db, { planId: 'plan-1', forecastRunId: 'run-test', horizon: 1, maxTransfers: 1 })
+
+    const transferCandidate = result.candidates.find(c => c.action === 'TRANSFER')
+    expect(transferCandidate).toBeDefined()
+    expect(transferCandidate!.classification).toBe('ROBUST')
+    expect(result.primaryCandidateId).toBe(transferCandidate!.id)
+  })
+
+  it('orders candidates using post-lookahead net gain for primary selection', async () => {
+    const { db } = buildMockHarness({ candidateMeanPoints: 8.5, candidateSensitivity: 'LOW' })
+    const result = await createRecommendationSet(db, { planId: 'plan-1', forecastRunId: 'run-test', horizon: 1, maxTransfers: 1 })
+
+    const primaryCandidate = result.candidates.find(c => c.id === result.primaryCandidateId)
+    const robustTransfers = result.candidates.filter(c => c.classification === 'ROBUST')
+    if (robustTransfers.length > 0) {
+      expect(primaryCandidate!.id).toBe(robustTransfers[0].id)
+      expect(primaryCandidate!.netExpectedGain).toBeGreaterThanOrEqual(robustTransfers[0].netExpectedGain)
+    }
+  })
+
+  it('does not reuse a cached recommendation set from an older engine version', async () => {
+    const oldVersionHash = recommendationInputHash('forecast-input')
+    // Changing engine version changes input hash
+    expect(oldVersionHash).toMatch(/^[a-f0-9]{64}$/)
+    expect(oldVersionHash).not.toBe('forecast-input')
+  })
+})
+

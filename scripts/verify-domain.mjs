@@ -1,4 +1,4 @@
-const { getSquad, players, validateSquad, validateInitialSquad, initialSquadBank, optimizeInitialSquad, draftSquadScore, buildLegalDefaultSquad, buildDraftImprovementPlan, isInitialDraftPeriod, isLegalTransfer, transferDecision, transfers, findTransferRoutesToTarget, CLUB_FIXTURES } = await import('../src/domain.ts')
+const { getSquad, players, validateSquad, validateInitialSquad, initialSquadBank, optimizeInitialSquad, draftSquadScore, buildLegalDefaultSquad, buildDraftImprovementPlan, isInitialDraftPeriod, isLegalTransfer, transferDecision, transfers, findTransferRoutesToTarget, findTransferRoutesFromOut, CLUB_FIXTURES } = await import('../src/domain.ts')
 const { allocateBonusPoints, scorePlayerMatch } = await import('../src/model.ts')
 const { evaluateCalibration } = await import('../src/backtest.ts')
 const squad = getSquad()
@@ -67,5 +67,11 @@ const expensiveTarget={...routeTarget,id:4002,price:11.5}
 const budgetDefender={...budgetTemplate,id:4003,name:'Budget Defender',club:'TOT',price:4,projection:2}
 const fundedRoutes=findTransferRoutesToTarget(expensiveTarget,squad,[...players,expensiveTarget,budgetDefender],5,1.2,1)
 if(!fundedRoutes.routes.some(route=>route.moves.length===2&&route.hitCost===4&&route.bankAfter>=0))throw new Error('two-transfer funding route was not found')
+
+const outMbeumo = squad.find(p => p.name === 'Mbeumo')
+if (outMbeumo) {
+  const outRoutes = findTransferRoutesFromOut(outMbeumo, squad, players, 5, 1.2, 1)
+  if (!outRoutes.routes.some(route => route.moves[0].out.id === outMbeumo.id)) throw new Error('transfer-out replacement route was not found')
+}
 
 console.log('domain verification passed (rules-aware scoring, calibration and 2026/27 canaries)')
