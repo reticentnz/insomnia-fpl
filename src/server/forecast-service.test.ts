@@ -4,7 +4,7 @@ import path from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
 import { closeDb, getDb } from '../../scripts/db.mjs'
 import { ingestOfficialFpl } from '../../scripts/ingest-fpl.mjs'
-import { createForecastRun, latestEligibleForecastRun, latestForecastSummary } from './forecast-service.ts'
+import { baseRole, catalogFixtureStrength, createForecastRun, latestEligibleForecastRun, latestForecastSummary } from './forecast-service.ts'
 import { SIMULATION_ENGINE_VERSION, simulateFixtureOutcomes, simulateFromStoredForecast } from '../core/uncertainty.ts'
 
 const directories: string[] = []
@@ -22,6 +22,31 @@ async function seeded() {
 afterEach(async () => { await closeDb(); while (directories.length) fs.rmSync(directories.pop()!, { recursive: true, force: true }) })
 
 describe('WP-08 immutable forecast ledger', () => {
+  it('normalizes early-season role evidence by completed matches', () => {
+    const player = { official: { position: 'GK', status: 'a', chance_of_playing: null, minutes: 90, starts: 1 } } as any
+    const starter = baseRole(player, 1)
+    const unused = baseRole({ ...player, official: { ...player.official, minutes: 0, starts: 0 } }, 1)
+    expect(starter.startProbability).toBeGreaterThan(.7)
+    expect(unused.startProbability).toBeLessThan(.35)
+    expect(starter.confidence).toBe('MEDIUM')
+    expect(unused.confidence).toBe('LOW')
+  })
+
+  it('uses shrunk observed team xG ratings when official strengths and future odds are absent', () => {
+    const team = (id: string, xg: number, xgc: number) => ({
+      id: `p-${id}`, fplId: Number(id), name: id, team: { id, fplId: Number(id), name: id, shortName: id },
+      official: { position: 'MID', status: 'a', minutes: 90, starts: 1, expected_goals: xg, expected_goals_conceded: xgc },
+      teamStrength: { strengthAttackHome: 0, strengthDefenceHome: 0, strengthAttackAway: 0, strengthDefenceAway: 0 }, fixtures: [], underlying: null, roleSignals: [], provenance: {},
+    }) as any
+    const home = team('1', 2.1, .7), away = team('2', .7, 2.1)
+    const catalog = { players: [home, away] } as any
+    const fixture = { isHome: true, opponent: { id: '2', teamStrength: { strengthAttackAway: 0, strengthDefenceAway: 0 } }, market: null } as any
+    const strength = catalogFixtureStrength(home, fixture, catalog, 1)
+    expect(strength?.method).toBe('DERIVED_TEAM_RATING')
+    expect(strength!.attackMultiplier).toBeGreaterThan(1)
+    expect(strength!.defenceMultiplier).toBeLessThan(1)
+  })
+
   it('treats a null FPL chance-of-playing value as healthy in GW1 forecasts', async () => {
     const databasePath = temporaryDatabase()
     const bootstrap = fixture<any>('wp02-bootstrap.json')

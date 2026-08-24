@@ -5,7 +5,7 @@ import { createHash, randomUUID, timingSafeEqual } from 'node:crypto'
 import { gzipSync } from 'node:zlib'
 import { resolvePlayerRole } from '../src/player-signals.ts'
 import { MODEL_VERSION } from '../src/core/projection.ts'
-import { interpretManualSignalText, matchCreatorClaim, normalizeCreatorPayload, normalizeEntityText, signalDraftFromClaim, shouldAutoApproveCreatorContext } from './creator-signals.mjs'
+import { finalizeCreatorSignalDraft, interpretManualSignalText, matchCreatorClaim, normalizeCreatorPayload, normalizeEntityText, signalDraftFromClaim } from './creator-signals.mjs'
 import { sourceTypeMatchesUrl } from '../src/signal-sources.ts'
 
 const port = Number(process.env.PORT || 4173)
@@ -43,7 +43,7 @@ import { evaluateDecision, evaluatePendingDecisions, listDecisions, recordDecisi
 import { getUserState, updateAiState, updateUserState } from './user-state-service.mjs'
 import { assembleProjectionInputCatalog, projectionCatalogInputVersions } from '../src/server/catalog-service.ts'
 import { runBacktest } from '../src/server/backtest-service.ts'
-import { baseRole, createForecastRun, latestForecastSummary } from '../src/server/forecast-service.ts'
+import { baseRole, catalogFixtureStrength, createForecastRun, latestForecastSummary } from '../src/server/forecast-service.ts'
 import { CatalogueCache, catalogueCacheKey, catalogueRequestKey } from '../src/server/catalog-cache.ts'
 import { ConcurrencyLimiter, TtlCache } from '../src/server/upstream-control.ts'
 import { HttpRequestError, MAX_JSON_BODY_BYTES, readJsonBody, sanitizeError } from '../src/server/http-security.mjs'
@@ -337,6 +337,7 @@ async function performColdStartInitialization() {
       systemStatus.isSeeding = false
       systemStatus.message = `System ready with ${count} players.`
       console.log(`✅ Database ready (${count} players loaded).`)
+      await finalizePendingIngestionSignals(db).catch(error => console.error('⚠️ Could not finalize pending ingestion signals:', sanitizeError(error)))
       await scheduleNextIngestion()
       await scheduleAuxiliaryRefreshes()
     }
@@ -1003,9 +1004,10 @@ async function createSignalForCreatorClaim(db,claimRow,source,gameweek){
   const ageDays=Number.isFinite(publishedAt)?(Date.now()-publishedAt)/86400000:Infinity
   const roleIsFresh=rawDraft.modelImpact!=='ROLE'||(Boolean(rawDraft.sourceUrl)&&Number.isFinite(publishedAt)&&ageDays>=-1&&ageDays<=(recencyDays[claimRow.category]||14))
   const safeContextClaimClass=['SET_PIECES','PENALTIES','PERFORMANCE_FORECAST','FPL_SELECTION','CREATOR_RATING','STATISTICAL_CONTEXT'].includes(rawDraft.claimClass)?rawDraft.claimClass:'VALUE_OPINION'
-  const draft=roleIsFresh?rawDraft:{...rawDraft,claimClass:safeContextClaimClass,modelImpact:'NONE',value:{note:rawDraft.value.note},interpretationRationale:'The source date is missing or stale for a role-changing claim; retained as context only.'}
+  const candidateDraft=roleIsFresh?rawDraft:{...rawDraft,claimClass:safeContextClaimClass,modelImpact:'NONE',value:{note:rawDraft.value.note},interpretationRationale:'The source date is missing or stale for a role-changing claim; retained as context only.'}
+  const draft=finalizeCreatorSignalDraft(candidateDraft)
   const confidence=Math.max(0,Math.min(1,Number(draft.confidence)||.65))
-  const status=shouldAutoApproveCreatorContext(draft)?'VERIFIED':'PENDING'
+  const status='VERIFIED'
   const observedAt=new Date().toISOString()
   const id=`creator:${String(claimRow.externalClaimId||claimRow.id).slice(0,220)}`
   const existing=await listPlayerSignals(db,{playerId:draft.playerId,limit:500})
@@ -1134,21 +1136,30 @@ async function reprocessRemoteSignal(db, signal, { includeVerified = false } = {
         const verified=await updatePlayerSignalStatuses(db,[{id:signal.id,status:'VERIFIED'}],{actorType:'AUTO_REPROCESS',reason:'Auto-approved role signal'})
         return {signal:verified[0]||restored,changed:true,reason:'role_inferred_and_verified'}
       }
-      return {signal:restored,changed:true,reason:'role_inferred_pending'}
+      signal=restored
     }
-    if(hasRoleValue(signal.value)){
+    else if(hasRoleValue(signal.value)){
       if(originalModelImpact==='ROLE'&&signal.status==='VERIFIED')return {signal,changed:false,reason:'role_evidence_is_current'}
       const restored=await revisePlayerSignalInterpretation(db,signal.id,{claimClass:signal.claimClass,modelImpact:'ROLE',value:signal.value,rationale:'Recovered prior role interpretation and passed current evidence/freshness checks.',confidence:signal.interpretation?.confidence,finalizeContext:false,origin:'AUTO'})
       if(Number(signal.confidence)>=0.65){
         const verified=await updatePlayerSignalStatuses(db,[{id:signal.id,status:'VERIFIED'}],{actorType:'AUTO_REPROCESS',reason:'Auto-approved role signal'})
         return {signal:verified[0]||restored,changed:true,reason:'role_restored_and_verified'}
       }
-      return {signal:restored,changed:true,reason:'role_restored_pending'}
+      signal=restored
     }
   }
   const claimClass=['SET_PIECES','PENALTIES','PERFORMANCE_FORECAST','FPL_SELECTION','CREATOR_RATING','STATISTICAL_CONTEXT'].includes(signal.claimClass)?signal.claimClass:'VALUE_OPINION'
   const updated=await revisePlayerSignalInterpretation(db,signal.id,{claimClass,modelImpact:'NONE',value:safeContextValue(signal),rationale:'Remote reprocess: non-role evidence was finalized as context.',finalizeContext:true,origin:'AUTO'})
   return {signal:updated,changed:true,reason:'context_finalized'}
+}
+
+async function finalizePendingIngestionSignals(db) {
+  const pending=await listPlayerSignals(db,{status:'PENDING',limit:500})
+  const candidates=pending.filter(signal=>['YOUTUBE_TRANSCRIPT','LLM_RESEARCH'].includes(signal.sourceType)&&signal.interpretation?.origin==='AUTO')
+  const results=[]
+  for(const signal of candidates)results.push(await reprocessRemoteSignal(db,signal))
+  if(results.length)console.log(`✅ Automatically finalized ${results.length} pending ingestion signal${results.length===1?'':'s'}.`)
+  return results
 }
 
 async function processCreatorPayload(rawPayload){
@@ -1227,19 +1238,8 @@ async function liveData() {
   return refreshLiveData()
 }
 
-function liveProjectionFixture(item, fixture) {
-  const ownAttack = Number(item.teamStrength[fixture.isHome ? 'strengthAttackHome' : 'strengthAttackAway'])
-  const ownDefence = Number(item.teamStrength[fixture.isHome ? 'strengthDefenceHome' : 'strengthDefenceAway'])
-  const opponentAttack = Number(fixture.opponent.teamStrength[fixture.isHome ? 'strengthAttackAway' : 'strengthAttackHome'])
-  const opponentDefence = Number(fixture.opponent.teamStrength[fixture.isHome ? 'strengthDefenceAway' : 'strengthDefenceHome'])
-  const marketAttack = fixture.market ? (fixture.isHome ? fixture.market.homeExpectedGoals : fixture.market.awayExpectedGoals) / 1.4 : null
-  const marketDefence = fixture.market ? (fixture.isHome ? fixture.market.awayExpectedGoals : fixture.market.homeExpectedGoals) / 1.4 : null
-  const officialComplete = [ownAttack, ownDefence, opponentAttack, opponentDefence].every(value => Number.isFinite(value) && value > 0)
-  const strength = marketAttack != null && marketDefence != null
-    ? { method: 'MARKET_XG', attackMultiplier: marketAttack, defenceMultiplier: marketDefence }
-    : officialComplete
-      ? { method: 'OFFICIAL_STRENGTH', attackMultiplier: ownAttack / 1000 * (2 - opponentDefence / 1000), defenceMultiplier: opponentAttack / 1000 * (2 - ownDefence / 1000) }
-      : undefined
+function liveProjectionFixture(item, fixture, catalog, completedGameweeks) {
+  const strength = catalogFixtureStrength(item, fixture, catalog, completedGameweeks)
   const marketCleanSheetProbability = fixture.market
     ? (fixture.isHome ? fixture.market.homeCleanSheetProbability : fixture.market.awayCleanSheetProbability) ?? undefined
     : undefined
@@ -1256,9 +1256,9 @@ async function refreshLiveData() {
     const official=item.official||{},first=item.fixtures[0]
     const availability=Number(official.chance_of_playing??100)
     const signals=toCatalogRoleSignals(item)
-    const roleProfile=resolvePlayerRole(baseRole(item),signals,{now:new Date(asOf),gameweek:currentGameweek||undefined})
+    const roleProfile=resolvePlayerRole(baseRole(item,Math.max(0,(currentGameweek||1)-1)),signals,{now:new Date(asOf),gameweek:currentGameweek||undefined})
     const expectedMinutes=roleProfile.startProbability*roleProfile.minutesIfStarting+(1-roleProfile.startProbability)*roleProfile.substituteProbabilityWhenBenched*roleProfile.minutesIfSubstitute
-    return {id:item.fplId,name:item.name,identityNames:item.identityNames||[item.name],club:item.team.shortName,clubName:item.team.name,position:official.position,price:Number(official.price_tenths||0)/10,form:Number(official.form||0),ownership:Number(official.ownership_percent||0),minutes:availability,expectedMinutes,roleProfile,fixture:first?`${first.opponent.shortName} (${first.isHome?'H':'A'})`:'Blank',difficulty:first?.difficulty||3,projection:Number(official.ep_next||0),colour:colours[index%colours.length],status:String(official.status||'a'),chanceOfPlaying:official.chance_of_playing==null?undefined:Number(official.chance_of_playing),news:official.news||null,transfersIn:Number(official.transfers_in||0),transfersOut:Number(official.transfers_out||0),active:Boolean(official.active),dataConfidence:item.provenance.underlyingObservationId?'HIGH':'MEDIUM',upcomingFixtures:item.fixtures.map(fixture=>liveProjectionFixture(item,fixture)),stats:{minutes:Number(official.minutes||0),starts:Number(official.starts||0),totalPoints:Number(official.total_points||0),goals:Number(official.goals_scored||0),assists:Number(official.assists||0),cleanSheets:Number(official.clean_sheets||0),goalsConceded:Number(official.goals_conceded||0),saves:Number(official.saves||0),bonus:Number(official.bonus||0),bps:Number(official.bps||0),yellowCards:Number(official.yellow_cards||0),redCards:Number(official.red_cards||0),ownGoals:Number(official.own_goals||0),penaltiesMissed:Number(official.penalties_missed||0),penaltiesSaved:Number(official.penalties_saved||0),expectedGoals:Number(official.expected_goals||0),expectedAssists:Number(official.expected_assists||0),expectedGoalsConceded:Number(official.expected_goals_conceded||0)}}
+    return {id:item.fplId,name:item.name,identityNames:item.identityNames||[item.name],club:item.team.shortName,clubName:item.team.name,position:official.position,price:Number(official.price_tenths||0)/10,form:Number(official.form||0),ownership:Number(official.ownership_percent||0),minutes:availability,expectedMinutes,roleProfile,fixture:first?`${first.opponent.shortName} (${first.isHome?'H':'A'})`:'Blank',difficulty:first?.difficulty||3,projection:Number(official.ep_next||0),colour:colours[index%colours.length],status:String(official.status||'a'),chanceOfPlaying:official.chance_of_playing==null?undefined:Number(official.chance_of_playing),news:official.news||null,transfersIn:Number(official.transfers_in||0),transfersOut:Number(official.transfers_out||0),active:Boolean(official.active),dataConfidence:item.provenance.underlyingObservationId?'HIGH':'MEDIUM',upcomingFixtures:item.fixtures.map(fixture=>liveProjectionFixture(item,fixture,catalog,Math.max(0,(currentGameweek||1)-1))),stats:{minutes:Number(official.minutes||0),starts:Number(official.starts||0),totalPoints:Number(official.total_points||0),goals:Number(official.goals_scored||0),assists:Number(official.assists||0),cleanSheets:Number(official.clean_sheets||0),goalsConceded:Number(official.goals_conceded||0),saves:Number(official.saves||0),bonus:Number(official.bonus||0),bps:Number(official.bps||0),yellowCards:Number(official.yellow_cards||0),redCards:Number(official.red_cards||0),ownGoals:Number(official.own_goals||0),penaltiesMissed:Number(official.penalties_missed||0),penaltiesSaved:Number(official.penalties_saved||0),expectedGoals:Number(official.expected_goals||0),expectedAssists:Number(official.expected_assists||0),expectedGoalsConceded:Number(official.expected_goals_conceded||0)}}
   })
   return {capturedAt:catalog.freshness.official.observedAt||catalog.asOf,currentGameweek,deadline,modelVersion:MODEL_VERSION,players,freshness:catalog.freshness,inputHash:catalog.inputHash}
 }
@@ -1286,7 +1286,7 @@ function enrichCatalogRoles(catalogue) {
   const currentGameweek = futureFixtures[0]?.gameweekFplId || null
   const now = new Date(catalogue.asOf)
   const players = (catalogue.players || []).map(item => {
-    const roleProfile = resolvePlayerRole(baseRole(item), toCatalogRoleSignals(item), { now, gameweek: currentGameweek || undefined })
+    const roleProfile = resolvePlayerRole(baseRole(item, Math.max(0, (currentGameweek || 1) - 1)), toCatalogRoleSignals(item), { now, gameweek: currentGameweek || undefined })
     const expectedMinutes = roleProfile.startProbability * roleProfile.minutesIfStarting + (1 - roleProfile.startProbability) * roleProfile.substituteProbabilityWhenBenched * roleProfile.minutesIfSubstitute
     return { ...item, roleProfile, expectedMinutes, dataConfidence: roleProfile.confidence }
   })

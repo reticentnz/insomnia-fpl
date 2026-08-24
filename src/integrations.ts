@@ -664,7 +664,7 @@ export async function fetchLiveCatalog(retries = 3): Promise<{capturedAt:string;
 export type ForecastSummary = {
   id: string; modelVersion: string; asOf: string; createdAt: string; horizon: number; gameweeks: number[];
   players: Array<{ playerId: number; meanPoints: number; standardDeviation: number; p10Points: number; p50Points: number; p90Points: number; fixtureCount: number; expectedGoals?: number; expectedAssists?: number; goalProbability?: number; assistProbability?: number; cleanSheetProbability?: number; bonusProbability?: number; defensiveContributionProbability?: number }>;
-  quality: { fallbackFixtureRatio: number; lowMinutesFixtureRatio: number; underlyingPlayerRatio: number; marketFixtureRatio: number };
+  quality: { fallbackFixtureRatio: number; lowMinutesFixtureRatio: number; underlyingPlayerRatio: number; marketFixtureRatio: number; nearTermFallbackFixtureRatio?: number; nearTermMarketFixtureRatio?: number; derivedStrengthFixtureRatio?: number };
 }
 
 export async function fetchLatestForecast(horizon: 1 | 3 | 5): Promise<ForecastSummary | null> {

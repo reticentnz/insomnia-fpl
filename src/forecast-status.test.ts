@@ -21,16 +21,24 @@ describe('forecast operational readiness', () => {
     const result = deriveForecastReadiness(readySystem, degraded, Date.parse('2026-08-11T12:00:00Z'))
     expect(result.state).toBe('DEGRADED')
     expect(result.warnings).toEqual(expect.arrayContaining([
-      expect.stringContaining('100% of fixture forecasts use FDR fallback'),
+      expect.stringContaining('100% of next-GW fixture forecasts use FDR fallback'),
       expect.stringContaining('Underlying performance coverage is only 0%'),
-      expect.stringContaining('Market-strength coverage is only 0%'),
+      expect.stringContaining('Next-GW market-strength coverage is only 0%'),
     ]))
     expect(result.recommendedActions).toEqual(expect.arrayContaining([expect.stringContaining('Sync performance + odds')]))
     expect(result.qualityMetrics).toEqual([
       { id: 'fallback', label: 'FDR fallback', value: 100, limited: true },
       { id: 'minutes', label: 'Low minutes confidence', value: 31, limited: true },
       { id: 'underlying', label: 'Underlying coverage', value: 0, limited: true },
-      { id: 'market', label: 'Market coverage', value: 0, limited: true },
+      { id: 'market', label: 'Next-GW market', value: 0, limited: true },
     ])
+  })
+
+  it('uses next-GW strength coverage for readiness while allowing a sparse five-week odds horizon', () => {
+    const horizonAware = { ...forecast, quality: { fallbackFixtureRatio: 0, lowMinutesFixtureRatio: .1, underlyingPlayerRatio: .75, marketFixtureRatio: .2, nearTermFallbackFixtureRatio: 0, nearTermMarketFixtureRatio: 1, derivedStrengthFixtureRatio: .8 } }
+    const result = deriveForecastReadiness(readySystem, horizonAware, Date.parse('2026-08-11T12:00:00Z'))
+    expect(result.state).toBe('READY')
+    expect(result.warnings).toEqual([])
+    expect(result.qualityMetrics.at(-1)).toEqual({ id: 'market', label: 'Next-GW market', value: 100, limited: false })
   })
 })

@@ -5,6 +5,9 @@ export type ForecastQualityInput = {
   lowMinutesFixtureRatio: number
   underlyingPlayerRatio: number
   marketFixtureRatio: number
+  nearTermFallbackFixtureRatio?: number
+  nearTermMarketFixtureRatio?: number
+  derivedStrengthFixtureRatio?: number
 }
 
 export type ForecastStatusInput = {
@@ -31,7 +34,7 @@ export function forecastQualityMetrics(quality?: ForecastQualityInput) {
     { id: 'fallback', label: 'FDR fallback', value: Math.round(quality.fallbackFixtureRatio * 100), limited: quality.fallbackFixtureRatio >= .5 },
     { id: 'minutes', label: 'Low minutes confidence', value: Math.round(quality.lowMinutesFixtureRatio * 100), limited: quality.lowMinutesFixtureRatio >= .25 },
     { id: 'underlying', label: 'Underlying coverage', value: Math.round(quality.underlyingPlayerRatio * 100), limited: quality.underlyingPlayerRatio < .5 },
-    { id: 'market', label: 'Market coverage', value: Math.round(quality.marketFixtureRatio * 100), limited: quality.marketFixtureRatio < .5 },
+    { id: 'market', label: 'Next-GW market', value: Math.round((quality.nearTermMarketFixtureRatio ?? quality.marketFixtureRatio) * 100), limited: (quality.nearTermMarketFixtureRatio ?? quality.marketFixtureRatio) < .5 },
   ]
 }
 
@@ -46,15 +49,17 @@ export function deriveForecastReadiness(system: ForecastStatusInput | null, fore
   else if (running) state = 'RUNNING'
   else if (!forecast) state = 'MISSING'
   else if (ageHours === null || ageHours > staleAfterHours) state = 'STALE'
-  else if ((forecast.quality?.fallbackFixtureRatio ?? 0) >= .5 || (forecast.quality?.lowMinutesFixtureRatio ?? 0) >= .25) state = 'DEGRADED'
+  else if ((forecast.quality?.nearTermFallbackFixtureRatio ?? forecast.quality?.fallbackFixtureRatio ?? 0) >= .5 || (forecast.quality?.lowMinutesFixtureRatio ?? 0) >= .25) state = 'DEGRADED'
   else state = 'READY'
   const warnings: string[] = []
-  if (forecast?.quality && forecast.quality.fallbackFixtureRatio >= .5) warnings.push(`${Math.round(forecast.quality.fallbackFixtureRatio * 100)}% of fixture forecasts use FDR fallback strength.`)
+  const nearTermFallback = forecast?.quality ? forecast.quality.nearTermFallbackFixtureRatio ?? forecast.quality.fallbackFixtureRatio : 0
+  const nearTermMarket = forecast?.quality ? forecast.quality.nearTermMarketFixtureRatio ?? forecast.quality.marketFixtureRatio : 0
+  if (forecast?.quality && nearTermFallback >= .5) warnings.push(`${Math.round(nearTermFallback * 100)}% of next-GW fixture forecasts use FDR fallback strength.`)
   if (forecast?.quality && forecast.quality.lowMinutesFixtureRatio >= .25) warnings.push(`${Math.round(forecast.quality.lowMinutesFixtureRatio * 100)}% of fixture forecasts have low minutes confidence.`)
   if (forecast?.quality && forecast.quality.underlyingPlayerRatio < .5) warnings.push(`Underlying performance coverage is only ${Math.round(forecast.quality.underlyingPlayerRatio * 100)}%.`)
-  if (forecast?.quality && forecast.quality.marketFixtureRatio < .5) warnings.push(`Market-strength coverage is only ${Math.round(forecast.quality.marketFixtureRatio * 100)}%.`)
+  if (forecast?.quality && nearTermMarket < .5) warnings.push(`Next-GW market-strength coverage is only ${Math.round(nearTermMarket * 100)}%.`)
   const recommendedActions: string[] = []
-  if (forecast?.quality && (forecast.quality.fallbackFixtureRatio >= .5 || forecast.quality.marketFixtureRatio < .5)) recommendedActions.push('Run Admin → Sync performance + odds and check the odds feed configuration.')
+  if (forecast?.quality && (nearTermFallback >= .5 || nearTermMarket < .5)) recommendedActions.push('Run Admin → Sync performance + odds and check the odds feed configuration.')
   if (forecast?.quality && forecast.quality.underlyingPlayerRatio < .5) recommendedActions.push('Run Admin → Sync performance + odds and review unmatched Understat players.')
   if (forecast?.quality && forecast.quality.lowMinutesFixtureRatio >= .25) recommendedActions.push('Review current role and availability evidence in Signals.')
   return {

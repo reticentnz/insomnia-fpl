@@ -9,7 +9,7 @@ export type FixtureItem = {
   difficulty: number;
   /** De-vigged market probability that the player's team keeps a clean sheet. */
   marketCleanSheetProbability?: number;
-  strength?: { method: "MARKET_XG" | "OFFICIAL_STRENGTH"; attackMultiplier: number; defenceMultiplier: number };
+  strength?: { method: "MARKET_XG" | "OFFICIAL_STRENGTH" | "DERIVED_TEAM_RATING"; attackMultiplier: number; defenceMultiplier: number };
 };
 export type PlayerStats = {
   minutes: number;

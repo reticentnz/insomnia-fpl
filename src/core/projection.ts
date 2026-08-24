@@ -3,7 +3,7 @@ import { expectedRoleMinutes, normalizeRoleProfile, type PlayerRoleProfile } fro
 import { scoringRules } from './scoring.ts'
 
 /** The calculation version recorded with every projection output. */
-export const MODEL_VERSION = 'role-aware-v2.4'
+export const MODEL_VERSION = 'role-aware-v2.5'
 
 /** Direct clean-sheet markets lead the estimate; the player/team model stabilizes thin niche markets. */
 export const MARKET_CLEAN_SHEET_WEIGHT = .75
@@ -16,7 +16,7 @@ export type FixtureRoleProfile = {
   minutesIfSubstitute: number
 }
 
-export type StrengthMethod = 'MARKET_XG' | 'OFFICIAL_STRENGTH' | 'FDR_FALLBACK'
+export type StrengthMethod = 'MARKET_XG' | 'OFFICIAL_STRENGTH' | 'DERIVED_TEAM_RATING' | 'FDR_FALLBACK'
 
 export function selectStrengthMethod(input: {
   market?: { homeExpectedGoals: number | null; awayExpectedGoals: number | null } | null

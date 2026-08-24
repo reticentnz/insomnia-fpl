@@ -19,7 +19,7 @@ export type CreateForecastRunOptions = {
   maxGameweeks?: number
   config?: Record<string, unknown>
   /** Test-only hook used to prove an interrupted projection leaves no child set. */
-  projectFixture?: (player: ProjectionCatalogPlayer, fixture: ProjectionCatalogFixture, catalog: ProjectionInputCatalog, context: { forecastRunId: string; modelVersion: string }) => ForecastRow
+  projectFixture?: (player: ProjectionCatalogPlayer, fixture: ProjectionCatalogFixture, catalog: ProjectionInputCatalog, context: { forecastRunId: string; modelVersion: string; completedGameweeks: number }) => ForecastRow
 }
 
 export type ForecastRow = {
@@ -41,7 +41,7 @@ const number = (value: unknown, fallback = 0) => Number.isFinite(Number(value)) 
 const nullableNumber = (value: unknown) => value == null ? undefined : number(value)
 const clamp = (value: number, min: number, max: number) => Math.min(max, Math.max(min, value))
 
-export function baseRole(player: ProjectionCatalogPlayer): PlayerRoleProfile {
+export function baseRole(player: ProjectionCatalogPlayer, completedGameweeks = 0): PlayerRoleProfile {
   const official = player.official
   const position = String(official.position || 'MID')
   const minutes = Math.max(0, number(official.minutes))
@@ -51,11 +51,17 @@ export function baseRole(player: ProjectionCatalogPlayer): PlayerRoleProfile {
   const reportedChance = nullableNumber(official.chance_of_playing)
   const defaultChance = ['i', 'u'].includes(String(official.status)) ? 0 : 100
   const chance = clamp(reportedChance ?? defaultChance, 0, 100) / 100
-  // Blend FPL availability (health) with season-minute coverage so a healthy
-  // player with limited minutes is not an automatic no-show, while a full
-  // season starter is clearly favoured. Signals override the final role.
-  const seasonCoverage = clamp(minutes / 2850, 0, 1)
-  const blend = chance * (0.55 + 0.45 * seasonCoverage)
+  // Normalize current-season evidence by matches actually completed. A one-match
+  // prior prevents GW1 from making either a starter or an unused squad player a
+  // certainty, while avoiding the old full-season denominator that suppressed
+  // every early-season starter.
+  const completed = Math.max(0, Math.floor(completedGameweeks))
+  const starts = Math.max(0, number(official.starts))
+  const observedMinutesShare = completed ? clamp(minutes / (completed * 90), 0, 1) : .55
+  const observedStartsShare = completed ? clamp(starts / completed, 0, 1) : .55
+  const observedRoleShare = .65 * observedStartsShare + .35 * observedMinutesShare
+  const roleShare = completed ? (.55 + completed * observedRoleShare) / (completed + 1) : .55
+  const blend = chance * roleShare
   const target = clamp(blend * 90, 0, 90)
   const isGoalkeeper = position === 'GK'
   const minutesIfStarting = isGoalkeeper ? 90 : 86
@@ -67,6 +73,59 @@ export function baseRole(player: ProjectionCatalogPlayer): PlayerRoleProfile {
     minutesIfStarting, substituteProbabilityWhenBenched, minutesIfSubstitute,
     confidence: minutes >= 900 ? 'HIGH' : minutes > 0 ? 'MEDIUM' : 'LOW', derivedFromSignalIds: [],
   }
+}
+
+type DerivedTeamRating = { attack: number; defenceWeakness: number; sampleGameweeks: number }
+const derivedRatingCache = new WeakMap<ProjectionInputCatalog, Map<number, Map<string, DerivedTeamRating>>>()
+
+/** Early-season team xG/xGC ratings, strongly shrunk to the league scoring prior. */
+export function deriveTeamRatings(catalog: ProjectionInputCatalog, completedGameweeks: number) {
+  const completed = Math.max(0, Math.floor(completedGameweeks))
+  const cached = derivedRatingCache.get(catalog)?.get(completed)
+  if (cached) return cached
+  const ratings = new Map<string, DerivedTeamRating>()
+  if (!completed) return ratings
+  const leagueGoals = 1.4
+  const priorMatches = 3
+  const teams = new Map<string, ProjectionCatalogPlayer[]>()
+  for (const player of catalog.players) teams.set(player.team.id, [...(teams.get(player.team.id) || []), player])
+  for (const [teamId, players] of teams) {
+    const teamXg = players.reduce((sum, player) => sum + Math.max(0, number(player.official.expected_goals)), 0)
+    const fullMatchXgc = players
+      .filter(player => number(player.official.minutes) >= completed * 60)
+      .map(player => Math.max(0, number(player.official.expected_goals_conceded)))
+      .sort((left, right) => left - right)
+    const middle = Math.floor(fullMatchXgc.length / 2)
+    const teamXgc = fullMatchXgc.length
+      ? (fullMatchXgc.length % 2 ? fullMatchXgc[middle] : (fullMatchXgc[middle - 1] + fullMatchXgc[middle]) / 2)
+      : leagueGoals * completed
+    const attackRate = (teamXg + leagueGoals * priorMatches) / (completed + priorMatches)
+    const defenceRate = (teamXgc + leagueGoals * priorMatches) / (completed + priorMatches)
+    ratings.set(teamId, { attack: clamp(attackRate / leagueGoals, .7, 1.3), defenceWeakness: clamp(defenceRate / leagueGoals, .7, 1.3), sampleGameweeks: completed })
+  }
+  const byGameweek = derivedRatingCache.get(catalog) || new Map<number, Map<string, DerivedTeamRating>>()
+  byGameweek.set(completed, ratings)
+  derivedRatingCache.set(catalog, byGameweek)
+  return ratings
+}
+
+export function catalogFixtureStrength(player: ProjectionCatalogPlayer, fixture: ProjectionCatalogFixture, catalog?: ProjectionInputCatalog, completedGameweeks = 0) {
+  const ownAttack = Number(player.teamStrength[fixture.isHome ? 'strengthAttackHome' : 'strengthAttackAway'])
+  const ownDefence = Number(player.teamStrength[fixture.isHome ? 'strengthDefenceHome' : 'strengthDefenceAway'])
+  const opponentAttack = Number(fixture.opponent.teamStrength[fixture.isHome ? 'strengthAttackAway' : 'strengthAttackHome'])
+  const opponentDefence = Number(fixture.opponent.teamStrength[fixture.isHome ? 'strengthDefenceAway' : 'strengthDefenceHome'])
+  const marketAttack = fixture.market ? (fixture.isHome ? fixture.market.homeExpectedGoals : fixture.market.awayExpectedGoals) / 1.4 : null
+  const marketDefence = fixture.market ? (fixture.isHome ? fixture.market.awayExpectedGoals : fixture.market.homeExpectedGoals) / 1.4 : null
+  const officialComplete = [ownAttack, ownDefence, opponentAttack, opponentDefence].every(value => Number.isFinite(value) && value > 0)
+  if (marketAttack != null && marketDefence != null) return { method: 'MARKET_XG' as const, attackMultiplier: marketAttack, defenceMultiplier: marketDefence }
+  if (officialComplete) return { method: 'OFFICIAL_STRENGTH' as const, attackMultiplier: ownAttack / 1000 * (2 - opponentDefence / 1000), defenceMultiplier: opponentAttack / 1000 * (2 - ownDefence / 1000) }
+  if (catalog && completedGameweeks > 0) {
+    const ratings = deriveTeamRatings(catalog, completedGameweeks)
+    const own = ratings.get(player.team.id)
+    const opponent = ratings.get(fixture.opponent.id)
+    if (own && opponent) return { method: 'DERIVED_TEAM_RATING' as const, attackMultiplier: own.attack * opponent.defenceWeakness, defenceMultiplier: opponent.attack * own.defenceWeakness }
+  }
+  return undefined
 }
 
 function toSignal(signal: Record<string, unknown>, fixture: ProjectionCatalogFixture) {
@@ -94,9 +153,9 @@ function setPieceRole(signals: Array<Record<string, unknown>>) {
  * Adapts the canonical catalogue at the calculation boundary only. The actual
  * component calculation remains the shared projection model used by live code.
  */
-export function projectCatalogFixture(player: ProjectionCatalogPlayer, fixture: ProjectionCatalogFixture, _catalog?: ProjectionInputCatalog, context?: { forecastRunId: string; modelVersion: string }): ForecastRow {
+export function projectCatalogFixture(player: ProjectionCatalogPlayer, fixture: ProjectionCatalogFixture, catalog?: ProjectionInputCatalog, context?: { forecastRunId: string; modelVersion: string; completedGameweeks: number }): ForecastRow {
   const official = player.official
-  const role = resolvePlayerRole(baseRole(player), player.roleSignals.map(signal => toSignal(signal, fixture)), {
+  const role = resolvePlayerRole(baseRole(player, context?.completedGameweeks), player.roleSignals.map(signal => toSignal(signal, fixture)), {
     now: new Date(String(official.observed_at)), gameweek: fixture.gameweekFplId || undefined,
   })
   const position = String(official.position || 'MID') as 'GK' | 'DEF' | 'MID' | 'FWD'
@@ -109,18 +168,7 @@ export function projectCatalogFixture(player: ProjectionCatalogPlayer, fixture: 
     upcomingFixtures: [{ gameweek: fixture.gameweekFplId || 0, opponent: fixture.opponent.shortName, venue: fixture.isHome ? 'H' : 'A', difficulty: fixture.difficulty || 3 }], dataConfidence: role.confidence,
     setPieceRole: setPieceRole(player.roleSignals),
   }
-  const ownAttack = Number(player.teamStrength[fixture.isHome ? 'strengthAttackHome' : 'strengthAttackAway'])
-  const ownDefence = Number(player.teamStrength[fixture.isHome ? 'strengthDefenceHome' : 'strengthDefenceAway'])
-  const opponentAttack = Number(fixture.opponent.teamStrength[fixture.isHome ? 'strengthAttackAway' : 'strengthAttackHome'])
-  const opponentDefence = Number(fixture.opponent.teamStrength[fixture.isHome ? 'strengthDefenceAway' : 'strengthDefenceHome'])
-  const marketAttack = fixture.market ? (fixture.isHome ? fixture.market.homeExpectedGoals : fixture.market.awayExpectedGoals) / 1.4 : null
-  const marketDefence = fixture.market ? (fixture.isHome ? fixture.market.awayExpectedGoals : fixture.market.homeExpectedGoals) / 1.4 : null
-  const officialComplete = [ownAttack, ownDefence, opponentAttack, opponentDefence].every(value => Number.isFinite(value) && value > 0)
-  const strength = marketAttack != null && marketDefence != null
-    ? { method: 'MARKET_XG' as const, attackMultiplier: marketAttack, defenceMultiplier: marketDefence }
-    : officialComplete
-      ? { method: 'OFFICIAL_STRENGTH' as const, attackMultiplier: ownAttack / 1000 * (2 - opponentDefence / 1000), defenceMultiplier: opponentAttack / 1000 * (2 - ownDefence / 1000) }
-      : undefined
+  const strength = catalogFixtureStrength(player, fixture, catalog, context?.completedGameweeks)
   const marketCleanSheetProbability = fixture.market
     ? (fixture.isHome ? fixture.market.homeCleanSheetProbability : fixture.market.awayCleanSheetProbability) ?? undefined
     : undefined
@@ -174,7 +222,7 @@ async function targetGameweek(db: Database, catalog: ProjectionInputCatalog, asO
   }
   if (!first?.gameweekId) throw new Error(`No pre-deadline scheduled gameweek exists at ${asOf}`)
   const allowed = new Set(candidates.filter(item => (item.gameweekFplId || Infinity) >= (first!.gameweekFplId || -Infinity)).slice(0, maxGameweeks).map(item => item.gameweekId!))
-  return { gameweekId: first.gameweekId, deadlineAt, allowed }
+  return { gameweekId: first.gameweekId, gameweekFplId: first.gameweekFplId || 1, deadlineAt, allowed }
 }
 
 async function selectedFeedId(db: Database, source: string, ids: string[], _asOf: string) {
@@ -224,7 +272,8 @@ export async function createForecastRun(db: Database, options: CreateForecastRun
   try {
     const project = options.projectFixture || projectCatalogFixture
     const modelVersion = options.modelVersion || MODEL_VERSION
-    const rows = catalog.players.flatMap(player => player.fixtures.filter(fixture => target.allowed.has(fixture.gameweekId || '') && fixture.kickoffAt && Date.parse(fixture.kickoffAt) >= Date.parse(asOf)).map(fixture => project(player, fixture, catalog, { forecastRunId: id, modelVersion })))
+    const completedGameweeks = Math.max(0, target.gameweekFplId - 1)
+    const rows = catalog.players.flatMap(player => player.fixtures.filter(fixture => target.allowed.has(fixture.gameweekId || '') && fixture.kickoffAt && Date.parse(fixture.kickoffAt) >= Date.parse(asOf)).map(fixture => project(player, fixture, catalog, { forecastRunId: id, modelVersion, completedGameweeks })))
     await db.query('BEGIN IMMEDIATE')
     for (const row of rows) await db.query(`INSERT INTO "PlayerFixtureForecast" ("forecast_run_id","player_id","fixture_id","expected_minutes","appearance_points","goal_points","assist_points","clean_sheet_points","goals_conceded_points","save_points","penalty_points","defensive_contribution_points","bonus_points","card_points","mean_points","standard_deviation","p10_points","p50_points","p90_points","start_probability","substitute_probability","no_show_probability","minutes_confidence","strength_method","role_source_json","input_provenance_json") VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26)`, [id, row.playerId, row.fixtureId, row.expectedMinutes, row.appearancePoints, row.goalPoints, row.assistPoints, row.cleanSheetPoints, row.goalsConcededPoints, row.savePoints, row.penaltyPoints, row.defensiveContributionPoints, row.bonusPoints, row.cardPoints, row.meanPoints, row.standardDeviation, row.p10Points, row.p50Points, row.p90Points, row.startProbability, row.substituteProbability, row.noShowProbability, row.minutesConfidence, row.strengthMethod, canonicalJson(row.roleSource), canonicalJson(row.inputProvenance)])
     const eligible = target.deadlineAt && Date.parse(createdAt) <= Date.parse(target.deadlineAt) ? 1 : 0
@@ -288,6 +337,9 @@ export async function latestForecastSummary(db: Database, { horizon = 1 }: { hor
   // selected by the optimizer.
   const qualityRows = selected.filter(row => Boolean(row.active) && Number(row.expected_minutes) >= 30)
   const fixtureCount = qualityRows.length
+  const firstGameweek = gameweeks[0]
+  const nearTermRows = qualityRows.filter(row => Number(row.gameweek_fpl_id) === firstGameweek)
+  const nearTermFixtureCount = nearTermRows.length
   const playerIds = new Set(qualityRows.map(row => Number(row.fpl_id)))
   const underlyingPlayerIds = new Set(qualityRows.filter(row => {
     try { return Boolean(JSON.parse(String(row.input_provenance_json || '{}')).underlyingObservationId) } catch { return false }
@@ -297,6 +349,9 @@ export async function latestForecastSummary(db: Database, { horizon = 1 }: { hor
     lowMinutesFixtureRatio: fixtureCount ? qualityRows.filter(row => row.minutes_confidence === 'LOW').length / fixtureCount : 1,
     underlyingPlayerRatio: playerIds.size ? underlyingPlayerIds.size / playerIds.size : 0,
     marketFixtureRatio: fixtureCount ? qualityRows.filter(row => row.strength_method === 'MARKET_XG').length / fixtureCount : 0,
+    nearTermFallbackFixtureRatio: nearTermFixtureCount ? nearTermRows.filter(row => row.strength_method === 'FDR_FALLBACK').length / nearTermFixtureCount : 1,
+    nearTermMarketFixtureRatio: nearTermFixtureCount ? nearTermRows.filter(row => row.strength_method === 'MARKET_XG').length / nearTermFixtureCount : 0,
+    derivedStrengthFixtureRatio: fixtureCount ? qualityRows.filter(row => row.strength_method === 'DERIVED_TEAM_RATING').length / fixtureCount : 0,
   }
   return { id: run.id, modelVersion: run.model_version, asOf: run.as_of, createdAt: run.created_at, horizon: Number(horizon), gameweeks, quality, players: [...players.values()].map(player => {
     if (!player.samplesAvailable) {
