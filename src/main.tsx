@@ -846,6 +846,9 @@ function App() {
   const [forecastSummary, setForecastSummary] = useState<ForecastSummary | null>(null);
   const [canonicalRecommendation, setCanonicalRecommendation] = useState<CanonicalRecommendation | null>(null);
   const [canonicalRecommendationLoading, setCanonicalRecommendationLoading] = useState(false);
+  const [recordingCanonicalCandidateIds, setRecordingCanonicalCandidateIds] = useState<Set<string>>(() => new Set());
+  const [recordedCanonicalCandidateIds, setRecordedCanonicalCandidateIds] = useState<Set<string>>(() => new Set());
+  const canonicalDecisionInFlightRef = useRef(new Set<string>());
   const [recommendationAssumptions, setRecommendationAssumptions] = useState({ freeTransfersConfirmed: false, exactSellingPrices: false });
   const [catalogMode, setCatalogMode] = useState<
     "loading" | "cached" | "cached-offline" | "live" | "demo-live" | "demo-conflict" | "demo-offline"
@@ -1614,31 +1617,59 @@ function App() {
   const applyCanonicalCandidate = async (candidate: CanonicalRecommendation['candidates'][number]) => {
     if (!canonicalRecommendation || !activePlanId) return;
     if (!recommendationSafety.actionable) { setToast({ message: recommendationSafety.reasons.join(' '), tone: 'warning' }); return; }
-    if (candidate.action === 'ROLL') {
-      await recordRecommendationDecision({ recommendationSetId: canonicalRecommendation.id, candidateId: candidate.id, decision: 'ACCEPTED', selectedPlanId: activePlanId, reason: 'Roll decision recorded before deadline' });
-      setToast({ message: 'Roll decision recorded for prospective evaluation.', tone: 'success' });
-      return;
+    if (canonicalDecisionInFlightRef.current.has(candidate.id) || recordedCanonicalCandidateIds.has(candidate.id)) return;
+    canonicalDecisionInFlightRef.current.add(candidate.id);
+    setRecordingCanonicalCandidateIds(current => new Set(current).add(candidate.id));
+    try {
+      if (candidate.action === 'ROLL') {
+        await recordRecommendationDecision({ recommendationSetId: canonicalRecommendation.id, candidateId: candidate.id, decision: 'ACCEPTED', selectedPlanId: activePlanId, reason: 'Roll decision recorded before deadline' });
+        setToast({ message: 'Roll decision recorded for prospective evaluation.', tone: 'success' });
+      } else if (candidate.action === 'CHIP') {
+        await recordRecommendationDecision({ recommendationSetId: canonicalRecommendation.id, candidateId: candidate.id, decision: 'ACCEPTED', selectedPlanId: activePlanId, reason: 'Chip plan accepted for manual execution in official FPL' });
+        setToast({ message: 'Chip decision recorded. Activate the chip manually in official FPL.', tone: "success" });
+      } else {
+        if (!fplAccount || !candidate.apiMoves?.length) return;
+        const replacements = new Map(candidate.apiMoves.map(move => [Number(move.outId), Number(move.inId)]));
+        const nextIds = selectedIds.map(id => replacements.get(id) ?? id);
+        const nextLocks = lockedIds.filter(id => !replacements.has(id));
+        const result = await saveUserProfile(fplAccount, nextIds, activePlanId, nextLocks);
+        if (!result.ok || !result.planId) { setToast({ message: result.error || 'The recommended plan could not be saved.', tone: "error" }); return; }
+        setPreviousSquad(selectedIds); setSelectedIds(nextIds); setLockedIds(nextLocks); setActivePlanId(result.planId); setActivePlanParentId(result.parentPlanId || null);
+        if (result.bankTenths != null) setManager(current => ({ ...current, bank: result.bankTenths! / 10, freeTransfers: result.freeTransfers ?? current.freeTransfers }));
+        await recordRecommendationDecision({ recommendationSetId: canonicalRecommendation.id, candidateId: candidate.id, decision: 'ACCEPTED', selectedPlanId: result.planId, reason: 'Applied from the stored recommendation surface' });
+        setToast({ message: `Stored ${candidate.apiMoves.length}-move plan applied locally; your official FPL team was not changed.`, undo: true, tone: "success" });
+      }
+      setRecordedCanonicalCandidateIds(current => new Set(current).add(candidate.id));
+    } catch (error) {
+      setToast({ message: error instanceof Error ? error.message : 'Decision could not be recorded.', tone: 'error' });
+    } finally {
+      canonicalDecisionInFlightRef.current.delete(candidate.id);
+      setRecordingCanonicalCandidateIds(current => {
+        const next = new Set(current);
+        next.delete(candidate.id);
+        return next;
+      });
     }
-    if (candidate.action === 'CHIP') {
-      await recordRecommendationDecision({ recommendationSetId: canonicalRecommendation.id, candidateId: candidate.id, decision: 'ACCEPTED', selectedPlanId: activePlanId, reason: 'Chip plan accepted for manual execution in official FPL' });
-      setToast({ message: 'Chip decision recorded. Activate the chip manually in official FPL.', tone: "success" });
-      return;
-    }
-    if (!fplAccount || !candidate.apiMoves?.length) return;
-    const replacements = new Map(candidate.apiMoves.map(move => [Number(move.outId), Number(move.inId)]));
-    const nextIds = selectedIds.map(id => replacements.get(id) ?? id);
-    const nextLocks = lockedIds.filter(id => !replacements.has(id));
-    const result = await saveUserProfile(fplAccount, nextIds, activePlanId, nextLocks);
-    if (!result.ok || !result.planId) { setToast({ message: result.error || 'The recommended plan could not be saved.', tone: "error" }); return; }
-    setPreviousSquad(selectedIds); setSelectedIds(nextIds); setLockedIds(nextLocks); setActivePlanId(result.planId); setActivePlanParentId(result.parentPlanId || null);
-    if (result.bankTenths != null) setManager(current => ({ ...current, bank: result.bankTenths! / 10, freeTransfers: result.freeTransfers ?? current.freeTransfers }));
-    await recordRecommendationDecision({ recommendationSetId: canonicalRecommendation.id, candidateId: candidate.id, decision: 'ACCEPTED', selectedPlanId: result.planId, reason: 'Applied from the stored recommendation surface' });
-    setToast({ message: `Stored ${candidate.apiMoves.length}-move plan applied locally; your official FPL team was not changed.`, undo: true, tone: "success" });
   };
   const dismissCanonicalCandidate = async (candidate: CanonicalRecommendation['candidates'][number], decision: 'REJECTED' | 'IGNORED') => {
     if (!canonicalRecommendation) return;
-    await recordRecommendationDecision({ recommendationSetId: canonicalRecommendation.id, candidateId: candidate.id, decision, reason: 'Recorded from the recommendation surface' });
-    setToast({ message: `${decision === 'REJECTED' ? 'Rejected' : 'Ignored'} recommendation recorded in Review.`, tone: "success" });
+    if (canonicalDecisionInFlightRef.current.has(candidate.id) || recordedCanonicalCandidateIds.has(candidate.id)) return;
+    canonicalDecisionInFlightRef.current.add(candidate.id);
+    setRecordingCanonicalCandidateIds(current => new Set(current).add(candidate.id));
+    try {
+      await recordRecommendationDecision({ recommendationSetId: canonicalRecommendation.id, candidateId: candidate.id, decision, reason: 'Recorded from the recommendation surface' });
+      setRecordedCanonicalCandidateIds(current => new Set(current).add(candidate.id));
+      setToast({ message: `${decision === 'REJECTED' ? 'Rejected' : 'Ignored'} recommendation recorded in Review.`, tone: "success" });
+    } catch (error) {
+      setToast({ message: error instanceof Error ? error.message : 'Decision could not be recorded.', tone: 'error' });
+    } finally {
+      canonicalDecisionInFlightRef.current.delete(candidate.id);
+      setRecordingCanonicalCandidateIds(current => {
+        const next = new Set(current);
+        next.delete(candidate.id);
+        return next;
+      });
+    }
   };
   const autoRecommendationKeyRef = useRef('');
   useEffect(() => {
@@ -2567,6 +2598,8 @@ function App() {
             recommendationAssumptions={effectiveRecommendationAssumptions}
             catalog={catalog}
             onApplyCanonical={applyCanonicalCandidate}
+            recordingCanonicalCandidateIds={recordingCanonicalCandidateIds}
+            recordedCanonicalCandidateIds={recordedCanonicalCandidateIds}
             onOpenSettings={() => setSettingsOpen(true)}
           />
         ) : tab === "Leagues" ? (
@@ -2625,6 +2658,8 @@ function App() {
             onGenerateCanonical={generateCanonicalRecommendation}
             onApplyCanonical={applyCanonicalCandidate}
             onDismissCanonical={dismissCanonicalCandidate}
+            recordingCanonicalCandidateIds={recordingCanonicalCandidateIds}
+            recordedCanonicalCandidateIds={recordedCanonicalCandidateIds}
             recommendationSafety={recommendationSafety}
           />
         ) : null}
@@ -5250,6 +5285,8 @@ function MyTeamV2({
   recommendationAssumptions,
   catalog,
   onApplyCanonical,
+  recordingCanonicalCandidateIds,
+  recordedCanonicalCandidateIds,
   onOpenSettings,
 }: {
   squad: Player[];
@@ -5301,6 +5338,8 @@ function MyTeamV2({
   recommendationAssumptions: RecommendationAssumptions;
   catalog: Player[];
   onApplyCanonical: (candidate: CanonicalRecommendation['candidates'][number]) => void;
+  recordingCanonicalCandidateIds: Set<string>;
+  recordedCanonicalCandidateIds: Set<string>;
   onOpenSettings: () => void;
 }) {
   const canonicalPrimary = canonicalRecommendation?.candidates.find(candidate => candidate.id === canonicalRecommendation.primaryCandidateId) || null;
@@ -5311,6 +5350,7 @@ function MyTeamV2({
   }) || [];
   const canonicalAccounting = formatAccounting(canonicalPrimary);
   const canonicalSensitivity = recommendationSensitivity(canonicalPrimary);
+  const canonicalDecisionLocked = canonicalPrimary != null && (recordingCanonicalCandidateIds.has(canonicalPrimary.id) || recordedCanonicalCandidateIds.has(canonicalPrimary.id));
   const repairActions = deriveRecommendationRepairActions(forecastReadiness.state, recommendationAssumptions);
   const openAdminRepair = (targetId: string) => {
     setTab("Admin");
@@ -5437,7 +5477,7 @@ function MyTeamV2({
         )}
         {canonicalPrimary?.action === 'ROLL' && !draftMode && recommendationSafety.actionable && (
           <div className="recommend-actions">
-            <button className="dark-btn" onClick={() => onApplyCanonical(canonicalPrimary)}>Record roll decision</button>
+            <button className="dark-btn" disabled={canonicalDecisionLocked} onClick={() => onApplyCanonical(canonicalPrimary)}>{recordingCanonicalCandidateIds.has(canonicalPrimary.id) ? 'Recording…' : recordedCanonicalCandidateIds.has(canonicalPrimary.id) ? 'Roll decision recorded' : 'Record roll decision'}</button>
             <button className="ghost-btn" onClick={() => setTab("Transfers")}>Review alternatives</button>
           </div>
         )}
@@ -8421,9 +8461,11 @@ function TargetedReplacementSection({
 function SecondaryDismissAction({
   candidate,
   onDismiss,
+  disabled = false,
 }: {
   candidate: CanonicalRecommendation['candidates'][number];
   onDismiss?: (candidate: CanonicalRecommendation['candidates'][number], decision: 'REJECTED' | 'IGNORED') => void;
+  disabled?: boolean;
 }) {
   const [open, setOpen] = useState(false);
   const containerRef = useRef<HTMLDivElement>(null);
@@ -8444,6 +8486,7 @@ function SecondaryDismissAction({
       <button
         type="button"
         className="ghost-btn"
+        disabled={disabled}
         onClick={() => setOpen((prev) => !prev)}
         aria-haspopup="true"
         aria-expanded={open}
@@ -8456,6 +8499,7 @@ function SecondaryDismissAction({
             type="button"
             className="dismiss-menu-item"
             role="menuitem"
+            disabled={disabled}
             onClick={() => {
               setOpen(false);
               onDismiss?.(candidate, 'REJECTED');
@@ -8468,6 +8512,7 @@ function SecondaryDismissAction({
             type="button"
             className="dismiss-menu-item"
             role="menuitem"
+            disabled={disabled}
             onClick={() => {
               setOpen(false);
               onDismiss?.(candidate, 'IGNORED');
@@ -8492,6 +8537,8 @@ function PrimaryHeroRecommendationCard({
   hasPositiveAlternatives,
   onApply,
   onDismiss,
+  decisionLocked = false,
+  decisionRecording = false,
 }: {
   candidate: CanonicalRecommendation['candidates'][number];
   isPrimary: boolean;
@@ -8502,6 +8549,8 @@ function PrimaryHeroRecommendationCard({
   hasPositiveAlternatives?: boolean;
   onApply?: (candidate: CanonicalRecommendation['candidates'][number]) => void;
   onDismiss?: (candidate: CanonicalRecommendation['candidates'][number], decision: 'REJECTED' | 'IGNORED') => void;
+  decisionLocked?: boolean;
+  decisionRecording?: boolean;
 }) {
   const accounting = recommendationAccounting(candidate);
   const sensitivity = recommendationSensitivity(candidate);
@@ -8800,17 +8849,17 @@ function PrimaryHeroRecommendationCard({
         {(candidate.apiMoves?.length || candidate.action === 'CHIP' || candidate.action === 'ROLL') ? (
           <button
             className="dark-btn"
-            disabled={!recommendationSafety.actionable}
+            disabled={!recommendationSafety.actionable || decisionLocked}
             onClick={() => onApply?.(candidate)}
           >
             {candidate.action === 'CHIP'
               ? 'Record chip plan'
               : candidate.action === 'ROLL'
-              ? 'Record roll decision'
+              ? decisionRecording ? 'Recording…' : decisionLocked ? 'Decision recorded' : 'Record roll decision'
               : 'Apply local plan'}
           </button>
         ) : null}
-        <SecondaryDismissAction candidate={candidate} onDismiss={onDismiss} />
+        <SecondaryDismissAction candidate={candidate} onDismiss={onDismiss} disabled={decisionLocked} />
       </div>
     </article>
   );
@@ -8833,6 +8882,8 @@ function TransfersV2({
   onGenerateCanonical,
   onApplyCanonical,
   onDismissCanonical,
+  recordingCanonicalCandidateIds,
+  recordedCanonicalCandidateIds,
   recommendationSafety,
 }: {
   data: Transfer[];
@@ -8851,6 +8902,8 @@ function TransfersV2({
   onGenerateCanonical?: (chip?: 'TRIPLE_CAPTAIN' | 'BENCH_BOOST' | 'FREE_HIT' | 'WILDCARD' | null) => void;
   onApplyCanonical?: (candidate: CanonicalRecommendation['candidates'][number]) => void;
   onDismissCanonical?: (candidate: CanonicalRecommendation['candidates'][number], decision: 'REJECTED' | 'IGNORED') => void;
+  recordingCanonicalCandidateIds: Set<string>;
+  recordedCanonicalCandidateIds: Set<string>;
   recommendationSafety: RecommendationSafety;
 }) {
   const [activeTab, setActiveTab] = useState<'STRATEGY' | 'FINDER'>(targetSwapPlayer ? 'FINDER' : 'STRATEGY');
@@ -9058,6 +9111,8 @@ function TransfersV2({
                   hasPositiveAlternatives={alternativeCandidates.some(c => c.action === 'TRANSFER' && c.netExpectedGain > 0)}
                   onApply={onApplyCanonical}
                   onDismiss={onDismissCanonical}
+                  decisionLocked={recordingCanonicalCandidateIds.has(primaryCandidate.id) || recordedCanonicalCandidateIds.has(primaryCandidate.id)}
+                  decisionRecording={recordingCanonicalCandidateIds.has(primaryCandidate.id)}
                 />
               )}
 
@@ -9107,13 +9162,13 @@ function TransfersV2({
                             {(candidate.apiMoves?.length || candidate.action === 'CHIP' || candidate.action === 'ROLL') && (
                               <button
                                 className="dark-btn"
-                                disabled={!recommendationSafety.actionable}
+                                disabled={!recommendationSafety.actionable || recordingCanonicalCandidateIds.has(candidate.id) || recordedCanonicalCandidateIds.has(candidate.id)}
                                 onClick={() => onApplyCanonical?.(candidate)}
                               >
-                                Apply local plan
+                                {recordingCanonicalCandidateIds.has(candidate.id) ? 'Recording…' : recordedCanonicalCandidateIds.has(candidate.id) ? 'Decision recorded' : candidate.action === 'ROLL' ? 'Record roll decision' : candidate.action === 'CHIP' ? 'Record chip plan' : 'Apply local plan'}
                               </button>
                             )}
-                            <SecondaryDismissAction candidate={candidate} onDismiss={onDismissCanonical} />
+                            <SecondaryDismissAction candidate={candidate} onDismiss={onDismissCanonical} disabled={recordingCanonicalCandidateIds.has(candidate.id) || recordedCanonicalCandidateIds.has(candidate.id)} />
                           </div>
                         </article>
                       );

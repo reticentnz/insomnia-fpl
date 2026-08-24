@@ -36,12 +36,25 @@ export async function recordDecision(db, { recommendationSetId, candidateId = nu
   if ((decision === 'ACCEPTED' || decision === 'CUSTOM') && !selected) throw new Error(`${decision} decisions require selectedPlanId`)
   if (decision === 'ACCEPTED' && !candidateId) throw new Error('ACCEPTED decisions require candidateId')
   const id = randomUUID()
-  await db.query(
+  const inserted = await db.query(
     `INSERT INTO "DecisionRecord" ("id","recommendation_set_id","candidate_id","decision","selected_plan_id","reason","created_at","evaluated_at","realized_points_delta","outcome_json")
-     VALUES ($1,$2,$3,$4,$5,$6,$7,NULL,NULL,NULL)`,
+     VALUES ($1,$2,$3,$4,$5,$6,$7,NULL,NULL,NULL)
+     ON CONFLICT DO NOTHING`,
     [id, set.id, candidateId, decision, selected?.id ?? null, reason == null ? null : String(reason).slice(0, 2000), createdAt],
   )
-  return getDecision(db, id)
+  if (inserted.changes) return { ...(await getDecision(db, id)), created: true }
+
+  const existing = await db.query(
+    `SELECT "id" FROM "DecisionRecord"
+     WHERE "recommendation_set_id"=$1
+       AND "candidate_id" IS $2
+       AND "decision"=$3
+       AND "selected_plan_id" IS $4
+     LIMIT 1`,
+    [set.id, candidateId, decision, selected?.id ?? null],
+  )
+  if (!existing.rows[0]) throw new Error('Decision could not be recorded')
+  return { ...(await getDecision(db, existing.rows[0].id)), created: false }
 }
 
 async function planActual(db, { planId, forecastRunId }) {

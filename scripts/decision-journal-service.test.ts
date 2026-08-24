@@ -41,6 +41,16 @@ describe('WP-13 decision journal', () => {
     expect((await getDecision(db, decision.id)).forecastRunId).toBe(run.id)
   })
 
+  it('returns the existing record when the same decision is submitted again', async () => {
+    const { db, chosen } = await seeded()
+    const first = await recordDecision(db, { recommendationSetId: 'set', candidateId: 'candidate', decision: 'ACCEPTED', selectedPlanId: chosen.id })
+    const repeated = await recordDecision(db, { recommendationSetId: 'set', candidateId: 'candidate', decision: 'ACCEPTED', selectedPlanId: chosen.id })
+    expect(repeated.id).toBe(first.id)
+    expect(first.created).toBe(true)
+    expect(repeated.created).toBe(false)
+    expect((await db.query('SELECT "id" FROM "DecisionRecord"')).rows).toHaveLength(1)
+  })
+
   it('evaluates saved plans and separates forecast error from the recorded decision result', async () => {
     const { db, chosen, run } = await seeded()
     const rows = await db.query('SELECT "player_id", "fixture_id" FROM "PlayerFixtureForecast" WHERE "forecast_run_id"=$1', [run.id])
