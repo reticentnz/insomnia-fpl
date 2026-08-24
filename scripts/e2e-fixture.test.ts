@@ -44,7 +44,7 @@ describe('fixture smoke workflow', () => {
       elementSummaries: { '10': fixture('wp02-element-summary-10.json'), '11': fixture('wp02-element-summary-11.json') },
     })
     expect(ingestion.status).toBe('SUCCEEDED')
-    expect(ingestion.forecast?.status).toBe('SUCCEEDED')
+    expect(ingestion.forecast?.status).toBe('CREATED')
 
     const db = getDb(databasePath)
     const manager = await importManagerPayload(db, {
@@ -85,9 +85,9 @@ describe('fixture smoke workflow', () => {
     expect(catalogue.freshness.official.observedAt).toBe(observedAt)
     expect(catalogue.inputHash).toMatch(/^[a-f0-9]{64}$/)
 
-    const forecastRun = (await db.query('SELECT "gameweek_id" FROM "ForecastRun" WHERE "id"=$1', [ingestion.forecast?.id])).rows[0]
+    const forecastRun = (await db.query('SELECT "gameweek_id" FROM "ForecastRun" WHERE "id"=$1', [ingestion.forecast?.forecastRunId])).rows[0]
     const baseline = await latestEligibleForecastRun(db, String(forecastRun.gameweek_id))
-    expect(baseline?.id).toBe(ingestion.forecast?.id)
+    expect(baseline?.id).toBe(ingestion.forecast?.forecastRunId)
     const backtest = await runBacktest(db)
     expect(backtest.observationCount).toBeGreaterThanOrEqual(0)
     expect(backtest.status).toBe('UNCALIBRATED')

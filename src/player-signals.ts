@@ -53,6 +53,24 @@ export type RoleSignalValue = {
   forecastDirection?: "UNDERPERFORM" | "OUTPERFORM" | "PRICE_FALL" | "PRICE_RISE";
   forecastProbability?: number;
   forecastHorizon?: string;
+  /**
+   * Optional provenance supplied by structured ingestion.  It prevents several
+   * articles repeating one team-sheet from looking like independent evidence.
+   */
+  evidenceKey?: string;
+  evidenceScope?: "SINGLE_MATCH_LINEUP" | "MANAGER_COMMENT" | "SEASON_ROLE";
+};
+
+export type RoleCalibration = {
+  completedGameweeks: number;
+  earlySeason: boolean;
+  independentEvidenceCount: number;
+  correlatedEvidenceCount: number;
+  singleMatchEvidenceCount: number;
+  startProbabilityWithoutLatestEvidence: number;
+  latestEvidenceDelta: number;
+  sensitivity: "NONE" | "EARLY_SEASON" | "LATEST_MATCH_SENSITIVE";
+  reasons: string[];
 };
 
 export type PlayerSignal = {
@@ -92,6 +110,8 @@ export type PlayerRoleProfile = {
   confidence: RoleConfidence;
   derivedFromSignalIds: Array<string | number>;
   updatedAt?: string;
+  /** Present for role estimates resolved against a known season context. */
+  calibration?: RoleCalibration;
 };
 
 import { signalSourceTrust } from "./signal-sources.ts";
@@ -136,6 +156,16 @@ export function normalizeRoleProfile(profile: PlayerRoleProfile): PlayerRoleProf
     substituteProbabilityWhenBenched: clamp(profile.substituteProbabilityWhenBenched),
     minutesIfSubstitute: clamp(profile.minutesIfSubstitute, 0, 45),
     derivedFromSignalIds: [...new Set(profile.derivedFromSignalIds)],
+    calibration: profile.calibration && {
+      ...profile.calibration,
+      completedGameweeks: Math.max(0, Math.floor(profile.calibration.completedGameweeks || 0)),
+      independentEvidenceCount: Math.max(0, Math.floor(profile.calibration.independentEvidenceCount || 0)),
+      correlatedEvidenceCount: Math.max(0, Math.floor(profile.calibration.correlatedEvidenceCount || 0)),
+      singleMatchEvidenceCount: Math.max(0, Math.floor(profile.calibration.singleMatchEvidenceCount || 0)),
+      startProbabilityWithoutLatestEvidence: clamp(profile.calibration.startProbabilityWithoutLatestEvidence),
+      latestEvidenceDelta: Number.isFinite(profile.calibration.latestEvidenceDelta) ? profile.calibration.latestEvidenceDelta : 0,
+      reasons: [...new Set(profile.calibration.reasons || [])],
+    },
   };
 }
 
@@ -212,10 +242,73 @@ function sourceIdentity(signal: PlayerSignal, source: string) {
   }
 }
 
+function signalText(signal: PlayerSignal) {
+  return `${signal.evidenceSummary || ""} ${signal.evidenceText || ""} ${signal.value.note || ""}`.toLowerCase();
+}
+
+/**
+ * Ingestion can provide an exact evidence key.  Older signals are classified
+ * conservatively from their text, so reports of a named/starting XI are only
+ * one observation even when several publishers repeat it.
+ */
+function evidenceClusterKey(signal: PlayerSignal) {
+  if (signal.value.evidenceKey) return `key:${signal.value.evidenceKey}`;
+  if (signal.value.evidenceScope === "SINGLE_MATCH_LINEUP") return `lineup:${signal.gameweek ?? "unknown"}`;
+  const text = signalText(signal);
+  if (/\b(starting xi|starting eleven|starting lineup|starting line-?up|named in (?:the )?lineup|named among the starters|made (?:the )?start)\b/.test(text)) {
+    return `lineup:${signal.gameweek ?? (signal.sourceDate || signal.observedAt || "").slice(0, 10)}`;
+  }
+  return `signal:${String(signal.id)}`;
+}
+
+function isSingleMatchEvidence(signal: PlayerSignal) {
+  return signal.value.evidenceScope === "SINGLE_MATCH_LINEUP" || evidenceClusterKey(signal).startsWith("lineup:");
+}
+
+function isExplicitManagerEvidence(signal: PlayerSignal) {
+  return signal.value.evidenceScope === "MANAGER_COMMENT" || /\b(manager|head coach|boss|g[aá]ffer)\b/.test(signalText(signal));
+}
+
+function roleCalibration(base: PlayerRoleProfile, evidenceInputs: PlayerSignal[], resolvedStartProbability: number, completedGameweeks: number | undefined): RoleCalibration | undefined {
+  if (completedGameweeks == null) return undefined;
+  const completed = Math.max(0, Math.floor(completedGameweeks));
+  const clusters = new Map<string, PlayerSignal[]>();
+  for (const signal of evidenceInputs) {
+    const key = evidenceClusterKey(signal);
+    clusters.set(key, [...(clusters.get(key) || []), signal]);
+  }
+  const independentEvidenceCount = clusters.size;
+  const correlatedEvidenceCount = Math.max(0, evidenceInputs.length - independentEvidenceCount);
+  const singleMatchEvidenceCount = [...clusters.values()].filter(cluster => cluster.some(isSingleMatchEvidence)).length;
+  const latest = [...evidenceInputs].sort((left, right) => Date.parse(right.sourceDate || right.observedAt) - Date.parse(left.sourceDate || left.observedAt))[0];
+  // This is deliberately a sensitivity bound rather than a fabricated second
+  // forecast: it tells the recommender whether removing the newest piece of
+  // role evidence would materially change availability.
+  const latestStart = latest ? signalRole(latest).startProbability : undefined;
+  const latestEvidenceDelta = typeof latestStart === "number" ? resolvedStartProbability - base.startProbability : 0;
+  const earlySeason = completed <= 3;
+  const latestMatchSensitive = earlySeason && singleMatchEvidenceCount > 0 && Math.abs(latestEvidenceDelta) >= .08;
+  const reasons: string[] = [];
+  if (earlySeason) reasons.push(`Only ${completed} completed gameweek${completed === 1 ? "" : "s"} informs the role prior.`);
+  if (correlatedEvidenceCount) reasons.push(`${correlatedEvidenceCount + 1} role reports share a match-evidence cluster and are counted once.`);
+  if (singleMatchEvidenceCount) reasons.push("A single-match lineup observation is not treated as proof of a season-long role.");
+  return {
+    completedGameweeks: completed,
+    earlySeason,
+    independentEvidenceCount,
+    correlatedEvidenceCount,
+    singleMatchEvidenceCount,
+    startProbabilityWithoutLatestEvidence: base.startProbability,
+    latestEvidenceDelta,
+    sensitivity: latestMatchSensitive ? "LATEST_MATCH_SENSITIVE" : earlySeason ? "EARLY_SEASON" : "NONE",
+    reasons,
+  };
+}
+
 export function resolvePlayerRole(
   base: PlayerRoleProfile,
   signals: PlayerSignal[],
-  options: { now?: Date; gameweek?: number; decayHalfLifeDays?: number } = {},
+  options: { now?: Date; gameweek?: number; decayHalfLifeDays?: number; completedGameweeks?: number } = {},
 ): PlayerRoleProfile {
   const now = options.now ?? new Date();
   const decayHalfLifeDays = options.decayHalfLifeDays ?? 14;
@@ -264,7 +357,19 @@ export function resolvePlayerRole(
   // Conflicting lower-authority claims remain visible for review, but cannot
   // pull an official/reputable role estimate away from stronger evidence.
   const trustedInputs = currentInputs.filter((signal) => signalSourceTrust(signal.sourceType, signal.sourceUrl) >= strongestTrust - .08);
-  const inputs = overrides.length ? [overrides[0]] : trustedInputs;
+  // One report of a starting XI can be syndicated widely.  Keep a single
+  // representative from each cluster, choosing the higher-trust/newer source.
+  const clustered = new Map<string, PlayerSignal>();
+  const evidenceInputs = overrides.length ? [overrides[0]] : trustedInputs;
+  for (const signal of evidenceInputs) {
+    const key = evidenceClusterKey(signal);
+    const previous = clustered.get(key);
+    if (!previous || signalSourceTrust(signal.sourceType, signal.sourceUrl) > signalSourceTrust(previous.sourceType, previous.sourceUrl) ||
+      (signalSourceTrust(signal.sourceType, signal.sourceUrl) === signalSourceTrust(previous.sourceType, previous.sourceUrl) && Date.parse(signal.observedAt) > Date.parse(previous.observedAt))) {
+      clustered.set(key, signal);
+    }
+  }
+  const inputs = [...clustered.values()];
   const effectiveConfidence = (signal: PlayerSignal) =>
     clamp(Math.min(signal.confidence, signal.interpretation?.confidence ?? signal.confidence));
   const effectiveWeight = (signal: PlayerSignal) => {
@@ -296,8 +401,25 @@ export function resolvePlayerRole(
     inputs.reduce((sum, signal) => sum + effectiveWeight(signal), 0) /
     inputs.length;
 
+  const rawStartProbability = weighted("startProbability", base.startProbability);
+  const completed = options.completedGameweeks;
+  const earlySeason = completed != null && completed <= 3;
+  const highStartClaim = rawStartProbability >= .85 && rawStartProbability > base.startProbability;
+  const manual = overrides.length > 0;
+  const hasManagerEvidence = inputs.some(isExplicitManagerEvidence);
+  const independentEvidenceCount = new Set(inputs.map(evidenceClusterKey)).size;
+  // A lone, early-season FIRST_CHOICE/high-start claim may be a single lineup
+  // observation. It can move the prior, but cannot by itself create an 88–90%
+  // availability estimate. Explicit manager comments and corroborated sources
+  // remain capable of doing so; manual overrides always retain precedence.
+  const earlyStartEvidenceWeight = !manual && earlySeason && highStartClaim
+    ? hasManagerEvidence || independentEvidenceCount >= 2 ? 1 : .45
+    : 1;
+  const calibratedStartProbability = base.startProbability + (rawStartProbability - base.startProbability) * earlyStartEvidenceWeight;
+  const calibration = roleCalibration(base, evidenceInputs, calibratedStartProbability, completed);
+
   return normalizeRoleProfile({
-    startProbability: weighted("startProbability", base.startProbability),
+    startProbability: calibratedStartProbability,
     minutesIfStarting: weighted("minutesIfStarting", base.minutesIfStarting),
     substituteProbabilityWhenBenched: weighted(
       "substituteProbabilityWhenBenched",
@@ -313,5 +435,6 @@ export function resolvePlayerRole(
       .map((signal) => signal.observedAt)
       .sort()
       .slice(-1)[0],
+    calibration,
   });
 }

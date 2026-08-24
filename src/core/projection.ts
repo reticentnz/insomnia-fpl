@@ -3,7 +3,7 @@ import { expectedRoleMinutes, normalizeRoleProfile, type PlayerRoleProfile } fro
 import { scoringRules } from './scoring.ts'
 
 /** The calculation version recorded with every projection output. */
-export const MODEL_VERSION = 'role-aware-v2.5'
+export const MODEL_VERSION = 'role-aware-v2.6-early-sample'
 
 /** Direct clean-sheet markets lead the estimate; the player/team model stabilizes thin niche markets. */
 export const MARKET_CLEAN_SHEET_WEIGHT = .75
@@ -55,6 +55,24 @@ export type ProjectionBreakdown = {
   defensiveContribution: number; bonus: number; cardDeduction: number
   finalExpectedPoints: number; expectedMinutes: number
   minutesConfidence: 'LOW' | 'MEDIUM' | 'HIGH'; warning?: string
+  sampleCalibration: ProjectionSampleCalibration
+}
+
+/**
+ * Explicitly records how much current-season evidence is informing a player
+ * rate. Consumers use this to mark a transfer as latest-match-sensitive
+ * instead of presenting a one-gameweek result as a stable conclusion.
+ */
+export type ProjectionSampleCalibration = {
+  seasonMinutes: number
+  observedStarts: number
+  completedGameweeks: number
+  earlySeason: boolean
+  attackingEvidenceWeight: number
+  bonusEvidenceWeight: number
+  defensiveEvidenceWeight: number
+  latestMatchSensitivity: 'LOW' | 'MEDIUM' | 'HIGH'
+  uncertaintyReasons: string[]
 }
 
 /** All fixture-level component means, prior to gameweek aggregation. */
@@ -81,6 +99,42 @@ const clamp = (value: number, min: number, max: number) => Math.min(max, Math.ma
 const round = (value: number, digits = 3) => +value.toFixed(digits)
 const per90 = (total: number | undefined, minutes: number) => minutes > 0 ? (total || 0) * 90 / minutes : 0
 const shrunkRate = (observed: number, prior: number, minutes: number, priorMinutes = 540) => (observed * minutes + prior * priorMinutes) / (minutes + priorMinutes)
+
+export const ATTACKING_RATE_PRIOR_MINUTES = 540
+
+/**
+ * Bonus and defensive-threshold outcomes are much noisier than xG/xA. Their
+ * priors are intentionally strongest at the beginning of a season and decay
+ * smoothly as a meaningful sample is accumulated; xG/xA retain their existing
+ * 540-minute prior.
+ */
+export function noisyRatePriorMinutes(kind: 'BONUS' | 'DEFENSIVE', seasonMinutes: number) {
+  const maturePrior = kind === 'BONUS' ? 720 : 900
+  const earlyPrior = kind === 'BONUS' ? 1800 : 2160
+  const maturity = clamp(Math.max(0, seasonMinutes) / 900, 0, 1)
+  return maturePrior + (earlyPrior - maturePrior) * (1 - maturity)
+}
+
+export function projectionSampleCalibration(player: Player, completedGameweeks?: number): ProjectionSampleCalibration {
+  const seasonMinutes = Math.max(0, player.stats?.minutes || 0)
+  const observedStarts = Math.max(0, player.stats?.starts || 0)
+  const inferredCompleted = Math.max(0, Math.min(...(player.upcomingFixtures || []).map(fixture => fixture.gameweek - 1), Infinity))
+  const completed = Math.max(0, Math.floor(completedGameweeks ?? (Number.isFinite(inferredCompleted) ? inferredCompleted : 0)))
+  const attackingEvidenceWeight = seasonMinutes / (seasonMinutes + ATTACKING_RATE_PRIOR_MINUTES)
+  const bonusEvidenceWeight = seasonMinutes / (seasonMinutes + noisyRatePriorMinutes('BONUS', seasonMinutes))
+  const defensiveEvidenceWeight = seasonMinutes / (seasonMinutes + noisyRatePriorMinutes('DEFENSIVE', seasonMinutes))
+  const earlySeason = completed <= 3
+  const latestMatchSensitivity = earlySeason && seasonMinutes <= Math.max(90, completed * 95)
+    ? 'HIGH'
+    : earlySeason || seasonMinutes < 540
+      ? 'MEDIUM'
+      : 'LOW'
+  const uncertaintyReasons: string[] = []
+  if (earlySeason) uncertaintyReasons.push(`Only ${completed} completed gameweek${completed === 1 ? '' : 's'} of season data is available.`)
+  if (latestMatchSensitivity === 'HIGH') uncertaintyReasons.push('The current rate sample is effectively one match; latest-match sensitivity is high.')
+  if (bonusEvidenceWeight < attackingEvidenceWeight) uncertaintyReasons.push('Bonus and defensive rates receive stronger shrinkage than xG/xA.')
+  return { seasonMinutes, observedStarts, completedGameweeks: completed, earlySeason, attackingEvidenceWeight, bonusEvidenceWeight, defensiveEvidenceWeight, latestMatchSensitivity, uncertaintyReasons }
+}
 
 function poissonFloorExpectation(lambda: number, divisor: number) {
   if (lambda <= 0) return 0
@@ -123,15 +177,15 @@ function playerRates(player: Player) {
   // partial increments for newly confirmed ownership, not a full second estimate.
   const setPieceGoalUplift = player.setPieceRole === 'PENALTIES' || player.setPieceRole === 'PENALTIES_AND_SET_PIECES' ? .045 : 0
   const setPieceAssistUplift = player.setPieceRole === 'SET_PIECES' || player.setPieceRole === 'PENALTIES_AND_SET_PIECES' ? .030 : 0
-  const goalRate = (minutes > 0 ? shrunkRate(observedGoals, prior.goals, minutes) : prior.goals * fallbackStrength) + setPieceGoalUplift
-  const assistRate = (minutes > 0 ? shrunkRate(observedAssists, prior.assists, minutes) : prior.assists * fallbackStrength) + setPieceAssistUplift
+  const goalRate = (minutes > 0 ? shrunkRate(observedGoals, prior.goals, minutes, ATTACKING_RATE_PRIOR_MINUTES) : prior.goals * fallbackStrength) + setPieceGoalUplift
+  const assistRate = (minutes > 0 ? shrunkRate(observedAssists, prior.assists, minutes, ATTACKING_RATE_PRIOR_MINUTES) : prior.assists * fallbackStrength) + setPieceAssistUplift
   const xgcObserved = stats?.expectedGoalsConcededPer90 ?? per90(stats?.expectedGoalsConceded, minutes)
   const xgcRate = minutes > 0 ? shrunkRate(xgcObserved || prior.xgc, prior.xgc, minutes, 720) : prior.xgc
   const saveRate = minutes > 0 ? shrunkRate(stats?.savesPer90 ?? per90(stats?.saves, minutes), prior.saves, minutes) : prior.saves
-  const historicalBonusRate = minutes > 0 ? shrunkRate(per90(stats?.bonus, minutes), prior.bonus, minutes) : prior.bonus * fallbackStrength
+  const historicalBonusRate = minutes > 0 ? shrunkRate(per90(stats?.bonus, minutes), prior.bonus, minutes, noisyRatePriorMinutes('BONUS', minutes)) : prior.bonus * fallbackStrength
   const cardRate = minutes > 0 ? shrunkRate(per90((stats?.yellowCards || 0) + 3 * (stats?.redCards || 0), minutes), prior.cards, minutes) : prior.cards
   const rawDefensive = (stats?.clearancesBlocksInterceptions || 0) + (stats?.tackles || 0) + (player.position === 'MID' || player.position === 'FWD' ? (stats?.recoveries || 0) : 0)
-  const defensiveRate = minutes > 0 ? shrunkRate(per90(rawDefensive, minutes), prior.defensiveActions, minutes) : prior.defensiveActions
+  const defensiveRate = minutes > 0 ? shrunkRate(per90(rawDefensive, minutes), prior.defensiveActions, minutes, noisyRatePriorMinutes('DEFENSIVE', minutes)) : prior.defensiveActions
   const bonusRate = historicalBonusRate * bonusAdjustment2026(player.position, defensiveRate)
   return { goalRate, assistRate, xgcRate, saveRate, bonusRate, cardRate, defensiveRate, minutes }
 }
@@ -214,8 +268,9 @@ export function projectionBreakdown(player: Player, horizon: number): Projection
   const neutral = fixtures.map(f => projectFixture(player, { ...f, difficulty: 3, venue: 'H' as const })).reduce((n, r) => n + r.total, 0)
   const fullMinutesNeutral = fixtures.map(f => projectFixture({ ...player, roleProfile: { startProbability: 1, minutesIfStarting: 90, substituteProbabilityWhenBenched: 0, minutesIfSubstitute: 0, confidence: 'HIGH', derivedFromSignalIds: [] } }, { ...f, difficulty: 3, venue: 'H' as const })).reduce((n, r) => n + r.total, 0)
   const role = playerRoleProfile(player), minutesConfidence = player.coldStart ? 'LOW' : role.confidence
-  const warning = fixtures.length === 0 ? 'Blank gameweek: no scheduled fixture.' : player.coldStart ? 'Cold-start projection: no Premier League minutes are available, so minutes and points are conservatively discounted.' : minutesConfidence === 'LOW' ? 'Expected minutes are fragile: current projection is below 50 minutes.' : undefined
-  return { playerId: player.id, playerName: player.name, modelVersion: MODEL_VERSION, horizon, baseline: round(fullMinutesNeutral, 1), fixtureAdjustment: round(finalExpectedPoints - neutral, 1), expectedMinutesAdjustment: round(neutral - fullMinutesNeutral, 1), appearance: round(appearance, 1), attackingContribution: round(goals + assists, 1), cleanSheetContribution: round(cleanSheetContribution, 1), goalsConcededDeduction: round(goalsConcededDeduction, 1), savePoints: round(savePoints, 1), penaltyPoints: round(penaltyPoints, 1), defensiveContribution: round(defensiveContribution, 1), bonus: round(bonus, 1), cardDeduction: round(cardDeduction, 1), finalExpectedPoints: round(finalExpectedPoints, 1), expectedMinutes: round(sum(r => r.expectedMinutes), 1), minutesConfidence, warning }
+  const sampleCalibration = projectionSampleCalibration(player)
+  const warning = fixtures.length === 0 ? 'Blank gameweek: no scheduled fixture.' : player.coldStart ? 'Cold-start projection: no Premier League minutes are available, so minutes and points are conservatively discounted.' : minutesConfidence === 'LOW' ? 'Expected minutes are fragile: current projection is below 50 minutes.' : sampleCalibration.latestMatchSensitivity === 'HIGH' ? 'Early-season projection: the current rate sample is effectively one match, so latest-match sensitivity is high.' : undefined
+  return { playerId: player.id, playerName: player.name, modelVersion: MODEL_VERSION, horizon, baseline: round(fullMinutesNeutral, 1), fixtureAdjustment: round(finalExpectedPoints - neutral, 1), expectedMinutesAdjustment: round(neutral - fullMinutesNeutral, 1), appearance: round(appearance, 1), attackingContribution: round(goals + assists, 1), cleanSheetContribution: round(cleanSheetContribution, 1), goalsConcededDeduction: round(goalsConcededDeduction, 1), savePoints: round(savePoints, 1), penaltyPoints: round(penaltyPoints, 1), defensiveContribution: round(defensiveContribution, 1), bonus: round(bonus, 1), cardDeduction: round(cardDeduction, 1), finalExpectedPoints: round(finalExpectedPoints, 1), expectedMinutes: round(sum(r => r.expectedMinutes), 1), minutesConfidence, warning, sampleCalibration }
 }
 
 export const horizonProjection = (player: Player, horizon: number) => projectionBreakdown(player, horizon).finalExpectedPoints

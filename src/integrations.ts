@@ -696,10 +696,11 @@ export async function evaluatePendingDecisionHistory(): Promise<void> {
   if (!response.ok) throw new Error(apiErrorMessage(data, `Decision evaluation unavailable: HTTP ${response.status}`))
 }
 
-export type CanonicalRecommendationCandidate = { id: string; rank: number; action: string; apiMoves: Array<{ outId: number; inId: number }>; netExpectedGain: number; rawGain: number; hitCost: number; uncertaintyPenalty: number; probabilityBeatsRoll: number | null; affordabilityStatus: string; bankAfterTenths: number | null; p10Points: number | null; p50Points: number | null; p90Points: number | null; leagueDifferential?: number | null; chip?: string; chipReason?: string };
+export type CanonicalRecommendationCandidate = { id: string; rank: number; action: string; apiMoves: Array<{ outId: number; inId: number }>; netExpectedGain: number; rawGain: number; hitCost: number; uncertaintyPenalty: number; savedTransferValue: number; lookaheadAvailable: boolean; nextWeekFreeTransfers: number | null; nextWeekBestNetGain: number | null; probabilityBeatsRoll: number | null; affordabilityStatus: string; bankAfterTenths: number | null; p10Points: number | null; p50Points: number | null; p90Points: number | null; leagueDifferential?: number | null; chip?: string; chipReason?: string; timingAdvice?: string; priceTiming?: unknown; earlySeasonSensitive?: boolean; roleLatestMatchSensitive?: boolean; latestMatchSensitive?: boolean; latestMatchSensitivity?: 'LOW' | 'MEDIUM' | 'HIGH'; sensitivityFlags?: string[] };
 
 export type CanonicalRecommendation = {
-  id: string; planId: string; forecastRunId: string; horizon: number; status: string; primaryCandidateId: string; cacheStatus: 'HIT' | 'MISS';
+  id: string; planId: string; forecastRunId: string; horizon: number; status: string; primaryCandidateId: string; cacheStatus: 'HIT' | 'MISS'; createdAt?: string;
+  rollOptionVersion?: number;
   assumptions: { freeTransfersConfirmed: boolean; exactSellingPrices: boolean };
   league?: { leagueId: number; leagueName: string | null; coverageByFplId?: Record<string, number> } | null;
   candidates: CanonicalRecommendationCandidate[];

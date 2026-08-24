@@ -104,6 +104,29 @@ describe('player evidence signals',()=>{
     expect(resolved.confidence).toBe('HIGH')
   })
 
+  it('does not promote one early-season lineup observation into a first-choice certainty',()=>{
+    const lineup=signal({id:81,gameweek:null,value:{depthRole:'FIRST_CHOICE'},evidenceSummary:'Named in the starting XI for the opening match',evidenceText:'Named in the starting XI for the opening match'})
+    const resolved=resolvePlayerRole({...base,startProbability:.55},[lineup],{now:new Date('2026-08-10T12:00:00Z'),gameweek:2,completedGameweeks:1})
+    expect(resolved.startProbability).toBeCloseTo(.6985,4)
+    expect(resolved.startProbability).toBeLessThan(.85)
+    expect(resolved.calibration).toMatchObject({independentEvidenceCount:1,singleMatchEvidenceCount:1,sensitivity:'LATEST_MATCH_SENSITIVE'})
+  })
+
+  it('counts syndicated same-lineup reports once but permits corroborated role evidence',()=>{
+    const first=signal({id:82,gameweek:null,value:{depthRole:'FIRST_CHOICE',evidenceKey:'gw1-lineup'},evidenceSummary:'Named in the lineup'})
+    const copied=signal({id:83,gameweek:null,sourceType:'OFFICIAL_PL',value:{depthRole:'FIRST_CHOICE',evidenceKey:'gw1-lineup'},evidenceSummary:'Named in the lineup'})
+    const syndicated=resolvePlayerRole({...base,startProbability:.55},[first,copied],{now:new Date('2026-08-10T12:00:00Z'),gameweek:2,completedGameweeks:1})
+    expect(syndicated.calibration).toMatchObject({independentEvidenceCount:1,correlatedEvidenceCount:1})
+    expect(syndicated.startProbability).toBeLessThan(.85)
+
+    const corroborated=resolvePlayerRole({...base,startProbability:.55},[
+      signal({id:84,gameweek:null,value:{depthRole:'FIRST_CHOICE'},sourceUrl:null}),
+      signal({id:85,gameweek:null,value:{depthRole:'FIRST_CHOICE'},sourceUrl:null}),
+    ],{now:new Date('2026-08-10T12:00:00Z'),gameweek:2,completedGameweeks:1})
+    expect(corroborated.startProbability).toBeCloseTo(.88,5)
+    expect(corroborated.calibration?.independentEvidenceCount).toBe(2)
+  })
+
   it('keeps lower-trust creator conflict from overriding official evidence',()=>{
     const official=signal({id:9,sourceType:'OFFICIAL_CLUB',sourceUrl:'https://arsenal.com/news/team-update',value:{startProbability:.9}})
     const creator=signal({id:10,sourceType:'YOUTUBE_TRANSCRIPT',sourceUrl:'https://youtube.com/watch?v=test',value:{startProbability:.1},confidence:1})

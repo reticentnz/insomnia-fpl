@@ -57,7 +57,7 @@ describe('recommendation plan economics', () => {
 
 describe('stored recommendation retrieval', () => {
   const storedSet = { id: 'set-1', plan_id: 'plan-1', forecast_run_id: 'run-1', horizon: 3, max_transfers: 2, chip: null, uncertainty_penalty_rate: .15, created_at: '2026-08-11T00:00:00Z', status: 'SUCCEEDED', primary_candidate_id: 'candidate-1', input_hash: 'forecast-input' }
-  const storedCandidate = { id: 'candidate-1', rank: 1, action: 'TRANSFER', moves_json: JSON.stringify({ moves: [{ outId: 'player-out', inId: 'player-in' }] }), raw_gain: 6, hit_cost: 0, uncertainty_penalty: 1, net_expected_gain: 5, probability_beats_roll: .7, bank_after_tenths: 3, affordability_status: 'EXACT', expected_team_points: 100, p10_points: 85, p50_points: 100, p90_points: 115 }
+  const storedCandidate = { id: 'candidate-1', rank: 1, action: 'TRANSFER', moves_json: JSON.stringify({ moves: [{ outId: 'player-out', inId: 'player-in' }], sensitivity: { earlySeasonSensitive: true, roleLatestMatchSensitive: true, latestMatchSensitive: true, latestMatchSensitivity: 'HIGH', sensitivityFlags: ['EARLY_SEASON', 'LATEST_MATCH_SENSITIVE', 'RATE_SAMPLE_LATEST_MATCH_SENSITIVE'] }, priceTiming: { verdict: 'WAIT', robustness: 'SENSITIVE', incomingPressure: { description: 'High upward price pressure; this is not a price-rise prediction.' }, outgoingPressure: { description: 'Moderate downward price pressure; this is not a price-fall prediction.' }, adverseScenarios: [{ adverseSwingTenths: 1, status: 'UNAFFORDABLE' }], reasons: ['Price pressure cannot create urgency because this recommendation is not independently robust.'] } }), raw_gain: 6, hit_cost: 0, uncertainty_penalty: 1, net_expected_gain: 5, probability_beats_roll: .7, bank_after_tenths: 3, affordability_status: 'EXACT', expected_team_points: 100, p10_points: 85, p50_points: 100, p90_points: 115 }
 
   it('hydrates the stable public shape and FPL identifiers from stored rows', async () => {
     const db = { async query(sql: string) {
@@ -68,7 +68,7 @@ describe('stored recommendation retrieval', () => {
     } }
     const result = await getRecommendationSet(db, 'set-1')
     expect(result?.planId).toBe('plan-1')
-    expect(result?.candidates[0]).toMatchObject({ netExpectedGain: 5, apiMoves: [{ outId: 10, inId: 20 }] })
+    expect(result?.candidates[0]).toMatchObject({ netExpectedGain: 5, apiMoves: [{ outId: 10, inId: 20 }], savedTransferValue: 0, lookaheadAvailable: false, nextWeekFreeTransfers: null, nextWeekBestNetGain: null, earlySeasonSensitive: true, roleLatestMatchSensitive: true, latestMatchSensitivity: 'HIGH', sensitivityFlags: ['EARLY_SEASON', 'LATEST_MATCH_SENSITIVE', 'RATE_SAMPLE_LATEST_MATCH_SENSITIVE'], timingAdvice: 'WAIT', priceTiming: { verdict: 'WAIT', robustness: 'SENSITIVE', adverseScenarios: [{ adverseSwingTenths: 1, status: 'UNAFFORDABLE' }] } })
   })
 
   it('returns an identical stored request before loading forecasts or optimizing', async () => {

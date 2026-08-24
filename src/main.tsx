@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { createRoot } from "react-dom/client";
 import { compareSortValues, nextSortDirection, type SortDirection, type SortValue } from "./table-sorting";
 import { deriveRecommendationRepairActions, deriveRecommendationSafety, type RecommendationAssumptions, type RecommendationSafety } from "./decision-safety";
+import { formatAccounting, formatSigned, optionalRecommendationLabel, recommendationInputStatus, recommendationSensitivity, recommendationTiming } from "./recommendation-presentation";
 import {
   bestXI,
   benchOrder,
@@ -282,6 +283,33 @@ let activeDraftPlanLoading = false;
 let activeApplyDraftPlan = () => {};
 
 const SIGNAL_SEEN_STORAGE_KEY = "insomnia-fpl-seen-signal-ids";
+const ADMIN_TOKEN_STORAGE_KEY = "fpl-admin-token";
+
+function readAdminToken(): string {
+  try {
+    return (
+      window.localStorage.getItem(ADMIN_TOKEN_STORAGE_KEY) ||
+      window.sessionStorage.getItem(ADMIN_TOKEN_STORAGE_KEY) ||
+      ""
+    );
+  } catch {
+    return "";
+  }
+}
+
+function writeAdminToken(token: string) {
+  try {
+    if (token) {
+      window.localStorage.setItem(ADMIN_TOKEN_STORAGE_KEY, token);
+      window.sessionStorage.setItem(ADMIN_TOKEN_STORAGE_KEY, token);
+    } else {
+      window.localStorage.removeItem(ADMIN_TOKEN_STORAGE_KEY);
+      window.sessionStorage.removeItem(ADMIN_TOKEN_STORAGE_KEY);
+    }
+  } catch {
+    // A private browsing context may reject localStorage; the UI still works for this session.
+  }
+}
 
 function readSeenSignalIds(): Set<string> {
   try {
@@ -670,11 +698,15 @@ function feedRunOutcome(run: AdminFeedRun) {
 function AdminView({ system, forecast, horizon }: { system: SystemStatus | null; forecast: ForecastSummary | null; horizon: number }) {
   const [status, setStatus] = useState<AdminStatus | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const [token, setToken] = useState(() => sessionStorage.getItem("fpl-admin-token") || "");
+  const [token, setToken] = useState(() => readAdminToken());
   const [starting, setStarting] = useState<string | null>(null);
   const [feedSourceFilter, setFeedSourceFilter] = useState("ALL");
   const [feedStatusFilter, setFeedStatusFilter] = useState("ALL");
   const [expandedFeedRun, setExpandedFeedRun] = useState<string | null>(null);
+  const handleTokenChange = (value: string) => {
+    setToken(value);
+    writeAdminToken(value);
+  };
   const load = useCallback(async () => {
     try { setStatus(await fetchAdminStatus()); setError(null); }
     catch (reason) { setError(reason instanceof Error ? reason.message : "Admin status unavailable"); }
@@ -687,7 +719,7 @@ function AdminView({ system, forecast, horizon }: { system: SystemStatus | null;
   const run = async (id: string) => {
     setStarting(id); setError(null);
     try {
-      if (token) sessionStorage.setItem("fpl-admin-token", token);
+      writeAdminToken(token);
       await runAdminOperation(id, token);
       await load();
     } catch (reason) { setError(reason instanceof Error ? reason.message : "Operation failed to start"); }
@@ -713,8 +745,8 @@ function AdminView({ system, forecast, horizon }: { system: SystemStatus | null;
       {status?.aiUsage.byFeature.length ? <div className="ai-usage-breakdown">{status.aiUsage.byFeature.map(item => <div key={item.feature}><b>{item.feature.replaceAll("_", " ")}</b><span>{item.requestCount} request{item.requestCount === 1 ? "" : "s"} · {item.totalTokens.toLocaleString()} tokens{item.estimatedCostUsd ? ` · $${item.estimatedCostUsd.toFixed(4)}` : ""}</span></div>)}</div> : <p className="admin-empty">No AI requests recorded yet. Usage begins after this update.</p>}
     </section>
     {status?.authenticationRequired && <section className="admin-token-card">
-      <div><b>Admin authentication</b><p>Enter the server's admin token to run operations. It stays in this browser tab.</p></div>
-      <input type="password" value={token} onChange={event => setToken(event.target.value)} placeholder="Admin token" autoComplete="current-password" />
+      <div><b>Admin authentication</b><p>Enter the server's admin token to run operations. Saved in your browser.</p></div>
+      <input type="password" value={token} onChange={event => handleTokenChange(event.target.value)} placeholder="Admin token" autoComplete="current-password" />
     </section>}
     {error && <div className="admin-error" role="alert">{error}</div>}
     <section className="admin-actions-grid">
@@ -2589,6 +2621,7 @@ function App() {
             manager={manager}
             targetSwapPlayer={targetSwapPlayer}
             onClearTargetSwapPlayer={() => setTargetSwapPlayer(null)}
+            onSelectTargetSwapPlayer={setTargetSwapPlayer}
             squad={squad}
             catalog={catalog}
             effectiveBank={effectiveBank}
@@ -2745,6 +2778,11 @@ function App() {
           onReviewTransfer={(t) => {
             setPlayerDetail(null);
             setExplanationTransfer(t);
+          }}
+          onExploreReplacements={(p) => {
+            setPlayerDetail(null);
+            setTargetSwapPlayer(p);
+            setTab("Transfers");
           }}
           onOpenSignals={() => {
             setSignalsPlayerFilterId(playerDetail.id);
@@ -5166,6 +5204,8 @@ function MyTeamV2({
     const incoming = catalog.find(player => player.id === move.inId)?.name || `#${move.inId}`;
     return `${outgoing} → ${incoming}`;
   }) || [];
+  const canonicalAccounting = formatAccounting(canonicalPrimary);
+  const canonicalSensitivity = recommendationSensitivity(canonicalPrimary);
   const repairActions = deriveRecommendationRepairActions(forecastReadiness.state, recommendationAssumptions);
   const openAdminRepair = (targetId: string) => {
     setTab("Admin");
@@ -5256,6 +5296,10 @@ function MyTeamV2({
                 ? `+${canonicalPrimary.netExpectedGain.toFixed(2)} net expected points over ${horizon} GWs · ${canonicalPrimary.probabilityBeatsRoll == null ? 'probability unavailable' : `${Math.round(canonicalPrimary.probabilityBeatsRoll * 100)}% chance of beating roll`}`
                 : canonicalPrimary?.action === 'ROLL' ? 'No exact, uncertainty-adjusted plan clears the 60% decision rule.' : 'No safe recommendation is available.'}
         </p>
+        {!draftMode && canonicalAccounting && <p className="recommend-accounting">{canonicalAccounting}</p>}
+        {!draftMode && canonicalPrimary?.probabilityBeatsRoll != null && (
+          <p className="recommend-explainer"><b>P(beats roll)</b> is the share of simulated outcomes where this plan beats rolling after hits, uncertainty, and the one-week saved-transfer lookahead when available. It is not a guarantee.</p>
+        )}
         {!draftMode && forecastReadiness.state === 'DEGRADED' && forecastReadiness.qualityMetrics.length > 0 && (
           <div className="recommend-quality-metrics" aria-label="Forecast quality metrics">
             {forecastReadiness.qualityMetrics.map(metric => (
@@ -5274,6 +5318,7 @@ function MyTeamV2({
           <span>£{bank.toFixed(1)}m in bank</span>
           <span>{horizon}-GW transfer horizon</span>
           {!draftMode && <span>Confidence: {recommendationSafety.confidence}</span>}
+          {!draftMode && canonicalSensitivity.map(flag => <span className="recommend-sensitivity" key={flag}>{flag}</span>)}
         </div>
         {canonicalPrimary?.action === 'TRANSFER' && !draftMode && recommendationSafety.actionable && (
           <div className="recommend-actions">
@@ -5401,11 +5446,6 @@ function MyTeamV2({
                       </span>
                       <span>
                         <b>{p.name}</b>
-                        {signalCounts[p.id] > 0 && (
-                          <span className={`player-signal-count${unreadSignalCounts[p.id] > 0 ? " unread" : ""}`} title={`${signalCounts[p.id]} active signal${signalCounts[p.id] === 1 ? "" : "s"}${unreadSignalCounts[p.id] ? `, ${unreadSignalCounts[p.id]} new` : ""}`}>
-                            {signalCounts[p.id]}{unreadSignalCounts[p.id] > 0 ? <i aria-hidden="true" /> : null}
-                          </span>
-                        )}
                         <small>
                           {p.club} · £{p.price.toFixed(1)}m
                         </small>
@@ -5431,11 +5471,6 @@ function MyTeamV2({
                 </span>
                 <span>
                   <b>{p.name}</b>
-                  {signalCounts[p.id] > 0 && (
-                    <span className={`player-signal-count${unreadSignalCounts[p.id] > 0 ? " unread" : ""}`} title={`${signalCounts[p.id]} active signal${signalCounts[p.id] === 1 ? "" : "s"}${unreadSignalCounts[p.id] ? `, ${unreadSignalCounts[p.id]} new` : ""}`}>
-                      {signalCounts[p.id]}{unreadSignalCounts[p.id] > 0 ? <i aria-hidden="true" /> : null}
-                    </span>
-                  )}
                   <small>
                     {p.club} · £{p.price.toFixed(1)}m
                   </small>
@@ -6427,6 +6462,7 @@ function SignalsTab({
             const effectiveStatus = stagedStatus || signal.status;
             const setPieceRole = interpretation?.value?.setPieceRole || signal.value?.setPieceRole;
             const setPieceImpact = setPieceRole === "SET_PIECES" || setPieceRole === "PENALTIES" || setPieceRole === "PENALTIES_AND_SET_PIECES";
+            const originName = playerNewsSourceName(signal);
 
             return (
               <article key={signal.id} className={`signal-card status-${effectiveStatus.toLowerCase()}${stagedStatus ? " is-staged" : ""}`}>
@@ -6442,6 +6478,11 @@ function SignalsTab({
                        signal.sourceType === "MANUAL_OVERRIDE" ? "✎" : "◉"}
                     </span>
                     <span className="signal-source-label">{sourceLabel(signal.sourceType)}</span>
+                    {originName && (
+                      <span className="signal-source-origin" title={originName}>
+                        {originName}
+                      </span>
+                    )}
                   </div>
                   <div className="signal-meta-right">
                     <span className="signal-time">{relativeTime(signal.observedAt)}</span>
@@ -6570,7 +6611,7 @@ function SignalsTab({
                         rel="noreferrer"
                         className="signal-source-link"
                       >
-                        Source ↗
+                        {originName ? `${originName} ↗` : "Source ↗"}
                       </a>
                     )}
                     {!stagedStatus && effectiveStatus === "VERIFIED" && (
@@ -8210,6 +8251,7 @@ function TransfersV2({
   manager,
   targetSwapPlayer,
   onClearTargetSwapPlayer,
+  onSelectTargetSwapPlayer,
   squad,
   catalog,
   effectiveBank = 0,
@@ -8227,6 +8269,7 @@ function TransfersV2({
   manager: ManagerSettings;
   targetSwapPlayer?: Player | null;
   onClearTargetSwapPlayer?: () => void;
+  onSelectTargetSwapPlayer?: (p: Player | null) => void;
   squad?: Player[];
   catalog?: Player[];
   effectiveBank?: number;
@@ -8238,7 +8281,48 @@ function TransfersV2({
   recommendationSafety: RecommendationSafety;
 }) {
   const [limit, setLimit] = useState(8);
-  const visibleData = data.slice(0, limit);
+  const squadIds = useMemo(() => new Set(squad?.map((p) => p.id) ?? []), [squad]);
+  const maxPrice = targetSwapPlayer ? +(targetSwapPlayer.price + Math.max(0, effectiveBank)).toFixed(1) : 0;
+
+  const directSwapData = useMemo(() => {
+    if (!targetSwapPlayer || !catalog) return [];
+    return catalog
+      .filter(
+        (p) =>
+          p.position === targetSwapPlayer.position &&
+          p.id !== targetSwapPlayer.id &&
+          !squadIds.has(p.id) &&
+          p.price <= maxPrice + 0.01
+      )
+      .map((p) => {
+        const outXp = horizonProjection(targetSwapPlayer, horizon);
+        const inXp = horizonProjection(p, horizon);
+        const netGain = +(inXp - outXp).toFixed(1);
+        const priceDelta = +(p.price - targetSwapPlayer.price).toFixed(1);
+        const alert = priceMovementAlert(p);
+        const outAlert = priceMovementAlert(targetSwapPlayer);
+        const transferObj: Transfer = {
+          out: targetSwapPlayer,
+          in: p,
+          net: netGain,
+          gain: netGain,
+          priceDelta,
+          outProjection: outXp,
+          inProjection: inXp,
+          hitCost: 0,
+          priceAlert: alert === "RISING_SOON" ? "RISING_SOON" : undefined,
+          sellOffWarning: outAlert === "FALLING_SOON" ? "Sell-off risk · act soon" : undefined,
+        };
+        return transferObj;
+      })
+      .sort((a, b) => (b.inProjection ?? 0) - (a.inProjection ?? 0));
+  }, [catalog, targetSwapPlayer, squadIds, maxPrice, horizon, effectiveBank]);
+
+  const activeExplorerData = targetSwapPlayer ? directSwapData : data;
+  const visibleData = activeExplorerData.slice(0, limit);
+  const recommendationStatus = recommendationInputStatus(canonicalRecommendation);
+  const recommendationCreatedAt = canonicalRecommendation?.createdAt || null;
+
   if (activeDraftMode)
     return (
       <div className="content">
@@ -8267,20 +8351,6 @@ function TransfersV2({
 
   return (
     <div className="content">
-      {targetSwapPlayer && squad && catalog && onClearTargetSwapPlayer && (
-        <TargetedReplacementSection
-          outPlayer={targetSwapPlayer}
-          squad={squad}
-          catalog={catalog}
-          bank={effectiveBank}
-          horizon={horizon}
-          onApplyTransfer={(outId, inId) => {
-            onApply(outId, inId);
-            onClearTargetSwapPlayer();
-          }}
-          onClearTarget={onClearTargetSwapPlayer}
-        />
-      )}
       {squad && squad.some(p => (p.roleProfile?.derivedFromSignalIds?.length ?? 0) > 0 && (p.roleProfile?.startProbability ?? 1) < 0.6) && (
         <SignalRiskStrip players={squad} />
       )}
@@ -8291,17 +8361,26 @@ function TransfersV2({
         </div>
         {!recommendationSafety.actionable && <div className="evidence-warning" role="status"><b>Actionable advice paused.</b> {recommendationSafety.reasons.join(' ')}</div>}
         {canonicalRecommendation && <>
-          <p className="muted">Forecast {canonicalRecommendation.forecastRunId.slice(0, 8)} · status {canonicalRecommendation.status} · {canonicalRecommendation.cacheStatus === 'HIT' ? 'reused stored result' : 'new result stored'} · ordering saved for reproducibility{canonicalRecommendation.league?.leagueName ? ` · vs ${canonicalRecommendation.league.leagueName}` : ''}</p>
+          <p className="muted">Forecast {canonicalRecommendation.forecastRunId.slice(0, 8)} · status {canonicalRecommendation.status} · {recommendationStatus || 'stored result'}{recommendationCreatedAt ? ` · last recalculated ${formatOperationalTime(recommendationCreatedAt)}` : ''} · ordering saved for reproducibility{canonicalRecommendation.league?.leagueName ? ` · vs ${canonicalRecommendation.league.leagueName}` : ''}</p>
           {canonicalRecommendation.candidates.map(candidate => {
             const names = candidate.apiMoves?.map(move => `${catalog?.find(player => player.id === move.outId)?.name || `#${move.outId}`} → ${catalog?.find(player => player.id === move.inId)?.name || `#${move.inId}`}`) || [];
             const primary = candidate.id === canonicalRecommendation.primaryCandidateId;
+            const accounting = formatAccounting(candidate);
+            const sensitivity = recommendationSensitivity(candidate);
+            const timing = recommendationTiming(candidate);
+            const stability = optionalRecommendationLabel(candidate, ['stability', 'horizonStability']);
+            const affordabilityLabel = candidate.affordabilityStatus === 'EXACT' ? 'EXACT AFFORDABILITY' : candidate.affordabilityStatus.replaceAll('_', ' ');
             return <article className="review-card" key={candidate.id}>
-              <div className="card-agent-header"><b>{primary ? 'PRIMARY · ' : ''}{candidate.action}</b><span className={`pill ${candidate.affordabilityStatus === 'EXACT' ? 'green' : 'amber'}`}>{candidate.affordabilityStatus}</span></div>
+              <div className="card-agent-header"><b>{primary ? 'PRIMARY · ' : ''}{candidate.action}</b><span className={`pill ${candidate.affordabilityStatus === 'EXACT' ? 'green' : 'amber'}`}>{affordabilityLabel}</span></div>
               <p>{names.length ? names.join(' · ') : candidate.action === 'CHIP' ? 'Optimised chip counterfactual' : 'Roll the transfer'} · net {Number(candidate.netExpectedGain).toFixed(2)} pts · hit {candidate.hitCost} · P(beats roll) {candidate.probabilityBeatsRoll == null ? '—' : `${Math.round(candidate.probabilityBeatsRoll * 100)}%`}</p>
+              {accounting && <small className="recommend-accounting">{accounting}</small>}
+              {candidate.probabilityBeatsRoll != null && <small className="recommend-explainer"><b>P(beats roll)</b> = the share of simulated outcomes where this plan finishes ahead of rolling, after hits, uncertainty, and the one-week saved-transfer lookahead when available.</small>}
+              {sensitivity.length > 0 && <div className="recommend-flags" aria-label="Recommendation sensitivity">{sensitivity.map(flag => <span key={flag}>{flag}</span>)}</div>}
               {candidate.leagueDifferential != null && candidate.leagueDifferential !== 0 && (
-                <p className="muted">League differential vs field: <b className={candidate.leagueDifferential > 0 ? 'positive' : 'negative'}>{candidate.leagueDifferential > 0 ? '+' : ''}{Number(candidate.leagueDifferential).toFixed(2)}</b> pts{canonicalRecommendation.league?.leagueName ? ` over ${canonicalRecommendation.league.leagueName}` : ''}</p>
+                <p className="muted">Ownership leverage: <b className={candidate.leagueDifferential > 0 ? 'positive' : 'negative'}>{formatSigned(Number(candidate.leagueDifferential))}</b> modelled relative exposure{canonicalRecommendation.league?.leagueName ? ` vs ${canonicalRecommendation.league.leagueName}` : ' vs the sampled field'} — not actual league points.</p>
               )}
-              {candidate.p10Points != null && candidate.p90Points != null && <small>Outcome range under current assumptions: {Number(candidate.p10Points).toFixed(1)}–{Number(candidate.p90Points).toFixed(1)} pts (p10–p90)</small>}
+              {candidate.p10Points != null && candidate.p90Points != null && <small>Projected team-total range under current assumptions (p10–p90): {Number(candidate.p10Points).toFixed(1)}–{Number(candidate.p90Points).toFixed(1)} pts. This is not the transfer-gain range.</small>}
+              {(timing || stability) && <div className="recommend-optional-metadata">{timing && <small><b>Timing:</b> {timing.verdict}{timing.details.length ? ` — ${timing.details.join(' ')}` : ''}</small>}{stability && <small><b>Horizon stability:</b> {stability}</small>}</div>}
               <div className="recommend-actions">
                 {(candidate.apiMoves?.length || candidate.action === 'CHIP' || candidate.action === 'ROLL') ? <button className="dark-btn" disabled={!recommendationSafety.actionable} onClick={() => onApplyCanonical?.(candidate)}>{candidate.action === 'CHIP' ? 'Record chip plan' : candidate.action === 'ROLL' ? 'Record roll' : 'Apply local plan'}</button> : null}
                 <button className="ghost-btn" onClick={() => onDismissCanonical?.(candidate, 'REJECTED')}>Reject</button><button className="ghost-btn" onClick={() => onDismissCanonical?.(candidate, 'IGNORED')}>Ignore</button>
@@ -8315,13 +8394,60 @@ function TransfersV2({
           <p className="eyebrow">TRANSFER PLAN</p>
           <h2>Direct-swap explorer</h2>
           <p className="muted">
-            User-directed comparisons only. The stored optimizer above is the single recommendation source.
+            {targetSwapPlayer
+              ? `Comparing ${targetSwapPlayer.position} replacements for ${targetSwapPlayer.name} (£${targetSwapPlayer.price.toFixed(1)}m, budget up to £${maxPrice.toFixed(1)}m over ${horizon} GWs).`
+              : "User-directed comparisons only. The stored optimizer above is the single recommendation source."}
           </p>
         </div>
-        <div className="filter-pill">
-          <Gauge size={15} /> {manager.freeTransfers} free transfer
-          {manager.freeTransfers === 1 ? "" : "s"} · £{manager.bank.toFixed(1)}m
-          bank
+        <div style={{ display: "flex", gap: "10px", alignItems: "center", flexWrap: "wrap" }}>
+          {squad && squad.length > 0 && (
+            <div style={{ display: "flex", alignItems: "center", gap: "6px" }}>
+              <select
+                id="direct-swap-player-select"
+                aria-label="Select player to replace"
+                style={{
+                  padding: "6px 10px",
+                  borderRadius: "6px",
+                  background: "var(--surface-color, #1e293b)",
+                  color: "inherit",
+                  border: "1px solid var(--border-color, #334155)",
+                  fontSize: "13px",
+                  cursor: "pointer",
+                }}
+                value={targetSwapPlayer?.id ?? ""}
+                onChange={(e) => {
+                  const val = e.target.value;
+                  if (!val) {
+                    onClearTargetSwapPlayer?.();
+                  } else {
+                    const found = squad.find((p) => p.id === Number(val));
+                    if (found) onSelectTargetSwapPlayer?.(found);
+                  }
+                }}
+              >
+                <option value="">-- Choose player from My Team --</option>
+                {squad.map((p) => (
+                  <option key={p.id} value={p.id}>
+                    {p.position} · {p.name} (£{p.price.toFixed(1)}m)
+                  </option>
+                ))}
+              </select>
+              {targetSwapPlayer && (
+                <button
+                  className="ghost-btn"
+                  style={{ padding: "4px 8px", fontSize: "12px" }}
+                  onClick={onClearTargetSwapPlayer}
+                  title="Clear selected player"
+                >
+                  Clear
+                </button>
+              )}
+            </div>
+          )}
+          <div className="filter-pill">
+            <Gauge size={15} /> {manager.freeTransfers} free transfer
+            {manager.freeTransfers === 1 ? "" : "s"} · £{manager.bank.toFixed(1)}m bank
+          </div>
         </div>
       </div>
       <div className="panel transfer-list">
@@ -8368,7 +8494,7 @@ function TransfersV2({
                   <div>
                     <b>{t.in.name}</b>
                     <small>
-                      {t.in.club} · £{t.in.price.toFixed(1)}m
+                      {t.in.club} · £{t.in.price.toFixed(1)}m ({t.priceDelta >= 0 ? `+£${t.priceDelta.toFixed(1)}m` : `-£${Math.abs(t.priceDelta).toFixed(1)}m`})
                     </small>
                     {(() => {
                       const m = momentumBadge(t.in);
@@ -8390,8 +8516,8 @@ function TransfersV2({
                   )}
                 </div>
                 <div className="gain">
-                  <b>+{t.net}</b>
-                  <small>net pts</small>
+                  <b>{t.net >= 0 ? `+${t.net}` : t.net}</b>
+                  <small>pts gain</small>
                 </div>
                 <div className="transfer-actions">
                   <button className="why-btn" onClick={() => onWhy(t)}>
@@ -8409,23 +8535,23 @@ function TransfersV2({
                 <summary>Calculation details</summary>
                 <div>
                   <span>
-                    {t.out.name}: <b>{outProj.toFixed(1)}</b>
+                    {t.out.name}: <b>{outProj.toFixed(1)} xPts</b>
                   </span>
                   <span>
-                    {t.in.name}: <b>{inProj.toFixed(1)}</b>
+                    {t.in.name}: <b>{inProj.toFixed(1)} xPts</b>
                   </span>
                   <span>
                     Hit: <b>-{(t.hitCost ?? 0).toFixed(1)}</b>
                   </span>
                   <span>
-                    Net: <b>+{t.net.toFixed(1)}</b>
+                    Net Gain: <b>{t.net >= 0 ? `+${t.net.toFixed(1)}` : t.net.toFixed(1)} pts</b>
                   </span>
                 </div>
               </details>
             </article>
           );
         })}
-        {data.length > limit && (
+        {activeExplorerData.length > limit && (
           <div
             style={{
               display: "flex",
@@ -8438,13 +8564,13 @@ function TransfersV2({
             <button
               className="ghost-btn"
               onClick={() =>
-                setLimit((prev) => Math.min(prev + 12, data.length))
+                setLimit((prev) => Math.min(prev + 12, activeExplorerData.length))
               }
             >
               Show 12 more
             </button>
-            <button className="dark-btn" onClick={() => setLimit(data.length)}>
-              Show all {data.length} transfers
+            <button className="dark-btn" onClick={() => setLimit(activeExplorerData.length)}>
+              Show all {activeExplorerData.length} replacements
             </button>
           </div>
         )}
@@ -8461,11 +8587,13 @@ function TransfersV2({
             </button>
           </div>
         )}
-        {data.length === 0 && (
+        {activeExplorerData.length === 0 && (
           <div className="empty">
-            <b>No exploratory swap selected.</b>
+            <b>{targetSwapPlayer ? `No affordable ${targetSwapPlayer.position} replacements found.` : "No exploratory swap selected."}</b>
             <p>
-              Select a player from My Team to compare same-position replacements. Prescriptive roll and transfer advice comes only from the stored probabilistic plan above.
+              {targetSwapPlayer
+                ? `No candidate ${targetSwapPlayer.position} players fit within your maximum transfer budget (£${maxPrice.toFixed(1)}m).`
+                : "Select a player from the dropdown above or click 'Explore all replacements' on any player in My Team to compare same-position options within your budget."}
             </p>
           </div>
         )}
@@ -9721,6 +9849,7 @@ function PlayerDrawer({
   onClose,
   onAsk,
   onReviewTransfer,
+  onExploreReplacements,
   onOpenSignals,
   onAddManualSignal,
 }: {
@@ -9732,6 +9861,7 @@ function PlayerDrawer({
   onClose: () => void;
   onAsk: (p: Player) => void;
   onReviewTransfer: (t: Transfer) => void;
+  onExploreReplacements?: (p: Player) => void;
   onOpenSignals: () => void;
   onAddManualSignal: (playerId: number, input: ManualPlayerSignalInput) => Promise<PlayerSignal>;
 }) {
@@ -10056,7 +10186,18 @@ function PlayerDrawer({
           </div>
         </div>
         <div className="drawer-section">
-          <span className="section-label">REPLACEMENT OPPORTUNITY</span>
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "8px" }}>
+            <span className="section-label" style={{ margin: 0 }}>REPLACEMENT OPPORTUNITY</span>
+            {squad.some((p) => p.id === player.id) && onExploreReplacements && (
+              <button
+                className="ghost-btn"
+                style={{ fontSize: "12px", padding: "2px 8px" }}
+                onClick={() => onExploreReplacements(player)}
+              >
+                🔄 Explore {player.position}s
+              </button>
+            )}
+          </div>
           {best ? (
             <button
               className="replacement-card"
@@ -10072,6 +10213,15 @@ function PlayerDrawer({
             </button>
           ) : (
             <p className="no-replacement">✓ No immediate replacement upgrade</p>
+          )}
+          {squad.some((p) => p.id === player.id) && onExploreReplacements && (
+            <button
+              className="ghost-btn"
+              style={{ width: "100%", marginTop: "8px", fontSize: "12px", textAlign: "center" }}
+              onClick={() => onExploreReplacements(player)}
+            >
+              Compare all same-position replacements in Transfers →
+            </button>
           )}
         </div>
         <div className="drawer-actions">

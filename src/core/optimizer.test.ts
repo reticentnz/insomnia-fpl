@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest'
-import { boundedTransferSearch, evaluateRecommendationDraft, squadLeagueDifferential, type OptimizerPlayer } from './optimizer.ts'
+import { applyOneStepLookahead, boundedTransferSearch, evaluateRecommendationDraft, freeTransfersAtNextDeadline, selectHorizonLineup, squadLeagueDifferential, type OptimizerPlayer } from './optimizer.ts'
+import { selectLineup } from './lineup.ts'
 import { evaluateSimultaneousTransfers } from './transfers.ts'
 import type { StoredForecast } from './lineup.ts'
 
@@ -43,6 +44,111 @@ describe('bounded transfer recommendations', () => {
     expect(result[0].moves).toEqual([])
     for (const draft of result.slice(1)) expect(evaluateSimultaneousTransfers({ squad, moves: draft.moves, bankBeforeTenths: 0, freeTransfers: 1 }).legal).toBe(true)
   }, 20_000)
+})
+
+describe('multi-gameweek lineup evaluation', () => {
+  it('sets a legal XI, captain and vice independently in each gameweek', () => {
+    const gw1 = forecasts.map(row => ({ ...row, gameweekId: 'gw1', meanPoints: row.playerId === 'p2' ? 20 : row.meanPoints }))
+    const gw2 = forecasts.map(row => ({ ...row, gameweekId: 'gw2', meanPoints: row.playerId === 'p7' ? 25 : row.meanPoints }))
+    const horizon = selectHorizonLineup([...gw1, ...gw2])
+    const first = horizon.byGameweek.find(item => item.gameweekId === 'gw1')!.lineup
+    const second = horizon.byGameweek.find(item => item.gameweekId === 'gw2')!.lineup
+
+    expect(first.starters).toHaveLength(11)
+    expect(second.starters).toHaveLength(11)
+    expect(first.captainId).toBe('p2')
+    expect(second.captainId).toBe('p7')
+    expect(horizon.expectedPoints).toBeCloseTo(selectLineup(gw1).expectedPoints + selectLineup(gw2).expectedPoints, 9)
+  })
+
+  it('scores a transfer from the sum of its weekly lineups, rather than a fixed horizon XI', () => {
+    const incoming = { ...squad[7], id: 'weekly-specialist', club: 'weekly-specialist', purchasePriceTenths: 50, sellingPriceTenths: 50 }
+    const gw1 = forecasts.map(row => ({ ...row, gameweekId: 'gw1', meanPoints: row.playerId === 'p7' ? 12 : row.meanPoints }))
+    const gw2 = forecasts.map(row => ({ ...row, gameweekId: 'gw2', meanPoints: row.playerId === 'p7' ? 1 : row.meanPoints }))
+    const incomingGw1 = { ...gw1[7], playerId: 'weekly-specialist', meanPoints: 1 }
+    const incomingGw2 = { ...gw2[7], playerId: 'weekly-specialist', meanPoints: 20 }
+    const allForecasts = [...gw1, ...gw2, incomingGw1, incomingGw2]
+    const draft = evaluateRecommendationDraft({ squad, candidateSquad: [...squad.filter(player => player.id !== 'p7'), incoming], moves: [{ outId: 'p7', incoming }], forecasts: allForecasts, bankBeforeTenths: 0, freeTransfers: 1, uncertaintyPenaltyRate: 0 })
+    const baseline = selectHorizonLineup(allForecasts.filter(row => squad.some(player => String(player.id) === row.playerId)))
+    const proposed = selectHorizonLineup(allForecasts.filter(row => [...squad.filter(player => player.id !== 'p7'), incoming].some(player => String(player.id) === row.playerId)))
+
+    expect(draft.rawGain).toBeCloseTo(proposed.expectedPoints - baseline.expectedPoints, 9)
+    expect(proposed.byGameweek[0].lineup.captainId).not.toBe(proposed.byGameweek[1].lineup.captainId)
+  })
+})
+
+describe('saved free-transfer option value', () => {
+  it('uses the exact carried-transfer state, including hit transfers and the five-transfer cap', () => {
+    expect(freeTransfersAtNextDeadline(1, 0)).toBe(2)
+    expect(freeTransfersAtNextDeadline(1, 1)).toBe(1)
+    expect(freeTransfersAtNextDeadline(0, 2)).toBe(1)
+    expect(freeTransfersAtNextDeadline(5, 0)).toBe(5)
+  })
+
+  it('subtracts the next-week plan advantage of rolling instead of using a fixed transfer premium', () => {
+    const now = { ...squad[12], id: 'now-fwd', club: 'now-fwd', purchasePriceTenths: 50, sellingPriceTenths: 50 }
+    const nextMidA = { ...squad[7], id: 'next-mid-a', club: 'next-mid-a', purchasePriceTenths: 50, sellingPriceTenths: 50 }
+    const nextMidB = { ...squad[8], id: 'next-mid-b', club: 'next-mid-b', purchasePriceTenths: 50, sellingPriceTenths: 50 }
+    const candidates = [...squad, now, nextMidA, nextMidB]
+    const currentForecasts: StoredForecast[] = [
+      ...forecasts,
+      { ...forecasts[12], playerId: 'now-fwd', meanPoints: 10, standardDeviation: 1 },
+      { ...forecasts[7], playerId: 'next-mid-a', meanPoints: 4, standardDeviation: 1 },
+      { ...forecasts[8], playerId: 'next-mid-b', meanPoints: 4, standardDeviation: 1 },
+    ]
+    const futureForecasts: StoredForecast[] = [
+      ...forecasts.map(row => ({ ...row, gameweekId: 'gw2', meanPoints: row.playerId === 'p7' || row.playerId === 'p8' ? 1 : 4, standardDeviation: 1 })),
+      { ...forecasts[12], playerId: 'now-fwd', gameweekId: 'gw2', meanPoints: 4, standardDeviation: 1 },
+      { ...forecasts[7], playerId: 'next-mid-a', gameweekId: 'gw2', meanPoints: 20, standardDeviation: 1 },
+      { ...forecasts[8], playerId: 'next-mid-b', gameweekId: 'gw2', meanPoints: 20, standardDeviation: 1 },
+    ]
+    const moves = [{ outId: 'p12', incoming: now }]
+    const transfer = evaluateRecommendationDraft({ squad, candidateSquad: [...squad.filter(player => player.id !== 'p12'), now], moves, forecasts: currentForecasts, bankBeforeTenths: 0, freeTransfers: 1, uncertaintyPenaltyRate: 0 })
+    const [roll, adjusted] = applyOneStepLookahead({
+      drafts: [evaluateRecommendationDraft({ squad, candidateSquad: squad, moves: [], forecasts: currentForecasts, bankBeforeTenths: 0, freeTransfers: 1, uncertaintyPenaltyRate: 0 }), transfer],
+      squad,
+      candidates,
+      forecasts: currentForecasts,
+      futureForecasts,
+      futureCandidates: candidates,
+      bankBeforeTenths: 0,
+      freeTransfers: 1,
+      uncertaintyPenaltyRate: 0,
+      maxTransfers: 2,
+    })
+
+    // The two high-upside MID upgrades create a strictly better legal next-GW
+    // plan with two free transfers.  The exact difference includes the lineup
+    // and captain optimizer, which is why it must be calculated, not assumed.
+    expect(roll.lookaheadAvailable).toBe(true)
+    expect(roll.nextWeekFreeTransfers).toBe(2)
+    expect(roll.nextWeekBestNetGain).toBeGreaterThan(0)
+    expect(adjusted.lookaheadAvailable).toBe(true)
+    expect(adjusted.nextWeekFreeTransfers).toBe(1)
+    expect(roll.nextWeekBestNetGain!).toBeGreaterThan(adjusted.nextWeekBestNetGain!)
+    expect(adjusted.savedTransferValue).toBeGreaterThan(0)
+    expect(adjusted.netExpectedGain).toBeCloseTo(transfer.netExpectedGain - adjusted.savedTransferValue, 9)
+  })
+
+  it('leaves the adjustment unavailable when the next gameweek lacks a full squad forecast', () => {
+    const draft = evaluateRecommendationDraft({ squad, candidateSquad: squad, moves: [], forecasts, bankBeforeTenths: 0, freeTransfers: 1 })
+    const [result] = applyOneStepLookahead({ drafts: [draft], squad, candidates: squad, forecasts, futureForecasts: forecasts.slice(1), futureCandidates: squad, bankBeforeTenths: 0, freeTransfers: 1, maxTransfers: 1 })
+    expect(result.lookaheadAvailable).toBe(false)
+    expect(result.savedTransferValue).toBe(0)
+    expect(result.nextWeekBestNetGain).toBeNull()
+  })
+
+  it('bounds lookahead to the roll plus four ranked transfers so every returned row is adjusted', () => {
+    const incoming = { ...squad[7], id: 'lookahead-in', club: 'lookahead-in', purchasePriceTenths: 50, sellingPriceTenths: 50 }
+    const currentForecasts = [...forecasts, { ...forecasts[7], playerId: 'lookahead-in', meanPoints: 8 }]
+    const futureForecasts = currentForecasts.map(row => ({ ...row, gameweekId: 'gw2' }))
+    const transfer = evaluateRecommendationDraft({ squad, candidateSquad: [...squad.filter(player => player.id !== 'p7'), incoming], moves: [{ outId: 'p7', incoming }], forecasts: currentForecasts, bankBeforeTenths: 0, freeTransfers: 1 })
+    const roll = evaluateRecommendationDraft({ squad, candidateSquad: squad, moves: [], forecasts: currentForecasts, bankBeforeTenths: 0, freeTransfers: 1 })
+    const result = applyOneStepLookahead({ drafts: [roll, ...Array.from({ length: 6 }, () => transfer)], squad, candidates: [...squad, incoming], forecasts: currentForecasts, futureForecasts, futureCandidates: [...squad, incoming], bankBeforeTenths: 0, freeTransfers: 1, maxTransfers: 1 })
+
+    expect(result).toHaveLength(5)
+    expect(result.every(draft => draft.lookaheadAvailable)).toBe(true)
+  })
 })
 
 describe('league differential measurement', () => {

@@ -11,7 +11,7 @@ import {
   sanitizeError,
   startFeedRun,
 } from './feed-run.mjs'
-import { createForecastRun } from '../src/server/forecast-service.ts'
+import { refreshForecastIfInputsChanged } from '../src/server/forecast-refresh-service.ts'
 
 const positions = { 1: 'GK', 2: 'DEF', 3: 'MID', 4: 'FWD' }
 const playerObservationColumns = [
@@ -611,13 +611,9 @@ async function runPayloadIngestion({
       cacheCapturedAt,
       errorSummary,
     })
-    // Facts have committed before this independent ledger operation. A
-    // projection failure is represented by its own failed ForecastRun and
-    // must never roll back a successful official refresh.
-    // `observedAt` is the effective information timestamp. `finishedAt` is
-    // merely when this import completed and can be later (or, in replayed
-    // data, earlier) than the facts it persisted.
-    const forecast = await createForecastRun(db, { asOf: times.observedAt, createdAt: times.finishedAt })
+    // Facts have committed before this independent ledger operation. A no-op
+    // upstream poll must not add another immutable ForecastRun.
+    const forecast = await refreshForecastIfInputsChanged(db, { asOf: times.observedAt, reasons: ['official'] })
     return {
       feedRunId,
       status,
@@ -834,7 +830,7 @@ export async function refreshOfficialFpl({
       errorSummary: partialErrors.length ? partialErrors.map(sanitizeError).join('; ').slice(0, 500) : null,
       metadata: { season: resolvedSeason, mode: usedCache ? 'cache_fallback' : 'network_refresh' },
     })
-    const forecast = await createForecastRun(db, { asOf: times.observedAt, createdAt: times.finishedAt })
+    const forecast = await refreshForecastIfInputsChanged(db, { asOf: times.observedAt, reasons: ['official'] })
     if (!usedCache && !partialErrors.length) {
       writeOfficialCache(resolvedCachePath, {
         bootstrap: payloads.bootstrap,

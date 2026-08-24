@@ -24,7 +24,7 @@ describe('canonical database migrations', () => {
     const first = await migrateDatabase(databasePath)
     const second = await migrateDatabase(databasePath)
 
-    const migrations = ['001_initial_rebuild', '002_app_state_and_manager_totals', '003_remove_app_user_api_key', '004_recommendation_cache_index', '005_draft_and_season_mode', '006_signal_interpretations', '007_reclassify_creator_bench_context', '008_league_differential', '009_signal_source_date', '010_market_clean_sheet_probabilities', '011_signal_aliases_and_creator_claims', '012_creator_feed_ingestion', '013_ai_usage_ledger', '014_rss_feed_ingestion', '015_rss_feed_cache_validators', '016_add_rss_usage_feature', '016_rss_source_rate_limit_backoff', '017_creator_feed_cache_validators', '018_rss_article_enrichment', '019_creator_forecast_outcomes', '020_recommendation_safety_and_baselines']
+    const migrations = ['001_initial_rebuild', '002_app_state_and_manager_totals', '003_remove_app_user_api_key', '004_recommendation_cache_index', '005_draft_and_season_mode', '006_signal_interpretations', '007_reclassify_creator_bench_context', '008_league_differential', '009_signal_source_date', '010_market_clean_sheet_probabilities', '011_signal_aliases_and_creator_claims', '012_creator_feed_ingestion', '013_ai_usage_ledger', '014_rss_feed_ingestion', '015_rss_feed_cache_validators', '016_add_rss_usage_feature', '016_rss_source_rate_limit_backoff', '017_creator_feed_cache_validators', '018_rss_article_enrichment', '019_creator_forecast_outcomes', '020_recommendation_safety_and_baselines', '021_roll_transfer_option_value']
     expect(first.applied).toEqual(migrations)
     expect(second).toEqual({ applied: [], skipped: migrations })
 

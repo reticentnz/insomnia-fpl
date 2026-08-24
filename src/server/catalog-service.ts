@@ -174,6 +174,7 @@ export async function assembleProjectionInputCatalog(db: Database, options: {
 
   const playersOut: ProjectionCatalogPlayer[] = includedPlayers.map(player => {
     const official = officialByPlayer.get(player.id)
+    const officialPayload = json(official.raw_payload_json)
     const team = teamById.get(official.team_id)
     const strength = strengthByTeam.get(official.team_id)
     const playerSignals = signalsByPlayer.get(player.id) || []
@@ -205,7 +206,16 @@ export async function assembleProjectionInputCatalog(db: Database, options: {
       id: player.id, fplId: Number(player.fpl_id), name: player.web_name,
       identityNames: [...new Set([player.web_name, player.first_name, player.second_name, `${player.first_name || ''} ${player.second_name || ''}`].map(value => String(value || '').trim()).filter(Boolean))],
       team: { id: team.id, fplId: Number(team.fpl_id), name: team.name, shortName: team.short_name },
-      official: { ...official, raw_payload_json: undefined },
+      // Event transfer activity affects recommendation timing even though it
+      // does not alter expected points. Keep it in the immutable decision
+      // input snapshot so a newly affordable/urgent route cannot reuse a
+      // recommendation cached against stale activity counts.
+      official: {
+        ...official,
+        transfers_in_event: number(officialPayload.transfers_in_event),
+        transfers_out_event: number(officialPayload.transfers_out_event),
+        raw_payload_json: undefined,
+      },
       teamStrength: strength ? { strengthAttackHome: number(strength.strength_attack_home), strengthAttackAway: number(strength.strength_attack_away), strengthDefenceHome: number(strength.strength_defence_home), strengthDefenceAway: number(strength.strength_defence_away) } : { strengthAttackHome: null, strengthAttackAway: null, strengthDefenceHome: null, strengthDefenceAway: null },
       fixtures, underlying: underlying && { ...underlying, raw_payload_json: undefined },
       roleSignals: roleSignals.map(signal => {
@@ -215,7 +225,7 @@ export async function assembleProjectionInputCatalog(db: Database, options: {
         const confidence = interpretation.modelImpact === 'ROLE' && Number.isFinite(interpretationConfidence) ? Math.min(sourceConfidence, interpretationConfidence) : sourceConfidence
         return {
           id: signal.id, kind: signal.kind, value: interpretation.value, sourceType: signal.source_type, sourceUrl: signal.source_url,
-          sourceDate: signal.source_date || null, evidenceSummary: signal.evidence_summary, confidence, gameweekId: signal.gameweek_id,
+          sourceDate: signal.source_date || null, evidenceSummary: signal.evidence_summary, evidenceText: signal.evidence_text || signal.evidence_summary, confidence, gameweekId: signal.gameweek_id,
           observedAt: signal.observed_at, validUntil: signal.valid_until, modelImpact: interpretation.modelImpact,
           interpretationStatus: interpretation.interpretationStatus, interpretationConfidence: interpretation.interpretationConfidence,
           claimClass: interpretation.claimClass, manualOverride: ['MANUAL_OVERRIDE', 'MANUAL', 'USER'].includes(signal.source_type),
@@ -237,7 +247,59 @@ export async function assembleProjectionInputCatalog(db: Database, options: {
     signals: sourceFreshness('SIGNALS', latest(signals.map(row => row.observed_at)), [], asOf, options.signalsMaxAgeMs ?? Number(process.env.FPL_SIGNALS_MAX_AGE_MS || 7 * 24 * 60 * 60 * 1000)),
   }
   const canonical = { asOf, season, players: playersOut, sourceRunIds, freshness }
-  return { ...canonical, inputHash: createHash('sha256').update(canonicalJson(canonical)).digest('hex') }
+  // `asOf`, feed-run identifiers, observation identifiers and market ages are
+  // audit data, not model inputs. Including them made a no-op refresh look
+  // different merely because the clock had moved or an upstream feed had been
+  // polled again. Keep the public catalogue fully auditable, but hash only the
+  // values which can affect a projection or its transfer-timing decision.
+  const inputState = {
+    season,
+    players: playersOut.map(player => ({
+      fplId: player.fplId,
+      team: player.team,
+      official: projectionValue(player.official),
+      teamStrength: player.teamStrength,
+      fixtures: player.fixtures.map(fixture => ({
+        fplId: fixture.fplId,
+        gameweekFplId: fixture.gameweekFplId,
+        kickoffAt: fixture.kickoffAt,
+        isHome: fixture.isHome,
+        difficulty: fixture.difficulty,
+        opponent: fixture.opponent,
+        market: fixture.market && {
+          homeExpectedGoals: fixture.market.homeExpectedGoals,
+          awayExpectedGoals: fixture.market.awayExpectedGoals,
+          homeCleanSheetProbability: fixture.market.homeCleanSheetProbability,
+          awayCleanSheetProbability: fixture.market.awayCleanSheetProbability,
+          derivationMethod: fixture.market.derivationMethod,
+        },
+      })),
+      underlying: player.underlying ? projectionValue(player.underlying) : null,
+      roleSignals: player.roleSignals.map(signal => ({
+        kind: signal.kind,
+        value: signal.value,
+        sourceType: signal.sourceType,
+        sourceDate: signal.sourceDate,
+        evidenceSummary: signal.evidenceSummary,
+        evidenceText: signal.evidenceText,
+        confidence: signal.confidence,
+        gameweekId: signal.gameweekId,
+        validUntil: signal.validUntil,
+        modelImpact: signal.modelImpact,
+        interpretationStatus: signal.interpretationStatus,
+        interpretationConfidence: signal.interpretationConfidence,
+        claimClass: signal.claimClass,
+        manualOverride: signal.manualOverride,
+      })),
+    })),
+  }
+  return { ...canonical, inputHash: createHash('sha256').update(canonicalJson(inputState)).digest('hex') }
+}
+
+/** Remove persistence/audit-only fields from an observation before hashing it. */
+function projectionValue(value: Record<string, unknown>) {
+  const excluded = new Set(['id', 'feed_run_id', 'observed_at', 'captured_at', 'created_at', 'updated_at', 'raw_payload_json'])
+  return Object.fromEntries(Object.entries(value).filter(([key]) => !excluded.has(key)))
 }
 
 /**

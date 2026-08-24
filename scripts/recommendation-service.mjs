@@ -1,14 +1,52 @@
 import { randomUUID } from 'node:crypto'
 import { canonicalJson } from './feed-run.mjs'
-import { boundedTransferSearch } from '../src/core/optimizer.ts'
+import { applyOneStepLookahead, boundedTransferSearch } from '../src/core/optimizer.ts'
 import { evaluateChipCounterfactual } from '../src/core/chips.ts'
+import { assessPlanPriceTiming } from '../src/price-timing.ts'
 
 import { combineSampleStreams, simulateFromStoredForecast, summarizeSampleDistribution } from '../src/core/uncertainty.ts'
 
 const parse = value => { try { return JSON.parse(value || '{}') } catch { return {} } }
 const asNumber = value => value == null ? null : Number(value)
+const uniquePlayers = rows => [...new Map(rows.map(row => [String(row.playerId), row])).values()]
+const sensitivityFromCalibrations = (roleCalibrations, sampleCalibrations) => {
+  const roleLatestMatchSensitive = roleCalibrations.some(calibration => calibration?.sensitivity === 'LATEST_MATCH_SENSITIVE')
+  const earlySeasonSensitive = [...roleCalibrations, ...sampleCalibrations].some(calibration => calibration?.earlySeason === true)
+  const latestMatchSensitivity = sampleCalibrations.some(calibration => calibration?.latestMatchSensitivity === 'HIGH') ? 'HIGH'
+    : sampleCalibrations.some(calibration => calibration?.latestMatchSensitivity === 'MEDIUM') ? 'MEDIUM' : 'LOW'
+  return {
+    earlySeasonSensitive,
+    roleLatestMatchSensitive,
+    latestMatchSensitive: roleLatestMatchSensitive,
+    latestMatchSensitivity,
+    sensitivityFlags: [
+      ...(earlySeasonSensitive ? ['EARLY_SEASON'] : []),
+      ...(roleLatestMatchSensitive ? ['LATEST_MATCH_SENSITIVE'] : []),
+      ...(latestMatchSensitivity === 'HIGH' ? ['RATE_SAMPLE_LATEST_MATCH_SENSITIVE'] : []),
+    ],
+  }
+}
+const sensitivityForMoves = moves => {
+  const incoming = moves.map(move => move.incoming)
+  if (!incoming.length) return null
+  const roleLatestMatchSensitive = incoming.some(player => player.roleLatestMatchSensitive === true)
+  const earlySeasonSensitive = incoming.some(player => player.earlySeasonSensitive === true)
+  const latestMatchSensitivity = incoming.some(player => player.latestMatchSensitivity === 'HIGH') ? 'HIGH'
+    : incoming.some(player => player.latestMatchSensitivity === 'MEDIUM') ? 'MEDIUM' : 'LOW'
+  return {
+    earlySeasonSensitive,
+    roleLatestMatchSensitive,
+    latestMatchSensitive: roleLatestMatchSensitive,
+    latestMatchSensitivity,
+    sensitivityFlags: [
+      ...(earlySeasonSensitive ? ['EARLY_SEASON'] : []),
+      ...(roleLatestMatchSensitive ? ['LATEST_MATCH_SENSITIVE'] : []),
+      ...(latestMatchSensitivity === 'HIGH' ? ['RATE_SAMPLE_LATEST_MATCH_SENSITIVE'] : []),
+    ],
+  }
+}
 
-async function forecastPlayers(db, forecastRunId, horizon, { aggregate = true } = {}) {
+async function forecastPlayers(db, forecastRunId, horizon, { aggregate = true, gameweekOffset = 0 } = {}) {
   const rows = await db.query(
     `SELECT forecast."player_id", forecast."fixture_id", forecast."forecast_run_id",
       forecast."mean_points", forecast."standard_deviation", forecast."p10_points", forecast."p50_points", forecast."p90_points",
@@ -17,6 +55,8 @@ async function forecastPlayers(db, forecastRunId, horizon, { aggregate = true } 
       forecast."goals_conceded_points", forecast."save_points", forecast."penalty_points", forecast."defensive_contribution_points",
       forecast."bonus_points", forecast."card_points", forecast."role_source_json", run."model_version",
       player."fpl_id", player_observation."position", player_observation."team_id", player_observation."active", player_observation."price_tenths",
+      json_extract(player_observation."raw_payload_json", '$.transfers_in_event') AS "transfers_in_event",
+      json_extract(player_observation."raw_payload_json", '$.transfers_out_event') AS "transfers_out_event",
       fixture_observation."gameweek_id", gameweek."fpl_id" AS gameweek_fpl_id
      FROM "PlayerFixtureForecast" forecast
      JOIN "ForecastRun" run ON run."id"=forecast."forecast_run_id"
@@ -31,13 +71,14 @@ async function forecastPlayers(db, forecastRunId, horizon, { aggregate = true } 
        AND datetime(player_observation."observed_at") <= datetime(run."as_of")
        AND NOT EXISTS (SELECT 1 FROM "PlayerObservation" newer_player WHERE newer_player."player_id"=player_observation."player_id" AND datetime(newer_player."observed_at") <= datetime(run."as_of") AND (datetime(newer_player."observed_at") > datetime(player_observation."observed_at") OR (newer_player."observed_at"=player_observation."observed_at" AND newer_player."id">player_observation."id")))
      ORDER BY gameweek."fpl_id", forecast."player_id"`, [forecastRunId])
-  const gameweeks = [...new Set(rows.rows.map(row => row.gameweek_id))].slice(0, horizon)
+  const gameweeks = [...new Set(rows.rows.map(row => row.gameweek_id))].slice(gameweekOffset, gameweekOffset + horizon)
   const allowed = new Set(gameweeks)
   const selectedRows = rows.rows.filter(row => allowed.has(row.gameweek_id))
 
   const simulatedRows = selectedRows.map(row => {
     const sim = simulateFromStoredForecast(row)
-    return { ...row, _sim: sim }
+    const roleSource = parse(row.role_source_json)
+    return { ...row, _sim: sim, _roleCalibration: roleSource.roleCalibration, _sampleCalibration: roleSource.sampleCalibration }
   })
 
   if (!aggregate) {
@@ -52,12 +93,18 @@ async function forecastPlayers(db, forecastRunId, horizon, { aggregate = true } 
         teamId: row.team_id,
         active: Boolean(row.active),
         purchasePriceTenths: asNumber(row.price_tenths),
+        currentPriceTenths: asNumber(row.price_tenths),
+        transfersIn: asNumber(row.transfers_in_event),
+        transfersOut: asNumber(row.transfers_out_event),
+        transferWindow: row.transfers_in_event != null && row.transfers_out_event != null ? 'EVENT' : 'UNKNOWN',
         startProbabilities: [],
         noShowProbabilities: [],
         meanPoints: 0,
         variance: 0,
         streams: [],
         minuteStreams: [],
+        roleCalibrations: [],
+        sampleCalibrations: [],
         samplesAvailable: true,
       }
       prev.startProbabilities.push(Number(row.start_probability))
@@ -68,6 +115,8 @@ async function forecastPlayers(db, forecastRunId, horizon, { aggregate = true } 
         prev.streams.push(row._sim.samples)
         if (row._sim.minuteSamples) prev.minuteStreams.push(row._sim.minuteSamples)
       } else prev.samplesAvailable = false
+      if (row._roleCalibration) prev.roleCalibrations.push(row._roleCalibration)
+      if (row._sampleCalibration) prev.sampleCalibrations.push(row._sampleCalibration)
       byPlayerGw.set(key, prev)
     }
     return [...byPlayerGw.values()].map(item => {
@@ -78,6 +127,7 @@ async function forecastPlayers(db, forecastRunId, horizon, { aggregate = true } 
       const summary = combinedSamples ? summarizeSampleDistribution(combinedSamples, combinedMinutes) : { mean: item.meanPoints, standardDeviation, p10: item.meanPoints - percentileDistance, p50: item.meanPoints, p90: item.meanPoints + percentileDistance }
       const startProbability = 1 - item.startProbabilities.reduce((acc, p) => acc * (1 - p), 1)
       const noShowProbability = item.noShowProbabilities.reduce((acc, p) => acc * p, 1)
+      const sensitivity = sensitivityFromCalibrations(item.roleCalibrations, item.sampleCalibrations)
       return {
         playerId: item.playerId,
         fplId: item.fplId,
@@ -95,6 +145,9 @@ async function forecastPlayers(db, forecastRunId, horizon, { aggregate = true } 
         noShowProbability,
         samples: combinedSamples,
         minuteSamples: combinedMinutes,
+        roleCalibration: item.roleCalibrations[0] || null,
+        sampleCalibration: item.sampleCalibrations[0] || null,
+        ...sensitivity,
       }
     })
   }
@@ -110,12 +163,18 @@ async function forecastPlayers(db, forecastRunId, horizon, { aggregate = true } 
       teamId: row.team_id,
       active: Boolean(row.active),
       purchasePriceTenths: asNumber(row.price_tenths),
+      currentPriceTenths: asNumber(row.price_tenths),
+      transfersIn: asNumber(row.transfers_in_event),
+      transfersOut: asNumber(row.transfers_out_event),
+      transferWindow: row.transfers_in_event != null && row.transfers_out_event != null ? 'EVENT' : 'UNKNOWN',
       startProbabilities: [],
         noShowProbabilities: [],
       meanPoints: 0,
       variance: 0,
       streams: [],
       minuteStreams: [],
+      roleCalibrations: [],
+      sampleCalibrations: [],
       samplesAvailable: true,
     }
     prev.startProbabilities.push(Number(row.start_probability))
@@ -126,6 +185,8 @@ async function forecastPlayers(db, forecastRunId, horizon, { aggregate = true } 
       prev.streams.push(row._sim.samples)
       if (row._sim.minuteSamples) prev.minuteStreams.push(row._sim.minuteSamples)
     } else prev.samplesAvailable = false
+    if (row._roleCalibration) prev.roleCalibrations.push(row._roleCalibration)
+    if (row._sampleCalibration) prev.sampleCalibrations.push(row._sampleCalibration)
     byPlayer.set(id, prev)
   }
   return [...byPlayer.values()].map(item => {
@@ -136,6 +197,7 @@ async function forecastPlayers(db, forecastRunId, horizon, { aggregate = true } 
     const summary = combinedSamples ? summarizeSampleDistribution(combinedSamples, combinedMinutes) : { mean: item.meanPoints, standardDeviation, p10: item.meanPoints - percentileDistance, p50: item.meanPoints, p90: item.meanPoints + percentileDistance }
     const startProbability = 1 - item.startProbabilities.reduce((acc, p) => acc * (1 - p), 1)
     const noShowProbability = item.noShowProbabilities.reduce((acc, p) => acc * p, 1)
+    const sensitivity = sensitivityFromCalibrations(item.roleCalibrations, item.sampleCalibrations)
     return {
       playerId: item.playerId,
       fplId: item.fplId,
@@ -153,6 +215,9 @@ async function forecastPlayers(db, forecastRunId, horizon, { aggregate = true } 
       noShowProbability,
       samples: combinedSamples,
       minuteSamples: combinedMinutes,
+      roleCalibration: item.roleCalibrations[0] || null,
+      sampleCalibration: item.sampleCalibrations[0] || null,
+      ...sensitivity,
     }
   })
 }
@@ -162,6 +227,7 @@ function recommendationSetIdentityQuery(requireVerified = false) {
     WHERE "plan_id"=$1 AND "forecast_run_id"=$2 AND "horizon"=$3 AND "max_transfers"=$4
       AND COALESCE("chip", '')=COALESCE($5, '') AND "uncertainty_penalty_rate"=$6 AND "input_hash"=$7
       AND COALESCE("league_id", 0)=COALESCE($8, 0)
+      AND "roll_option_version"=2
       ${requireVerified ? 'AND "free_transfers_confirmed"=1 AND "exact_selling_prices"=1 AND "status"=\'SUCCEEDED\'' : 'AND "free_transfers_confirmed"=$9 AND "exact_selling_prices"=$10 AND "status" IN (\'SUCCEEDED\',\'INSUFFICIENT_DATA\')'}
     ORDER BY datetime("created_at") DESC,"id" DESC LIMIT 1`
 }
@@ -173,8 +239,11 @@ export async function planSquad(db, planId, runPlayers) {
     JOIN "OfficialSquadSnapshot" snapshot ON snapshot."id"=plan."official_squad_snapshot_id"
     WHERE plan_player."plan_id"=$1 ORDER BY plan_player."squad_slot"`, [planId])
   if (!rows.rows.length) throw new Error(`Plan ${planId} has no players`)
-  const official = await db.query(`SELECT "player_id", "selling_price_tenths" FROM "OfficialSquadPlayer" WHERE "squad_snapshot_id"=$1`, [rows.rows[0].official_squad_snapshot_id])
-  const officialByPlayer = new Map(official.rows.map(row => [String(row.player_id), row.selling_price_tenths === null ? null : Number(row.selling_price_tenths)]))
+  const official = await db.query(`SELECT "player_id", "purchase_price_tenths", "selling_price_tenths" FROM "OfficialSquadPlayer" WHERE "squad_snapshot_id"=$1`, [rows.rows[0].official_squad_snapshot_id])
+  const officialByPlayer = new Map(official.rows.map(row => [String(row.player_id), {
+    sellingPriceTenths: row.selling_price_tenths === null || row.selling_price_tenths === undefined ? null : Number(row.selling_price_tenths),
+    purchasePriceTenths: row.purchase_price_tenths === null || row.purchase_price_tenths === undefined ? null : Number(row.purchase_price_tenths),
+  }]))
   const latestOfficial = await db.query(
     `SELECT squad."player_id", squad."selling_price_tenths"
      FROM "OfficialSquadPlayer" squad
@@ -200,12 +269,24 @@ export async function planSquad(db, planId, runPlayers) {
     const forecast = forecastById.get(String(row.player_id))
     if (!forecast) throw new Error(`Plan player ${row.player_id} has no stored forecast in this run`)
     const playerId = String(row.player_id)
+    const officialEconomics = officialByPlayer.get(playerId)
     const sellingPriceTenths = latestOfficialByPlayer.has(playerId)
       ? latestOfficialByPlayer.get(playerId) ?? confirmedSellingByPlayer.get(playerId) ?? null
-      : officialByPlayer.has(playerId)
-      ? officialByPlayer.get(playerId) ?? confirmedSellingByPlayer.get(playerId) ?? null
+      : officialEconomics
+      ? officialEconomics.sellingPriceTenths ?? confirmedSellingByPlayer.get(playerId) ?? null
       : asNumber(row.planned_purchase_price_tenths)
-    return { id: playerId, fplId: forecast.fplId, club: String(forecast.teamId), position: forecast.position, active: forecast.active, purchasePriceTenths: forecast.purchasePriceTenths, sellingPriceTenths, locked: Boolean(row.locked) }
+    return {
+      id: playerId, fplId: forecast.fplId, club: String(forecast.teamId), position: forecast.position, active: forecast.active,
+      // The forecast observation is the live public price; the official
+      // snapshot/plan row is the historic buy price needed for a future sale.
+      currentPriceTenths: forecast.currentPriceTenths,
+      purchasePriceTenths: officialEconomics?.purchasePriceTenths ?? asNumber(row.planned_purchase_price_tenths),
+      sellingPriceTenths,
+      transfersIn: forecast.transfersIn,
+      transfersOut: forecast.transfersOut,
+      transferWindow: forecast.transferWindow,
+      locked: Boolean(row.locked),
+    }
   })
   return {
     squad,
@@ -227,13 +308,22 @@ export async function createRecommendationSet(db, { planId, forecastRunId, horiz
   const leagueId = league?.leagueId ?? null
   const verifiedCached = await db.query(recommendationSetIdentityQuery(true), [planId, resolvedForecastRunId, horizon, maxTransfers, chip, uncertaintyPenaltyRate, run.rows[0].input_hash, leagueId])
   if (verifiedCached.rows[0]) return { ...(await getRecommendationSet(db, verifiedCached.rows[0].id)), cacheStatus: 'HIT' }
-  const players = await forecastPlayers(db, resolvedForecastRunId, horizon)
-  const fixtureForecasts = chip ? await forecastPlayers(db, resolvedForecastRunId, horizon, { aggregate: false }) : null
-  const plan = await planSquad(db, planId, players)
+  // Keep forecasts split by gameweek: optimizer selects its legal XI, captain
+  // and vice independently each week instead of locking one horizon XI.
+  const players = await forecastPlayers(db, resolvedForecastRunId, horizon, { aggregate: false })
+  const roster = uniquePlayers(players)
+  const fixtureForecasts = chip ? players : null
+  const plan = await planSquad(db, planId, roster)
   const cached = await db.query(recommendationSetIdentityQuery(), [planId, resolvedForecastRunId, horizon, maxTransfers, chip, uncertaintyPenaltyRate, run.rows[0].input_hash, leagueId, plan.freeTransfersConfirmed ? 1 : 0, plan.exactSellingPrices ? 1 : 0])
   if (cached.rows[0]) return { ...(await getRecommendationSet(db, cached.rows[0].id)), cacheStatus: 'HIT' }
+  // This is deliberately a fixed-input, one-gameweek lookahead.  It uses the
+  // following stored gameweek only; prices and future news are not invented.
+  const nextWeekPlayers = !chip && plan.freeTransfersConfirmed && plan.exactSellingPrices
+    ? await forecastPlayers(db, resolvedForecastRunId, 1, { aggregate: false, gameweekOffset: 1 })
+    : []
   const id = randomUUID()
-  const common = { squad: plan.squad, candidates: players.map(row => ({ id: row.playerId, fplId: row.fplId, club: String(row.teamId), position: row.position, active: row.active, purchasePriceTenths: row.purchasePriceTenths, sellingPriceTenths: row.purchasePriceTenths })), forecasts: players, bankBeforeTenths: plan.bankBeforeTenths, freeTransfers: plan.freeTransfers, uncertaintyPenaltyRate, maxTransfers }
+  const toCandidate = row => ({ id: row.playerId, fplId: row.fplId, club: String(row.teamId), position: row.position, active: row.active, purchasePriceTenths: row.purchasePriceTenths, sellingPriceTenths: row.purchasePriceTenths, currentPriceTenths: row.currentPriceTenths, transfersIn: row.transfersIn, transfersOut: row.transfersOut, transferWindow: row.transferWindow, roleCalibration: row.roleCalibration, sampleCalibration: row.sampleCalibration, earlySeasonSensitive: row.earlySeasonSensitive, roleLatestMatchSensitive: row.roleLatestMatchSensitive, latestMatchSensitive: row.latestMatchSensitive, latestMatchSensitivity: row.latestMatchSensitivity, sensitivityFlags: row.sensitivityFlags })
+  const common = { squad: plan.squad, candidates: roster.map(toCandidate), forecasts: players, bankBeforeTenths: plan.bankBeforeTenths, freeTransfers: plan.freeTransfers, uncertaintyPenaltyRate, maxTransfers }
   if (league?.coverageByFplId && (league.coverageByFplId instanceof Map ? league.coverageByFplId.size : Object.keys(league.coverageByFplId || {}).length)) {
     const fplToInternal = new Map()
     for (const row of players) if (row.fplId != null) fplToInternal.set(Number(row.fplId), String(row.playerId))
@@ -256,17 +346,37 @@ export async function createRecommendationSet(db, { planId, forecastRunId, horiz
     const estimate = evaluateChipCounterfactual({ chip: chipName, baselineSquad: plan.squad, candidatePool: common.candidates, forecasts: fixtureForecasts, bankBeforeTenths: plan.bankBeforeTenths, targetGameweekId: gameweekIds[0], horizonGameweekIds: gameweekIds })
     if (!estimate.available) { drafts = []; status = 'INSUFFICIENT_DATA' }
     else drafts = [{ moves: [], affordabilityStatus: 'EXACT', bankAfterTenths: plan.bankBeforeTenths, hitCost: 0, rawGain: estimate.gain, uncertaintyPenalty: 0, netExpectedGain: estimate.gain, probabilityBeatsRoll: estimate.gain > 0 ? 1 : 0, expectedTeamPoints: estimate.expectedPoints, p10Points: estimate.p10Gain, p50Points: estimate.p50Gain, p90Points: estimate.p90Gain, action: 'CHIP', chip: chipName, chipReason: estimate.reason, chipSquadIds: estimate.squadIds }]
-  } else if (plan.bankBeforeTenths === null) { drafts = []; status = 'INSUFFICIENT_DATA' } else drafts = boundedTransferSearch(common)
+  } else if (plan.bankBeforeTenths === null) { drafts = []; status = 'INSUFFICIENT_DATA' }
+  else {
+    drafts = boundedTransferSearch(common)
+    const nextWeekCandidates = uniquePlayers(nextWeekPlayers).map(toCandidate)
+    drafts = applyOneStepLookahead({ ...common, drafts, futureForecasts: nextWeekPlayers, futureCandidates: nextWeekCandidates })
+  }
   await db.query('BEGIN IMMEDIATE')
   try {
-    await db.query(`INSERT INTO "RecommendationSet" ("id","plan_id","forecast_run_id","horizon","max_transfers","chip","uncertainty_penalty_rate","created_at","status","primary_candidate_id","input_hash","league_id","league_name","free_transfers_confirmed","exact_selling_prices") VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,NULL,$10,$11,$12,$13,$14)`, [id, planId, resolvedForecastRunId, horizon, maxTransfers, chip, uncertaintyPenaltyRate, createdAt, status, run.rows[0].input_hash, leagueId, league?.leagueName ?? null, plan.freeTransfersConfirmed ? 1 : 0, plan.exactSellingPrices ? 1 : 0])
-    if (!drafts.length) drafts = [{ moves: [], affordabilityStatus: 'AFFORDABILITY_UNKNOWN', bankAfterTenths: null, hitCost: 0, rawGain: 0, uncertaintyPenalty: 0, netExpectedGain: 0, probabilityBeatsRoll: null, expectedTeamPoints: 0, p10Points: null, p50Points: null, p90Points: null, action: 'INSUFFICIENT_DATA', leagueDifferential: null }]
+    await db.query(`INSERT INTO "RecommendationSet" ("id","plan_id","forecast_run_id","horizon","max_transfers","chip","uncertainty_penalty_rate","created_at","status","primary_candidate_id","input_hash","league_id","league_name","free_transfers_confirmed","exact_selling_prices","roll_option_version") VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,NULL,$10,$11,$12,$13,$14,2)`, [id, planId, resolvedForecastRunId, horizon, maxTransfers, chip, uncertaintyPenaltyRate, createdAt, status, run.rows[0].input_hash, leagueId, league?.leagueName ?? null, plan.freeTransfersConfirmed ? 1 : 0, plan.exactSellingPrices ? 1 : 0])
+    if (!drafts.length) drafts = [{ moves: [], affordabilityStatus: 'AFFORDABILITY_UNKNOWN', bankAfterTenths: null, hitCost: 0, rawGain: 0, uncertaintyPenalty: 0, netExpectedGain: 0, probabilityBeatsRoll: null, expectedTeamPoints: 0, p10Points: null, p50Points: null, p90Points: null, action: 'INSUFFICIENT_DATA', leagueDifferential: null, savedTransferValue: 0, lookaheadAvailable: false, nextWeekFreeTransfers: null, nextWeekBestNetGain: null }]
     const roll = drafts.find(draft => draft.moves.length === 0)
     const primary = drafts.find(draft => draft.moves.length > 0 && draft.affordabilityStatus === 'EXACT' && draft.netExpectedGain > 0 && draft.probabilityBeatsRoll >= .6) || roll || drafts[0]
     const persisted = []
     for (const [index, draft] of drafts.entries()) {
       const candidateId = randomUUID(), action = draft.action || (draft.moves.length ? 'TRANSFER' : 'ROLL')
-      await db.query(`INSERT INTO "RecommendationCandidate" ("id","recommendation_set_id","rank","action","moves_json","raw_gain","hit_cost","uncertainty_penalty","net_expected_gain","probability_beats_roll","bank_after_tenths","affordability_status","expected_team_points","p10_points","p50_points","p90_points","league_differential") VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17)`, [candidateId, id, index + 1, action, canonicalJson({ moves: draft.moves.map(move => ({ outId: String(move.outId), inId: String(move.incoming.id) })), chip: draft.chip || null, reason: draft.chipReason || null, squadIds: draft.chipSquadIds || null }), draft.rawGain, draft.hitCost, draft.uncertaintyPenalty, draft.netExpectedGain, draft.probabilityBeatsRoll, draft.bankAfterTenths, draft.affordabilityStatus, draft.expectedTeamPoints, draft.p10Points, draft.p50Points, draft.p90Points, draft.leagueDifferential == null ? null : Number(draft.leagueDifferential)])
+      const sensitivity = sensitivityForMoves(draft.moves)
+      const priceTiming = action === 'TRANSFER' || action === 'ROLL'
+        ? assessPlanPriceTiming({
+          moves: draft.moves.map(move => {
+            const outgoing = plan.squad.find(player => String(player.id) === String(move.outId))
+            return {
+              incoming: { transfersIn: move.incoming.transfersIn, transfersOut: move.incoming.transfersOut, window: move.incoming.transferWindow, buyPriceTenths: move.incoming.purchasePriceTenths },
+              outgoing: { transfersIn: outgoing?.transfersIn, transfersOut: outgoing?.transfersOut, window: outgoing?.transferWindow, sellingPriceTenths: outgoing?.sellingPriceTenths, currentPriceTenths: outgoing?.currentPriceTenths, purchasePriceTenths: outgoing?.purchasePriceTenths },
+            }
+          }),
+          bankBeforeTenths: plan.bankBeforeTenths,
+          deadlineAt: run.rows[0].deadline_at || null,
+          recommendation: { action: action === 'TRANSFER' ? 'TRANSFER' : 'ROLL', actionable: plan.freeTransfersConfirmed && plan.exactSellingPrices && draft.affordabilityStatus === 'EXACT', netExpectedGain: draft.netExpectedGain, probabilityBeatsRoll: draft.probabilityBeatsRoll, latestMatchSensitive: sensitivity?.latestMatchSensitive === true, latestMatchSensitivity: sensitivity?.latestMatchSensitivity || 'LOW' },
+        })
+        : null
+      await db.query(`INSERT INTO "RecommendationCandidate" ("id","recommendation_set_id","rank","action","moves_json","raw_gain","hit_cost","uncertainty_penalty","net_expected_gain","probability_beats_roll","bank_after_tenths","affordability_status","expected_team_points","p10_points","p50_points","p90_points","league_differential","saved_transfer_value","lookahead_available","next_week_free_transfers","next_week_best_net_gain") VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21)`, [candidateId, id, index + 1, action, canonicalJson({ moves: draft.moves.map(move => ({ outId: String(move.outId), inId: String(move.incoming.id) })), chip: draft.chip || null, reason: draft.chipReason || null, squadIds: draft.chipSquadIds || null, sensitivity, priceTiming }), draft.rawGain, draft.hitCost, draft.uncertaintyPenalty, draft.netExpectedGain, draft.probabilityBeatsRoll, draft.bankAfterTenths, draft.affordabilityStatus, draft.expectedTeamPoints, draft.p10Points, draft.p50Points, draft.p90Points, draft.leagueDifferential == null ? null : Number(draft.leagueDifferential), draft.savedTransferValue ?? 0, draft.lookaheadAvailable ? 1 : 0, draft.nextWeekFreeTransfers ?? null, draft.nextWeekBestNetGain ?? null])
       persisted.push({ id: candidateId, ...draft, action, rank: index + 1, apiMoves: draft.moves.map(move => ({ outId: plan.squad.find(player => String(player.id) === String(move.outId))?.fplId, inId: move.incoming.fplId })) })
     }
     const selected = persisted.find(row => row.moves === primary.moves) || persisted[0]
@@ -295,6 +405,7 @@ export async function getRecommendationSet(db, id) {
     maxTransfers: Number(set.rows[0].max_transfers),
     chip: set.rows[0].chip,
     uncertaintyPenaltyRate: Number(set.rows[0].uncertainty_penalty_rate),
+    rollOptionVersion: Number(set.rows[0].roll_option_version || 0),
     createdAt: set.rows[0].created_at,
     status: set.rows[0].status,
     primaryCandidateId: set.rows[0].primary_candidate_id,
@@ -304,7 +415,10 @@ export async function getRecommendationSet(db, id) {
       exactSellingPrices: Boolean(set.rows[0].exact_selling_prices),
     },
     league: set.rows[0].league_id == null ? null : { leagueId: Number(set.rows[0].league_id), leagueName: set.rows[0].league_name || null },
-    candidates: parsedCandidates.map(({ row, detail }) => ({
+    candidates: parsedCandidates.map(({ row, detail }) => {
+      const sensitivity = detail.sensitivity && typeof detail.sensitivity === 'object' ? detail.sensitivity : null
+      const priceTiming = detail.priceTiming && typeof detail.priceTiming === 'object' ? detail.priceTiming : null
+      return {
       id: row.id,
       rank: Number(row.rank),
       action: row.action,
@@ -312,6 +426,10 @@ export async function getRecommendationSet(db, id) {
       rawGain: Number(row.raw_gain),
       hitCost: Number(row.hit_cost),
       uncertaintyPenalty: Number(row.uncertainty_penalty),
+      savedTransferValue: Number(row.saved_transfer_value || 0),
+      lookaheadAvailable: Boolean(row.lookahead_available),
+      nextWeekFreeTransfers: asNumber(row.next_week_free_transfers),
+      nextWeekBestNetGain: asNumber(row.next_week_best_net_gain),
       netExpectedGain: Number(row.net_expected_gain),
       probabilityBeatsRoll: asNumber(row.probability_beats_roll),
       bankAfterTenths: asNumber(row.bank_after_tenths),
@@ -324,6 +442,15 @@ export async function getRecommendationSet(db, id) {
       chip: detail.chip || undefined,
       chipReason: detail.reason || undefined,
       chipSquadIds: detail.squadIds || undefined,
-    })),
+      ...(priceTiming ? { priceTiming, timingAdvice: priceTiming.verdict } : {}),
+      ...(sensitivity ? {
+        earlySeasonSensitive: Boolean(sensitivity.earlySeasonSensitive),
+        roleLatestMatchSensitive: Boolean(sensitivity.roleLatestMatchSensitive),
+        latestMatchSensitive: Boolean(sensitivity.latestMatchSensitive),
+        latestMatchSensitivity: sensitivity.latestMatchSensitivity === 'HIGH' || sensitivity.latestMatchSensitivity === 'MEDIUM' ? sensitivity.latestMatchSensitivity : 'LOW',
+        sensitivityFlags: Array.isArray(sensitivity.sensitivityFlags) ? sensitivity.sensitivityFlags.filter(flag => typeof flag === 'string') : [],
+      } : {}),
+    }
+    }),
   }
 }

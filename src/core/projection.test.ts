@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { bonusAdjustment2026, fixtureExpectedMinutes, fixtureRateModel, fixtureRoleStates, MARKET_CLEAN_SHEET_WEIGHT, projectFixture, projectPlayer, selectStrengthMethod } from './projection.ts'
+import { ATTACKING_RATE_PRIOR_MINUTES, bonusAdjustment2026, fixtureExpectedMinutes, fixtureRateModel, fixtureRoleStates, MARKET_CLEAN_SHEET_WEIGHT, noisyRatePriorMinutes, projectFixture, projectPlayer, projectionSampleCalibration, selectStrengthMethod } from './projection.ts'
 import type { Player } from '../domain.ts'
 
 describe('fixture role states', () => {
@@ -137,5 +137,22 @@ describe('2026/27 projection adjustments', () => {
     expect(bonusAdjustment2026('MID', 6)).toBeGreaterThan(1)
     expect(bonusAdjustment2026('DEF', 12)).toBeLessThan(1)
     expect(bonusAdjustment2026('DEF', 6)).toBeGreaterThan(1)
+  })
+
+  it('shrinks one-match bonus and defensive rates more heavily than xG/xA', () => {
+    expect(noisyRatePriorMinutes('BONUS', 90)).toBeGreaterThan(ATTACKING_RATE_PRIOR_MINUTES)
+    expect(noisyRatePriorMinutes('DEFENSIVE', 90)).toBeGreaterThan(noisyRatePriorMinutes('BONUS', 90))
+    const player: Player = {
+      id: 155, name: 'One Match', club: 'TST', position: 'MID', price: 6, form: 0, ownership: 0, minutes: 90, expectedMinutes: 90, fixture: 'OPP (H)', difficulty: 3, projection: 4, colour: '#000', dataConfidence: 'MEDIUM',
+      upcomingFixtures: [{ gameweek: 2, opponent: 'OPP', venue: 'H', difficulty: 3 }],
+      stats: { minutes: 90, starts: 1, expectedGoalsPer90: 1.2, expectedAssistsPer90: .8, bonus: 3, clearancesBlocksInterceptions: 14, tackles: 4, recoveries: 10 },
+    }
+    const calibration = projectionSampleCalibration(player)
+    expect(calibration.latestMatchSensitivity).toBe('HIGH')
+    expect(calibration.bonusEvidenceWeight).toBeLessThan(calibration.attackingEvidenceWeight)
+    expect(calibration.defensiveEvidenceWeight).toBeLessThan(calibration.bonusEvidenceWeight)
+    const rates = fixtureRateModel(player, player.upcomingFixtures![0])
+    expect(rates.bonusRate).toBeLessThan(1)
+    expect(rates.defensiveRate).toBeLessThan(10)
   })
 })

@@ -43,7 +43,8 @@ import { evaluateDecision, evaluatePendingDecisions, listDecisions, recordDecisi
 import { getUserState, updateAiState, updateUserState } from './user-state-service.mjs'
 import { assembleProjectionInputCatalog, projectionCatalogInputVersions } from '../src/server/catalog-service.ts'
 import { runBacktest } from '../src/server/backtest-service.ts'
-import { baseRole, catalogFixtureStrength, createForecastRun, latestForecastSummary } from '../src/server/forecast-service.ts'
+import { baseRole, catalogFixtureStrength, latestForecastSummary } from '../src/server/forecast-service.ts'
+import { ForecastRefreshCoordinator, refreshForecastIfInputsChanged } from '../src/server/forecast-refresh-service.ts'
 import { CatalogueCache, catalogueCacheKey, catalogueRequestKey } from '../src/server/catalog-cache.ts'
 import { ConcurrencyLimiter, TtlCache } from '../src/server/upstream-control.ts'
 import { HttpRequestError, MAX_JSON_BODY_BYTES, readJsonBody, sanitizeError } from '../src/server/http-security.mjs'
@@ -61,6 +62,9 @@ let systemStatus = {
   isIngesting: false,
   isRecalculating: false,
   recomputeMessage: null,
+  recomputeReason: null,
+  lastForecastRecalculatedAt: null,
+  lastForecastInputHash: null,
   lastForecastRunId: null,
   message: 'Initializing database schema...',
   playerCount: 0,
@@ -82,9 +86,36 @@ let systemStatus = {
 // (no upstream FPL network fetch) so approved role evidence is reflected in
 // stored projections that drive transfer recommendations.
 const RECOMPUTE_DEBOUNCE_MS = 3000
-let recomputeRunning = false
-let recomputeQueued = false
-let recomputeLastTriggeredAt = 0
+const forecastRefreshCoordinator = new ForecastRefreshCoordinator(async reasons => {
+  systemStatus.isRecalculating = true
+  systemStatus.recomputeReason = reasons
+  systemStatus.recomputeMessage = `Checking projection inputs after ${reasons.join(', ')} refresh...`
+  systemStatus.recomputeError = null
+  try {
+    const result = await refreshForecastIfInputsChanged(await getDb(), { reasons })
+    systemStatus.lastForecastRecalculatedAt = result.checkedAt
+    systemStatus.lastForecastInputHash = result.inputHash || systemStatus.lastForecastInputHash
+    systemStatus.lastForecastRunId = result.forecastRunId || result.previousRunId || systemStatus.lastForecastRunId
+    if (result.status === 'FAILED') {
+      systemStatus.recomputeError = result.error || 'Forecast refresh failed'
+      systemStatus.recomputeMessage = 'Forecast refresh failed.'
+      console.error('⚠️ Input-triggered forecast recompute failed:', result.error || 'Unknown error')
+    } else {
+      systemStatus.recomputeMessage = result.status === 'CREATED'
+        ? `Forecast recalculated from changed ${reasons.join(', ')} inputs.`
+        : 'Forecast inputs are unchanged; existing forecast remains current.'
+    }
+    return result
+  } catch (error) {
+    const message = sanitizeError(error)
+    systemStatus.recomputeError = message
+    systemStatus.recomputeMessage = 'Forecast refresh failed.'
+    console.error('⚠️ Input-triggered forecast recompute failed:', message)
+    return { status: 'FAILED', reason: reasons, checkedAt: new Date().toISOString(), error: message }
+  } finally {
+    systemStatus.isRecalculating = false
+  }
+}, RECOMPUTE_DEBOUNCE_MS)
 
 let scheduledIngestTimer = null
 const scheduledAuxiliaryTimers = new Map()
@@ -234,8 +265,8 @@ function auxiliaryRefreshDefinition(id) {
     label: 'Understat performance',
     work: async () => {
       const output = await runChildScript('scripts/ingest-signals.mjs', ['--underlying-only'])
-      const forecast = await runChildScript('scripts/create-forecast-run.mjs')
-      return `${output} ${forecast}`.trim()
+      const recompute = await triggerForecastRecompute({ reason: 'underlying' })
+      return `${output} ${recompute.message}`.trim()
     },
   }
   if (id === 'market') return {
@@ -244,8 +275,8 @@ function auxiliaryRefreshDefinition(id) {
     label: 'betting market',
     work: async () => {
       const output = await runChildScript('scripts/ingest-signals.mjs', ['--market-only'])
-      const forecast = await runChildScript('scripts/create-forecast-run.mjs')
-      return `${output} ${forecast}`.trim()
+      const recompute = await triggerForecastRecompute({ reason: 'market' })
+      return `${output} ${recompute.message}`.trim()
     },
   }
   return { operationId: 'team-refresh', source: null, label: 'linked manager', work: refreshLinkedManagerTeam }
@@ -377,6 +408,7 @@ async function triggerBackgroundIngest() {
           const result = await db.query('SELECT COUNT(*) as count FROM "Player"').catch(() => ({ rows: [{ count: 0 }] }))
           systemStatus.playerCount = Number(result.rows[0]?.count || 0)
         } catch {}
+        await triggerForecastRecompute({ reason: 'official' })
         await scheduleNextIngestion().catch(scheduleError => console.error('⚠️ Could not schedule next ingestion:', sanitizeError(scheduleError)))
         await scheduleAuxiliaryRefreshes().catch(scheduleError => console.error('⚠️ Could not schedule auxiliary ingestion:', sanitizeError(scheduleError)))
       }
@@ -392,40 +424,12 @@ async function triggerBackgroundIngest() {
   }
 }
 
-async function triggerForecastRecompute() {
+async function triggerForecastRecompute({ reason = 'manual' } = {}) {
   if (systemStatus.isIngesting || systemStatus.isSeeding) return { status: 'blocked', message: 'FPL ingestion is already in progress; wait for it to finish.' }
-  recomputeLastTriggeredAt = Date.now()
-  recomputeQueued = true
-  // Return quickly; the debounce loop below drains into a single background job.
-  if (recomputeRunning) return { status: 'queued', message: 'A forecast recompute is already running; the latest approved signals will be included.' }
-  recomputeRunning = true
-  systemStatus.isRecalculating = true
-  systemStatus.recomputeMessage = 'Rebuilding projections from the latest approved signals...'
-  systemStatus.recomputeError = null
-  void (async () => {
-    while (recomputeQueued) {
-      // Debounce bursts of approvals so a batch produces a single forecast run.
-      const idleMs = Date.now() - recomputeLastTriggeredAt
-      if (idleMs < RECOMPUTE_DEBOUNCE_MS) {
-        await new Promise(resolve => setTimeout(resolve, RECOMPUTE_DEBOUNCE_MS - idleMs))
-        continue
-      }
-      recomputeQueued = false
-      try {
-        const db = await getDb()
-        const result = await createForecastRun(db, { asOf: new Date().toISOString() })
-        systemStatus.lastForecastRunId = result.id
-        systemStatus.recomputeError = null
-      } catch (error) {
-        systemStatus.recomputeError = sanitizeError(error)
-        console.error('⚠️ Signal-triggered forecast recompute failed:', sanitizeError(error))
-      }
-    }
-    recomputeRunning = false
-    systemStatus.isRecalculating = false
-    systemStatus.recomputeMessage = null
-  })()
-  return { status: 'started', message: 'Forecast recompute scheduled.' }
+  const queued = forecastRefreshCoordinator.request(reason)
+  systemStatus.recomputeReason = [reason]
+  systemStatus.recomputeMessage = 'Forecast input check scheduled.'
+  return { ...queued, message: queued.status === 'started' ? 'Forecast input check scheduled.' : 'A forecast input check is already queued; this refresh will be included.' }
 }
 
 function readRequestBody(req) { return readJsonBody(req) }
@@ -1256,7 +1260,7 @@ async function refreshLiveData() {
     const official=item.official||{},first=item.fixtures[0]
     const availability=Number(official.chance_of_playing??100)
     const signals=toCatalogRoleSignals(item)
-    const roleProfile=resolvePlayerRole(baseRole(item,Math.max(0,(currentGameweek||1)-1)),signals,{now:new Date(asOf),gameweek:currentGameweek||undefined})
+    const roleProfile=resolvePlayerRole(baseRole(item,Math.max(0,(currentGameweek||1)-1)),signals,{now:new Date(asOf),gameweek:currentGameweek||undefined,completedGameweeks:Math.max(0,(currentGameweek||1)-1)})
     const expectedMinutes=roleProfile.startProbability*roleProfile.minutesIfStarting+(1-roleProfile.startProbability)*roleProfile.substituteProbabilityWhenBenched*roleProfile.minutesIfSubstitute
     return {id:item.fplId,name:item.name,identityNames:item.identityNames||[item.name],club:item.team.shortName,clubName:item.team.name,position:official.position,price:Number(official.price_tenths||0)/10,form:Number(official.form||0),ownership:Number(official.ownership_percent||0),minutes:availability,expectedMinutes,roleProfile,fixture:first?`${first.opponent.shortName} (${first.isHome?'H':'A'})`:'Blank',difficulty:first?.difficulty||3,projection:Number(official.ep_next||0),colour:colours[index%colours.length],status:String(official.status||'a'),chanceOfPlaying:official.chance_of_playing==null?undefined:Number(official.chance_of_playing),news:official.news||null,transfersIn:Number(official.transfers_in||0),transfersOut:Number(official.transfers_out||0),active:Boolean(official.active),dataConfidence:item.provenance.underlyingObservationId?'HIGH':'MEDIUM',upcomingFixtures:item.fixtures.map(fixture=>liveProjectionFixture(item,fixture,catalog,Math.max(0,(currentGameweek||1)-1))),stats:{minutes:Number(official.minutes||0),starts:Number(official.starts||0),totalPoints:Number(official.total_points||0),goals:Number(official.goals_scored||0),assists:Number(official.assists||0),cleanSheets:Number(official.clean_sheets||0),goalsConceded:Number(official.goals_conceded||0),saves:Number(official.saves||0),bonus:Number(official.bonus||0),bps:Number(official.bps||0),yellowCards:Number(official.yellow_cards||0),redCards:Number(official.red_cards||0),ownGoals:Number(official.own_goals||0),penaltiesMissed:Number(official.penalties_missed||0),penaltiesSaved:Number(official.penalties_saved||0),expectedGoals:Number(official.expected_goals||0),expectedAssists:Number(official.expected_assists||0),expectedGoalsConceded:Number(official.expected_goals_conceded||0)}}
   })
@@ -1274,6 +1278,7 @@ function toCatalogRoleSignals(item) {
     sourceType: signal.sourceType,
     sourceUrl: signal.sourceUrl || null,
     evidenceSummary: signal.evidenceSummary || '',
+    evidenceText: signal.evidenceText || signal.evidenceSummary || '',
     confidence: Number(signal.confidence ?? 1),
     observedAt: signal.observedAt,
     validUntil: signal.validUntil,
@@ -1286,7 +1291,7 @@ function enrichCatalogRoles(catalogue) {
   const currentGameweek = futureFixtures[0]?.gameweekFplId || null
   const now = new Date(catalogue.asOf)
   const players = (catalogue.players || []).map(item => {
-    const roleProfile = resolvePlayerRole(baseRole(item, Math.max(0, (currentGameweek || 1) - 1)), toCatalogRoleSignals(item), { now, gameweek: currentGameweek || undefined })
+    const roleProfile = resolvePlayerRole(baseRole(item, Math.max(0, (currentGameweek || 1) - 1)), toCatalogRoleSignals(item), { now, gameweek: currentGameweek || undefined, completedGameweeks: Math.max(0, (currentGameweek || 1) - 1) })
     const expectedMinutes = roleProfile.startProbability * roleProfile.minutesIfStarting + (1 - roleProfile.startProbability) * roleProfile.substituteProbabilityWhenBenched * roleProfile.minutesIfSubstitute
     return { ...item, roleProfile, expectedMinutes, dataConfidence: roleProfile.confidence }
   })
@@ -2079,25 +2084,31 @@ function startServerOnAvailablePort(targetPort) {
       let work
       if (action === 'fpl-sync') {
         work = async () => {
+          let succeeded = false
           systemStatus.isIngesting = true
           systemStatus.status = 'ready'
           systemStatus.message = 'Manual FPL sync is running...'
           try {
             await runChildScript('scripts/ingest-fpl.mjs')
-            return await refreshSystemPlayerCount('Manual FPL sync completed successfully.')
-          } finally { systemStatus.isIngesting = false }
+            const message = await refreshSystemPlayerCount('Manual FPL sync completed successfully.')
+            succeeded = true
+            return message
+          } finally {
+            systemStatus.isIngesting = false
+            if (succeeded) await triggerForecastRecompute({ reason: 'official' })
+          }
         }
       } else if (action === 'signals-sync') {
         work = async () => {
           const output = await runChildScript('scripts/ingest-signals.mjs')
-          const forecast = await runChildScript('scripts/create-forecast-run.mjs')
-          return `${output || 'Performance and odds sync completed'} ${forecast}`.trim()
+          const recompute = await triggerForecastRecompute({ reason: 'underlying' })
+          return `${output || 'Performance and odds sync completed'} ${recompute.message}`.trim()
         }
       } else if (action === 'odds-sync') {
         work = async () => {
           const output = await runChildScript('scripts/ingest-signals.mjs', ['--market-only'])
-          const forecast = await runChildScript('scripts/create-forecast-run.mjs')
-          return `${output || 'Betting odds sync completed'} ${forecast}`.trim()
+          const recompute = await triggerForecastRecompute({ reason: 'market' })
+          return `${output || 'Betting odds sync completed'} ${recompute.message}`.trim()
         }
       } else if (action === 'team-refresh') {
         work = refreshLinkedManagerTeam
@@ -2107,6 +2118,7 @@ function startServerOnAvailablePort(targetPort) {
         work = refreshRssFeeds
       } else {
         work = async () => {
+          let succeeded = false
           systemStatus.isIngesting = true
           systemStatus.message = 'Refreshing official player-to-club links...'
           try {
@@ -2116,8 +2128,12 @@ function startServerOnAvailablePort(targetPort) {
             try { managerMessage = await refreshLinkedManagerTeam() } catch (error) {
               if (!String(error?.message || error).includes('No FPL manager team is linked')) throw error
             }
+            succeeded = true
             return `${catalogMessage} ${managerMessage}.`
-          } finally { systemStatus.isIngesting = false }
+          } finally {
+            systemStatus.isIngesting = false
+            if (succeeded) await triggerForecastRecompute({ reason: 'official' })
+          }
         }
       }
       if (!startAdminOperation(action, work)) { sendJson(res, 409, { error: 'Another admin operation is already running' }); return }
@@ -2296,7 +2312,7 @@ function startServerOnAvailablePort(targetPort) {
         }
         if(action==='resolve_claim'){
           const result=await resolveCreatorClaim(db,String(payload.claimId||''),{playerId:payload.playerId,rememberAlias:payload.rememberAlias!==false})
-          sendJson(res,200,{schemaVersion:1,action,...result,recompute:await triggerForecastRecompute()})
+          sendJson(res,200,{schemaVersion:1,action,...result,recompute:await triggerForecastRecompute({ reason: 'signal' })})
           return
         }
         const actionStatus={approve:'VERIFIED',approve_signal:'VERIFIED',reject:'REJECTED',reject_signal:'REJECTED',expire:'EXPIRED',expire_signal:'EXPIRED'}[action]
@@ -2305,7 +2321,7 @@ function startServerOnAvailablePort(targetPort) {
         if(!ids.length)throw new Error('signalId or signalIds is required')
         const status=/** @type {'VERIFIED'|'REJECTED'|'EXPIRED'} */ (actionStatus)
         const signals=await updatePlayerSignalStatuses(db,ids.map(id=>({id,status})),{actorType:'REMOTE_API',reason:String(payload.reason||`Remote action: ${action}`)})
-        const recompute=status==='VERIFIED'?await triggerForecastRecompute():null
+        const recompute=status==='VERIFIED'?await triggerForecastRecompute({ reason: 'signal' }):null
         sendJson(res,200,{schemaVersion:1,action,signals,count:signals.length,recompute})
       }catch(error){sendJson(res,400,{error:error instanceof Error?error.message:'Unable to action remote signals'})}
       return
@@ -2346,7 +2362,7 @@ function startServerOnAvailablePort(targetPort) {
         const observedAt=new Date().toISOString(),validUntil=new Date(payload.validUntil||Date.now()+7*24*60*60*1000)
         if(!Number.isFinite(validUntil.getTime()))throw new Error('validUntil must be a valid timestamp')
         const signal=await createPlayerSignal(db,{playerId:payload.playerId,gameweek:payload.gameweek||null,kind:payload.kind,value:payload.value||{},sourceType:manual?'MANUAL_OVERRIDE':'USER_FEEDBACK',sourceUrl:payload.sourceUrl||null,evidenceSummary:payload.evidenceSummary,evidenceText:payload.evidenceText||payload.evidenceSummary,claimClass:payload.claimClass,interpretationRationale:payload.interpretationRationale,modelImpact:payload.modelImpact,confidence:manual?1:Math.max(0,Math.min(1,Number(payload.confidence)||.4)),observedAt,validUntil:validUntil.toISOString(),status:manual?'VERIFIED':'PENDING'})
-        sendJson(res,201,{signal})
+        sendJson(res,201,{signal,recompute:manual?await triggerForecastRecompute({ reason: 'signal' }):null})
       }catch(error){sendJson(res,400,{error:error instanceof Error?error.message:'Unable to create signal'})}
       return
     }
@@ -2356,7 +2372,7 @@ function startServerOnAvailablePort(targetPort) {
       try{
         const payload=await readRequestBody(req)
         const signal=await revisePlayerSignalInterpretation(await getDb(),decodeURIComponent(signalInterpretationMatch[1]),payload)
-        sendJson(res,200,{signal})
+        sendJson(res,200,{signal,recompute:await triggerForecastRecompute({ reason: 'signal' })})
       }catch(error){sendJson(res,400,{error:error instanceof Error?error.message:'Unable to revise signal interpretation'})}
       return
     }
@@ -2365,7 +2381,7 @@ function startServerOnAvailablePort(targetPort) {
     if(signalStatusMatch&&req.method==='DELETE'){
       try{
         const signal=await deletePlayerSignal(await getDb(),decodeURIComponent(signalStatusMatch[1]))
-        sendJson(res,200,{signal})
+        sendJson(res,200,{signal,recompute:await triggerForecastRecompute({ reason: 'signal' })})
       }catch(error){
         const message=error instanceof Error?error.message:'Unable to delete signal'
         sendJson(res,message.endsWith('not found')?404:400,{error:message})
@@ -2377,7 +2393,7 @@ function startServerOnAvailablePort(targetPort) {
         const payload=await readRequestBody(req),allowed=new Set(['PENDING','VERIFIED','REJECTED','EXPIRED'])
         if(!allowed.has(payload.status))throw new Error('Invalid signal status')
         const signals=await updatePlayerSignalStatuses(await getDb(),[{id:decodeURIComponent(signalStatusMatch[1]),status:payload.status}])
-        sendJson(res,200,{signal:signals[0]})
+        sendJson(res,200,{signal:signals[0],recompute:await triggerForecastRecompute({ reason: 'signal' })})
       }catch(error){sendJson(res,400,{error:error instanceof Error?error.message:'Unable to update signal'})}
       return
     }
@@ -2390,7 +2406,7 @@ function startServerOnAvailablePort(targetPort) {
         const allowed=new Set(['PENDING','VERIFIED','REJECTED'])
         if(updates.some((item)=>!item||!String(item.id||'').trim()||!allowed.has(item.status)))throw new Error('Each update must include an id and a valid status')
         const updatedSignals=await updatePlayerSignalStatuses(await getDb(),updates)
-        sendJson(res,200,{signals:updatedSignals,count:updatedSignals.length})
+        sendJson(res,200,{signals:updatedSignals,count:updatedSignals.length,recompute:await triggerForecastRecompute({ reason: 'signal' })})
       }catch(error){
         sendJson(res,400,{error:error instanceof Error?error.message:'Unable to batch update signals'})
       }

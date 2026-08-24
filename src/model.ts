@@ -13,7 +13,9 @@ export {
   selectStrengthMethod,
   fixtureExpectedMinutes,
   fixtureRoleStates,
+  noisyRatePriorMinutes,
+  projectionSampleCalibration,
 } from './core/projection.ts'
 export { allocateBonusPoints, scorePlayerMatch, scoringRules } from './core/scoring.ts'
-export type { Projection, ProjectionBreakdown, FixtureProjection } from './core/projection.ts'
+export type { Projection, ProjectionBreakdown, FixtureProjection, ProjectionSampleCalibration } from './core/projection.ts'
 export type { MatchScoreInput, MatchScoreBreakdown } from './core/scoring.ts'

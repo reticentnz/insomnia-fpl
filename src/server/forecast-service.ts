@@ -2,7 +2,7 @@ import { createHash, randomUUID } from 'node:crypto'
 import { canonicalJson, sanitizeError } from '../../scripts/feed-run.mjs'
 import { projectionBreakdown, MODEL_VERSION } from '../model.ts'
 import { resolvePlayerRole, type PlayerRoleProfile } from '../player-signals.ts'
-import { fixtureRateModel, fixtureRoleStates, MARKET_CLEAN_SHEET_WEIGHT, projectFixture } from '../core/projection.ts'
+import { fixtureRateModel, fixtureRoleStates, MARKET_CLEAN_SHEET_WEIGHT, projectFixture, projectionSampleCalibration } from '../core/projection.ts'
 import { combineSampleStreams, SIMULATION_COUNT, SIMULATION_ENGINE_VERSION, SIMULATION_SEED_VERSION, simulateFixtureOutcomes, simulateFromStoredForecast, summarizeSampleDistribution, type FixtureSimulationInput } from '../core/uncertainty.ts'
 import type { ProjectionCatalogFixture, ProjectionCatalogPlayer, ProjectionInputCatalog } from '../core/types.ts'
 import { assembleProjectionInputCatalog } from './catalog-service.ts'
@@ -132,7 +132,7 @@ function toSignal(signal: Record<string, unknown>, fixture: ProjectionCatalogFix
   return {
     id: String(signal.id), playerId: 0, gameweek: signal.gameweekId === fixture.gameweekId ? fixture.gameweekFplId : null,
     kind: signal.kind, value: signal.value, sourceType: signal.manualOverride ? 'MANUAL_OVERRIDE' : signal.sourceType,
-    sourceUrl: signal.sourceUrl, sourceDate: signal.sourceDate || null, evidenceSummary: signal.evidenceSummary || '', confidence: Number(signal.confidence ?? 1), observedAt: signal.observedAt, validUntil: signal.validUntil, status: 'VERIFIED',
+    sourceUrl: signal.sourceUrl, sourceDate: signal.sourceDate || null, evidenceSummary: signal.evidenceSummary || '', evidenceText: signal.evidenceText || signal.evidenceSummary || '', confidence: Number(signal.confidence ?? 1), observedAt: signal.observedAt, validUntil: signal.validUntil, status: 'VERIFIED',
     interpretation: {
       id: null, origin: 'AUTO', claimClass: signal.claimClass || 'UNKNOWN', modelImpact: signal.modelImpact || 'NONE', value: signal.value || {},
       rationale: '', confidence: Number(signal.interpretationConfidence ?? signal.confidence ?? 1), status: signal.interpretationStatus || 'APPROVED',
@@ -156,7 +156,7 @@ function setPieceRole(signals: Array<Record<string, unknown>>) {
 export function projectCatalogFixture(player: ProjectionCatalogPlayer, fixture: ProjectionCatalogFixture, catalog?: ProjectionInputCatalog, context?: { forecastRunId: string; modelVersion: string; completedGameweeks: number }): ForecastRow {
   const official = player.official
   const role = resolvePlayerRole(baseRole(player, context?.completedGameweeks), player.roleSignals.map(signal => toSignal(signal, fixture)), {
-    now: new Date(String(official.observed_at)), gameweek: fixture.gameweekFplId || undefined,
+    now: new Date(String(official.observed_at)), gameweek: fixture.gameweekFplId || undefined, completedGameweeks: context?.completedGameweeks,
   })
   const position = String(official.position || 'MID') as 'GK' | 'DEF' | 'MID' | 'FWD'
   const stats = {
@@ -203,7 +203,12 @@ export function projectCatalogFixture(player: ProjectionCatalogPlayer, fixture: 
     bonusPoints: components.bonus, cardPoints: components.cards, meanPoints: mean,
     standardDeviation: outcome.standardDeviation, p10Points: outcome.p10, p50Points: outcome.p50, p90Points: outcome.p90,
     ...states, minutesConfidence: breakdown.minutesConfidence, strengthMethod: components.strengthMethod,
-    roleSource: { derivedSignalIds: role.derivedFromSignalIds, simulationInput }, inputProvenance: player.provenance,
+    roleSource: {
+      derivedSignalIds: role.derivedFromSignalIds,
+      roleCalibration: role.calibration,
+      sampleCalibration: projectionSampleCalibration(modelPlayer, context?.completedGameweeks),
+      simulationInput,
+    }, inputProvenance: player.provenance,
   }
 }
 
@@ -353,7 +358,9 @@ export async function latestForecastSummary(db: Database, { horizon = 1 }: { hor
     nearTermMarketFixtureRatio: nearTermFixtureCount ? nearTermRows.filter(row => row.strength_method === 'MARKET_XG').length / nearTermFixtureCount : 0,
     derivedStrengthFixtureRatio: fixtureCount ? qualityRows.filter(row => row.strength_method === 'DERIVED_TEAM_RATING').length / fixtureCount : 0,
   }
-  return { id: run.id, modelVersion: run.model_version, asOf: run.as_of, createdAt: run.created_at, horizon: Number(horizon), gameweeks, quality, players: [...players.values()].map(player => {
+  let recompute: unknown = null
+  try { recompute = JSON.parse(String(run.config_json || '{}')).recompute || null } catch {}
+  return { id: run.id, modelVersion: run.model_version, asOf: run.as_of, createdAt: run.created_at, inputHash: run.input_hash, recompute, horizon: Number(horizon), gameweeks, quality, players: [...players.values()].map(player => {
     if (!player.samplesAvailable) {
       const standardDeviation = Math.sqrt(player.variance)
       const percentileDistance = 1.2815515655446004 * standardDeviation
