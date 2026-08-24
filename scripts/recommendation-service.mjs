@@ -175,6 +175,19 @@ export async function planSquad(db, planId, runPlayers) {
   if (!rows.rows.length) throw new Error(`Plan ${planId} has no players`)
   const official = await db.query(`SELECT "player_id", "selling_price_tenths" FROM "OfficialSquadPlayer" WHERE "squad_snapshot_id"=$1`, [rows.rows[0].official_squad_snapshot_id])
   const officialByPlayer = new Map(official.rows.map(row => [String(row.player_id), row.selling_price_tenths === null ? null : Number(row.selling_price_tenths)]))
+  const latestOfficial = await db.query(
+    `SELECT squad."player_id", squad."selling_price_tenths"
+     FROM "OfficialSquadPlayer" squad
+     JOIN "OfficialSquadSnapshot" snapshot ON snapshot."id"=squad."squad_snapshot_id"
+     WHERE snapshot."manager_account_id"=$1
+       AND snapshot."id"=(
+         SELECT latest."id" FROM "OfficialSquadSnapshot" latest
+         WHERE latest."manager_account_id"=$1
+         ORDER BY datetime(latest."imported_at") DESC, latest."id" DESC LIMIT 1
+       )`,
+    [rows.rows[0].manager_account_id],
+  )
+  const latestOfficialByPlayer = new Map(latestOfficial.rows.map(row => [String(row.player_id), row.selling_price_tenths === null ? null : Number(row.selling_price_tenths)]))
   const assumptions = await db.query(`SELECT "value_json" FROM "ManagerAssumption" WHERE "manager_account_id"=$1 AND "gameweek_id"=$2 AND "kind"='SELLING_PRICE' ORDER BY "created_at" ASC, "id" ASC`, [rows.rows[0].manager_account_id, rows.rows[0].gameweek_id])
   const freeTransferAssumption = await db.query(`SELECT 1 FROM "ManagerAssumption" WHERE "manager_account_id"=$1 AND "gameweek_id"=$2 AND "kind"='FREE_TRANSFERS' ORDER BY "created_at" DESC LIMIT 1`, [rows.rows[0].manager_account_id, rows.rows[0].gameweek_id])
   const confirmedSellingByPlayer = new Map()
@@ -187,7 +200,9 @@ export async function planSquad(db, planId, runPlayers) {
     const forecast = forecastById.get(String(row.player_id))
     if (!forecast) throw new Error(`Plan player ${row.player_id} has no stored forecast in this run`)
     const playerId = String(row.player_id)
-    const sellingPriceTenths = officialByPlayer.has(playerId)
+    const sellingPriceTenths = latestOfficialByPlayer.has(playerId)
+      ? latestOfficialByPlayer.get(playerId) ?? confirmedSellingByPlayer.get(playerId) ?? null
+      : officialByPlayer.has(playerId)
       ? officialByPlayer.get(playerId) ?? confirmedSellingByPlayer.get(playerId) ?? null
       : asNumber(row.planned_purchase_price_tenths)
     return { id: playerId, fplId: forecast.fplId, club: String(forecast.teamId), position: forecast.position, active: forecast.active, purchasePriceTenths: forecast.purchasePriceTenths, sellingPriceTenths, locked: Boolean(row.locked) }

@@ -5,7 +5,7 @@ import { afterEach, describe, expect, it } from 'vitest'
 import { closeDb, getDb } from './db.mjs'
 import { migrateDatabase } from './db-migrate.mjs'
 import { ingestOfficialFpl } from './ingest-fpl.mjs'
-import { fetchManagerPayload, getCurrentManager, importManagerPayload, linkManagerAccount, unlinkCurrentManager, updateManagerAssumptions } from './manager-service.mjs'
+import { fetchManagerPayload, getCurrentManager, importManagerPayload, linkManagerAccount, sellingPriceFromPurchase, unlinkCurrentManager, updateManagerAssumptions } from './manager-service.mjs'
 
 const temporaryDirectories: string[] = []
 const fixtureDirectory = path.resolve('scripts', 'fixtures')
@@ -20,7 +20,7 @@ function temporaryDatabase() {
   return path.join(directory, 'database.sqlite')
 }
 
-async function seededDatabase() {
+async function seededDatabase(observedAt = '2026-08-15T18:30:00Z') {
   const databasePath = temporaryDatabase()
   await ingestOfficialFpl({
     bootstrap: readFixture<any>('wp02-bootstrap.json'),
@@ -31,7 +31,7 @@ async function seededDatabase() {
     },
     dbPath: databasePath,
     season: '2026/27',
-    observedAt: '2026-08-15T18:30:00Z',
+    observedAt,
   })
   return databasePath
 }
@@ -42,6 +42,14 @@ afterEach(async () => {
 })
 
 describe('WP-03 manager import and exact economics', () => {
+  it('applies the FPL half-profit selling-price rule in integer tenths', () => {
+    expect(sellingPriceFromPurchase(70, 69)).toBe(69)
+    expect(sellingPriceFromPurchase(70, 71)).toBe(70)
+    expect(sellingPriceFromPurchase(70, 72)).toBe(71)
+    expect(sellingPriceFromPurchase(70, 73)).toBe(71)
+    expect(sellingPriceFromPurchase(70, 74)).toBe(72)
+  })
+
   it('distinguishes a valid pre-deadline account from a missing account', async () => {
     const entry = readFixture<any>('wp03-entry.json')
     const fetchJson = async (endpoint: string) => {
@@ -71,6 +79,98 @@ describe('WP-03 manager import and exact economics', () => {
     })
     expect(payload).toMatchObject({ gameweek: 1, picks: null, squadAvailable: false })
     expect(endpoints).toEqual(['entry/123456/', 'entry/123456/event/1/picks/'])
+  })
+
+  it('loads public transfer costs and chip history alongside a public squad', async () => {
+    const entry = readFixture<any>('wp03-entry.json')
+    const picks = readFixture<any>('wp03-picks.json')
+    const transfers = [{ event: 2, element_in: 10, element_in_cost: 51 }]
+    const history = { chips: [{ name: 'freehit', event: 7 }] }
+    const endpoints: string[] = []
+    const payload = await fetchManagerPayload({
+      teamId: 123456,
+      gameweek: 1,
+      fetchJson: async (endpoint: string) => {
+        endpoints.push(endpoint)
+        if (endpoint === 'entry/123456/') return entry
+        if (endpoint === 'entry/123456/event/1/picks/') return picks
+        if (endpoint === 'entry/123456/transfers/') return transfers
+        if (endpoint === 'entry/123456/history/') return history
+        throw new Error(`Unexpected endpoint ${endpoint}`)
+      },
+    })
+    expect(payload).toMatchObject({ transfers, history, squadAvailable: true })
+    expect(endpoints).toEqual([
+      'entry/123456/',
+      'entry/123456/event/1/picks/',
+      'entry/123456/transfers/',
+      'entry/123456/history/',
+    ])
+  })
+
+  it('reconstructs initial purchase prices and backfills selling prices from stored official observations', async () => {
+    const databasePath = await seededDatabase('2026-08-13T18:30:00Z')
+    await migrateDatabase(databasePath)
+    const db = getDb(databasePath)
+    const picks = readFixture<any>('wp03-picks.json')
+    picks.picks = picks.picks.map(({ purchase_price: _purchase, selling_price: _selling, ...pick }: any) => pick)
+    const current = await importManagerPayload(db, {
+      entry: readFixture<any>('wp03-entry.json'),
+      picks,
+      transfers: [],
+      history: { chips: [] },
+      gameweek: 1,
+      season: '2026/27',
+      importedAt: '2026-08-13T19:00:00Z',
+    })
+    expect(current.squad.find(player => player.fplId === 10)).toMatchObject({
+      purchasePriceTenths: 55,
+      sellingPriceTenths: 55,
+      economicsSource: 'OFFICIAL',
+    })
+    expect(current.squad.find(player => player.fplId === 11)).toMatchObject({
+      purchasePriceTenths: 48,
+      sellingPriceTenths: 48,
+      economicsSource: 'OFFICIAL',
+    })
+    expect(current.economics).toMatchObject({ status: 'EXACT', exactSellingPrices: true })
+  })
+
+  it('uses the latest non-Free-Hit transfer-in cost when reconstructing a current player', async () => {
+    const databasePath = await seededDatabase()
+    await migrateDatabase(databasePath)
+    const db = getDb(databasePath)
+    const picks = readFixture<any>('wp03-picks.json')
+    picks.picks = picks.picks.map(({ purchase_price: _purchase, selling_price: _selling, ...pick }: any) => pick)
+    const current = await importManagerPayload(db, {
+      entry: readFixture<any>('wp03-entry.json'),
+      picks,
+      transfers: [
+        { event: 2, element_in: 10, element_in_cost: 49, time: '2026-08-18T10:00:00Z' },
+        { event: 2, element_in: 10, element_in_cost: 51, time: '2026-08-19T10:00:00Z' },
+        { event: 2, element_in: 11, element_in_cost: 40, time: '2026-08-19T10:00:00Z' },
+      ],
+      history: { chips: [{ name: 'freehit', event: 2 }] },
+      gameweek: 2,
+      season: '2026/27',
+      importedAt: '2026-08-20T19:00:00Z',
+    })
+    expect(current.squad.every(player => player.sellingPriceTenths === null)).toBe(true)
+
+    const regular = await importManagerPayload(db, {
+      entry: readFixture<any>('wp03-entry.json'),
+      picks,
+      transfers: [{ event: 2, element_in: 10, element_in_cost: 51, time: '2026-08-19T10:00:00Z' }],
+      history: { chips: [] },
+      gameweek: 2,
+      season: '2026/27',
+      importedAt: '2026-08-20T20:00:00Z',
+    })
+    expect(regular.squad.find(player => player.fplId === 10)).toMatchObject({
+      purchasePriceTenths: 51,
+      sellingPriceTenths: 53,
+      economicsSource: 'OFFICIAL',
+    })
   })
 
   it('links pre-deadline account metadata without inventing an official squad', async () => {
@@ -114,10 +214,10 @@ describe('WP-03 manager import and exact economics', () => {
     expect(current.squad[1]).toMatchObject({
       fplId: 11,
       purchasePriceTenths: 48,
-      sellingPriceTenths: null,
-      economicsSource: 'UNKNOWN',
+      sellingPriceTenths: 48,
+      economicsSource: 'OFFICIAL',
     })
-    expect(current.economics.status).toBe('AFFORDABILITY_UNKNOWN')
+    expect(current.economics.status).toBe('EXACT')
 
     const latest = await getCurrentManager(db, { fplEntryId: 123456 })
     expect(latest.snapshotMetadata).toMatchObject({
@@ -131,9 +231,11 @@ describe('WP-03 manager import and exact economics', () => {
     const databasePath = await seededDatabase()
     await migrateDatabase(databasePath)
     const db = getDb(databasePath)
+    const picks = readFixture<any>('wp03-picks.json')
+    delete picks.picks[1].purchase_price
     await importManagerPayload(db, {
       entry: readFixture<any>('wp03-entry.json'),
-      picks: readFixture<any>('wp03-picks.json'),
+      picks,
       gameweek: 1,
       season: '2026/27',
       importedAt: '2026-08-15T19:00:00Z',

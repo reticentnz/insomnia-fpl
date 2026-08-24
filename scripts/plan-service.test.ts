@@ -129,6 +129,11 @@ describe('WP-04 immutable plans', () => {
 
   it('keeps affordability unknown instead of substituting current price', async () => {
     const { db, manager } = await seededManager()
+    await db.query(
+      `UPDATE "OfficialSquadPlayer" SET "selling_price_tenths"=NULL, "economics_source"='UNKNOWN'
+       WHERE "squad_snapshot_id"=$1 AND "player_id"='player:2026%2F27:11'`,
+      [manager.snapshot.id],
+    )
     const feedRun = (await db.query('SELECT "id" FROM "FeedRun" ORDER BY "started_at" DESC LIMIT 1')).rows[0]
     const team = (await db.query('SELECT "id" FROM "Team" WHERE "season"=\'2026/27\' ORDER BY "fpl_id" LIMIT 1')).rows[0]
     await db.query(

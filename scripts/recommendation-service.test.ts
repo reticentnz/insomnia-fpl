@@ -23,10 +23,11 @@ const storedSimulationInput = (seed: string, position: 'GK' | 'DEF' | 'MID' | 'F
   samples: 200,
 } })
 
-function database({ officialSellingPrice = null, assumedSellingPrice = null }: { officialSellingPrice?: number | null; assumedSellingPrice?: number | null }) {
+function database({ officialSellingPrice = null, latestOfficialSellingPrice = officialSellingPrice, assumedSellingPrice = null }: { officialSellingPrice?: number | null; latestOfficialSellingPrice?: number | null; assumedSellingPrice?: number | null }) {
   return {
     async query(sql: string) {
       if (sql.includes('FROM "PlanPlayer"')) return { rows: [{ player_id: 'player-1', inherited_selling_price_tenths: null, planned_purchase_price_tenths: 70, locked: 0, bank_tenths: 5, free_transfers: 1, manager_account_id: 'manager-1', official_squad_snapshot_id: 'snapshot-1', gameweek_id: 'gw-1' }] }
+      if (sql.includes('JOIN "OfficialSquadSnapshot"')) return { rows: [{ player_id: 'player-1', selling_price_tenths: latestOfficialSellingPrice }] }
       if (sql.includes('FROM "OfficialSquadPlayer"')) return { rows: [{ player_id: 'player-1', selling_price_tenths: officialSellingPrice }] }
       if (sql.includes('FROM "ManagerAssumption"')) return { rows: assumedSellingPrice === null ? [] : [{ value_json: JSON.stringify({ playerId: 'player-1', sellingPriceTenths: assumedSellingPrice }) }] }
       throw new Error(`Unexpected query: ${sql}`)
@@ -45,6 +46,12 @@ describe('recommendation plan economics', () => {
     const official = await planSquad(database({ officialSellingPrice: 74, assumedSellingPrice: 72 }), 'plan-1', runPlayers)
     expect(assumed.squad[0].sellingPriceTenths).toBe(72)
     expect(official.squad[0].sellingPriceTenths).toBe(74)
+  })
+
+  it('uses a newly backfilled current snapshot for an older active plan', async () => {
+    const result = await planSquad(database({ officialSellingPrice: null, latestOfficialSellingPrice: 73 }), 'plan-1', runPlayers)
+    expect(result.squad[0].sellingPriceTenths).toBe(73)
+    expect(result.exactSellingPrices).toBe(true)
   })
 })
 

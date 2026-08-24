@@ -880,7 +880,8 @@ async function refreshLinkedManagerTeam() {
   if (!teamId) throw new Error('No FPL manager team is linked')
   const payload = await fetchManagerPayload({ teamId })
   const imported = await importManagerPayload(db, { ...payload, season: FPL_SEASON })
-  return `Refreshed ${imported.account.teamName} with ${imported.squad.length} players`
+  const exactPrices = imported.squad.filter(player => player.sellingPriceTenths !== null).length
+  return `Refreshed ${imported.account.teamName} with ${imported.squad.length} players; exact selling prices ${exactPrices}/${imported.squad.length}`
 }
 
 async function refreshSystemPlayerCount(message) {
@@ -2523,7 +2524,13 @@ function startServerOnAvailablePort(targetPort) {
           sendJson(res, 200, {
             ...manager,
             account: { ...manager.account, leagues: payload.entry?.leagues || { classic: [], h2h: [] } },
-            importStatus: { squadAvailable: true, code: 'SQUAD_IMPORTED' },
+            importStatus: {
+              squadAvailable: true,
+              code: 'SQUAD_IMPORTED',
+              message: manager.economics?.exactSellingPrices
+                ? 'Official squad imported with exact reconstructed selling prices.'
+                : `${manager.squad.filter(player => player.sellingPriceTenths === null).length} selling price${manager.squad.filter(player => player.sellingPriceTenths === null).length === 1 ? '' : 's'} remain unresolved.`,
+            },
           })
         }
         scheduleAuxiliaryRefreshes().catch(error => console.error('⚠️ Could not update manager refresh schedule:', sanitizeError(error)))

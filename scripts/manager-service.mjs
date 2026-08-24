@@ -85,7 +85,18 @@ export async function fetchManagerPayload({ teamId, gameweek, fetchJson = offici
       .find(value => Number.isInteger(value) && value >= 1) ?? 1
   try {
     const picks = await fetchJson(`entry/${entryId}/event/${selectedGameweek}/picks/`)
-    return { entry, picks, gameweek: selectedGameweek, squadAvailable: true }
+    const [transfersResult, historyResult] = await Promise.allSettled([
+      fetchJson(`entry/${entryId}/transfers/`),
+      fetchJson(`entry/${entryId}/history/`),
+    ])
+    return {
+      entry,
+      picks,
+      transfers: transfersResult.status === 'fulfilled' && Array.isArray(transfersResult.value) ? transfersResult.value : null,
+      history: historyResult.status === 'fulfilled' ? historyResult.value : null,
+      gameweek: selectedGameweek,
+      squadAvailable: true,
+    }
   } catch (error) {
     if (error?.status !== 404) throw error
     return {
@@ -190,9 +201,85 @@ function pickEconomics(pick) {
   }
 }
 
+export function sellingPriceFromPurchase(purchasePriceTenths, currentPriceTenths) {
+  const purchase = integer(purchasePriceTenths, 'purchasePriceTenths', { minimum: 0 })
+  const current = integer(currentPriceTenths, 'currentPriceTenths', { minimum: 0 })
+  return current <= purchase ? current : purchase + Math.floor((current - purchase) / 2)
+}
+
+function freeHitGameweeks(history) {
+  return new Set((Array.isArray(history?.chips) ? history.chips : [])
+    .filter(chip => String(chip?.name || '').toLowerCase().replace(/[^a-z]/g, '') === 'freehit')
+    .map(chip => Number(chip.event))
+    .filter(Number.isInteger))
+}
+
+function transferredInPrice(transfers, history, fplId, gameweek) {
+  if (!Array.isArray(transfers)) return null
+  const freeHits = freeHitGameweeks(history)
+  const candidates = transfers.filter(transfer =>
+    Number(transfer?.element_in) === Number(fplId)
+    && Number.isInteger(Number(transfer?.element_in_cost))
+    && Number(transfer.element_in_cost) >= 0
+    && Number(transfer?.event) <= gameweek
+    && !freeHits.has(Number(transfer?.event)))
+  candidates.sort((left, right) => {
+    const eventDifference = Number(left.event || 0) - Number(right.event || 0)
+    return eventDifference || String(left.time || '').localeCompare(String(right.time || ''))
+  })
+  return candidates.length ? Number(candidates[candidates.length - 1].element_in_cost) : null
+}
+
+async function currentPlayerPrice(db, playerId, importedAt) {
+  const result = await db.query(
+    `SELECT "price_tenths" FROM "PlayerObservation"
+     WHERE "player_id"=$1 AND datetime("observed_at") <= datetime($2)
+     ORDER BY datetime("observed_at") DESC, "id" DESC LIMIT 1`,
+    [playerId, importedAt],
+  )
+  return result.rows[0]?.price_tenths == null ? null : Number(result.rows[0].price_tenths)
+}
+
+async function initialPlayerPrice(db, playerId, season) {
+  const result = await db.query(
+    `SELECT observation."price_tenths"
+     FROM "PlayerObservation" observation
+     WHERE observation."player_id"=$1
+       AND datetime(observation."observed_at") <= datetime((
+         SELECT gameweek_observation."deadline_at"
+         FROM "GameweekObservation" gameweek_observation
+         JOIN "Gameweek" gameweek ON gameweek."id"=gameweek_observation."gameweek_id"
+         WHERE gameweek."season"=$2 AND gameweek."fpl_id"=1 AND gameweek_observation."deadline_at" IS NOT NULL
+         ORDER BY datetime(gameweek_observation."observed_at") DESC, gameweek_observation."id" DESC LIMIT 1
+       ))
+     ORDER BY datetime(observation."observed_at") ASC, observation."id" ASC LIMIT 1`,
+    [playerId, season],
+  )
+  return result.rows[0]?.price_tenths == null ? null : Number(result.rows[0].price_tenths)
+}
+
+async function reconstructedPickEconomics(db, { pick, player, transfers, history, gameweek, season, importedAt }) {
+  const supplied = pickEconomics(pick)
+  if (supplied.sellingPriceTenths !== null) return supplied
+  const purchasePriceTenths = supplied.purchasePriceTenths
+    ?? transferredInPrice(transfers, history, player.fpl_id, gameweek)
+    ?? await initialPlayerPrice(db, player.id, season)
+  const currentPriceTenths = await currentPlayerPrice(db, player.id, importedAt)
+  if (purchasePriceTenths === null || currentPriceTenths === null) {
+    return { purchasePriceTenths, sellingPriceTenths: null, economicsSource: 'UNKNOWN' }
+  }
+  return {
+    purchasePriceTenths,
+    sellingPriceTenths: sellingPriceFromPurchase(purchasePriceTenths, currentPriceTenths),
+    economicsSource: 'OFFICIAL',
+  }
+}
+
 export async function importManagerPayload(db, {
   entry,
   picks,
+  transfers = null,
+  history = null,
   gameweek,
   season,
   importedAt = new Date().toISOString(),
@@ -212,7 +299,10 @@ export async function importManagerPayload(db, {
   const importedPlayers = []
   for (const pick of picks.picks) {
     const player = await playerForPick(db, resolvedSeason, pick, importedAt)
-    importedPlayers.push({ pick, player, economics: pickEconomics(pick) })
+    const economics = await reconstructedPickEconomics(db, {
+      pick, player, transfers, history, gameweek: gameweekFplId, season: resolvedSeason, importedAt,
+    })
+    importedPlayers.push({ pick, player, economics })
   }
 
   const managerAccountId = managerId(fplEntryId)
@@ -261,7 +351,7 @@ export async function importManagerPayload(db, {
       [
         snapshotId, managerAccountId, gameweekId, importedAt, bankTenths, squadValueTenths,
         activeChip, eventTransfers, eventTransferCost, captain, viceCaptain,
-        canonicalJson({ entry, picks }),
+        canonicalJson({ entry, picks, transfers, history }),
       ],
     )
     for (let index = 0; index < importedPlayers.length; index += 1) {
