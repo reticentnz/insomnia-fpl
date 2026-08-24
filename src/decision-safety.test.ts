@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { deriveRecommendationSafety } from './decision-safety.ts'
+import { deriveRecommendationRepairActions, deriveRecommendationSafety } from './decision-safety.ts'
 
 describe('recommendation safety', () => {
   it('allows a ready recommendation with confirmed economics', () => {
@@ -14,5 +14,14 @@ describe('recommendation safety', () => {
     expect(unknown.actionable).toBe(false)
     expect(unknown.confidence).toBe('BLOCKED')
     expect(unknown.reasons).toHaveLength(2)
+  })
+
+  it('shows only actions for blockers that are still unresolved', () => {
+    expect(deriveRecommendationRepairActions('DEGRADED', { freeTransfersConfirmed: true, exactSellingPrices: true }))
+      .toEqual(['REVIEW_FORECAST_QUALITY'])
+    expect(deriveRecommendationRepairActions('READY', { freeTransfersConfirmed: false, exactSellingPrices: true }))
+      .toEqual(['CONFIRM_FREE_TRANSFERS'])
+    expect(deriveRecommendationRepairActions('READY', { freeTransfersConfirmed: true, exactSellingPrices: false }))
+      .toEqual(['REFRESH_TEAM_PRICES'])
   })
 })

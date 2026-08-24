@@ -11,6 +11,19 @@ export type RecommendationSafety = {
   reasons: string[]
 }
 
+export type RecommendationRepairAction = 'CONFIRM_FREE_TRANSFERS' | 'REVIEW_FORECAST_QUALITY' | 'REFRESH_TEAM_PRICES'
+
+export function deriveRecommendationRepairActions(
+  readiness: ForecastReadinessState,
+  assumptions: RecommendationAssumptions,
+): RecommendationRepairAction[] {
+  const actions: RecommendationRepairAction[] = []
+  if (!assumptions.freeTransfersConfirmed) actions.push('CONFIRM_FREE_TRANSFERS')
+  if (readiness !== 'READY') actions.push('REVIEW_FORECAST_QUALITY')
+  if (!assumptions.exactSellingPrices) actions.push('REFRESH_TEAM_PRICES')
+  return actions
+}
+
 /**
  * Keeps a numerically valid recommendation from becoming prescriptive when
  * either its forecast inputs or the manager-specific transfer economics are

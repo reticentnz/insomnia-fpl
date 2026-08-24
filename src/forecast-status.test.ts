@@ -26,5 +26,11 @@ describe('forecast operational readiness', () => {
       expect.stringContaining('Market-strength coverage is only 0%'),
     ]))
     expect(result.recommendedActions).toEqual(expect.arrayContaining([expect.stringContaining('Sync performance + odds')]))
+    expect(result.qualityMetrics).toEqual([
+      { id: 'fallback', label: 'FDR fallback', value: 100, limited: true },
+      { id: 'minutes', label: 'Low minutes confidence', value: 31, limited: true },
+      { id: 'underlying', label: 'Underlying coverage', value: 0, limited: true },
+      { id: 'market', label: 'Market coverage', value: 0, limited: true },
+    ])
   })
 })

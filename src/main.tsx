@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { createRoot } from "react-dom/client";
 import { compareSortValues, nextSortDirection, type SortDirection, type SortValue } from "./table-sorting";
-import { deriveRecommendationSafety, type RecommendationSafety } from "./decision-safety";
+import { deriveRecommendationRepairActions, deriveRecommendationSafety, type RecommendationAssumptions, type RecommendationSafety } from "./decision-safety";
 import {
   bestXI,
   benchOrder,
@@ -132,7 +132,7 @@ import { classifySignalSource } from "./signal-sources.ts";
 import { createToolContext } from "./intelligence";
 import { reviewDecision, type DecisionReview } from "./decision-review";
 import { playerRoleProfile, projectionBreakdown } from "./model";
-import { deriveForecastReadiness } from "./forecast-status";
+import { deriveForecastReadiness, type ForecastReadiness } from "./forecast-status";
 import { readCachedClientCatalog, writeCachedClientCatalog } from "./client-catalog-cache";
 import "./styles.css";
 
@@ -623,7 +623,7 @@ function ForecastReadinessPanel({ system, forecast, requestedHorizon }: { system
     FAILED: { title: "Forecast refresh failed", detail: forecast ? "The previous successful forecast remains available while the refresh problem is resolved." : system?.message || "No usable forecast is currently available." },
     MISSING: { title: "Forecast missing", detail: "Ingestion has not yet produced a successful offline projection dataset." },
   }[readiness.state];
-  return <section className={`forecast-readiness forecast-readiness-${readiness.state.toLowerCase()}`} aria-label="Offline forecast status" role="status">
+  return <section id="forecast-readiness-panel" className={`forecast-readiness forecast-readiness-${readiness.state.toLowerCase()}`} aria-label="Offline forecast status" role="status">
     <div className="forecast-readiness-primary"><span className="forecast-readiness-dot"/><div><small>OFFLINE PROJECTION STATUS</small><b>{copy.title}</b><p>{copy.detail}</p></div></div>
     <div className="forecast-readiness-metrics">
       <span><small>Generated</small><b>{forecast ? formatOperationalTime(forecast.createdAt) : "—"}</b></span>
@@ -731,7 +731,7 @@ function AdminView({ system, forecast, horizon }: { system: SystemStatus | null;
         const busy = operation?.status === "RUNNING" || starting === action.id;
         const lastRefresh = operation?.finishedAt || schedule?.lastRefreshedAt;
         const nextRefresh = !scheduleId ? "Manual only" : !schedule?.enabled ? "Disabled" : !schedule.available ? "Unavailable" : formatOperationalTime(schedule.nextRefreshAt);
-        return <article className="admin-action-card" key={action.id}>
+        return <article id={`admin-action-${action.id}`} className="admin-action-card" key={action.id}>
           <div className="admin-action-icon">{action.icon}</div>
           <div className="admin-action-copy"><h3>{action.title}</h3><p>{action.description}</p></div>
           <div className={`admin-operation-state state-${(operation?.status || "IDLE").toLowerCase()}`}>
@@ -1093,9 +1093,10 @@ function App() {
     () => deriveForecastReadiness(systemStatus, forecastSummary),
     [systemStatus, forecastSummary],
   );
+  const effectiveRecommendationAssumptions = canonicalRecommendation?.assumptions || recommendationAssumptions;
   const recommendationSafety = useMemo(
-    () => deriveRecommendationSafety(forecastReadiness.state, canonicalRecommendation?.assumptions || recommendationAssumptions, canonicalPrimary?.probabilityBeatsRoll ?? null),
-    [forecastReadiness.state, canonicalRecommendation, recommendationAssumptions, canonicalPrimary],
+    () => deriveRecommendationSafety(forecastReadiness.state, effectiveRecommendationAssumptions, canonicalPrimary?.probabilityBeatsRoll ?? null),
+    [forecastReadiness.state, effectiveRecommendationAssumptions, canonicalPrimary],
   );
   const decision = useMemo(
     () =>
@@ -2535,6 +2536,8 @@ function App() {
             canonicalRecommendation={canonicalRecommendation}
             canonicalLoading={canonicalRecommendationLoading}
             recommendationSafety={recommendationSafety}
+            forecastReadiness={forecastReadiness}
+            recommendationAssumptions={effectiveRecommendationAssumptions}
             catalog={catalog}
             onApplyCanonical={applyCanonicalCandidate}
             onOpenSettings={() => setSettingsOpen(true)}
@@ -5100,6 +5103,8 @@ function MyTeamV2({
   canonicalRecommendation,
   canonicalLoading,
   recommendationSafety,
+  forecastReadiness,
+  recommendationAssumptions,
   catalog,
   onApplyCanonical,
   onOpenSettings,
@@ -5149,6 +5154,8 @@ function MyTeamV2({
   canonicalRecommendation: CanonicalRecommendation | null;
   canonicalLoading: boolean;
   recommendationSafety: RecommendationSafety;
+  forecastReadiness: ForecastReadiness;
+  recommendationAssumptions: RecommendationAssumptions;
   catalog: Player[];
   onApplyCanonical: (candidate: CanonicalRecommendation['candidates'][number]) => void;
   onOpenSettings: () => void;
@@ -5159,6 +5166,11 @@ function MyTeamV2({
     const incoming = catalog.find(player => player.id === move.inId)?.name || `#${move.inId}`;
     return `${outgoing} → ${incoming}`;
   }) || [];
+  const repairActions = deriveRecommendationRepairActions(forecastReadiness.state, recommendationAssumptions);
+  const openAdminRepair = (targetId: string) => {
+    setTab("Admin");
+    window.setTimeout(() => document.getElementById(targetId)?.scrollIntoView({ behavior: "smooth", block: "start" }), 0);
+  };
   const starters = new Set(xi.map((p) => p.id));
   const bench = benchOrder(1, squad, xi);
   const auditTargetCount = Math.min(
@@ -5244,6 +5256,15 @@ function MyTeamV2({
                 ? `+${canonicalPrimary.netExpectedGain.toFixed(2)} net expected points over ${horizon} GWs · ${canonicalPrimary.probabilityBeatsRoll == null ? 'probability unavailable' : `${Math.round(canonicalPrimary.probabilityBeatsRoll * 100)}% chance of beating roll`}`
                 : canonicalPrimary?.action === 'ROLL' ? 'No exact, uncertainty-adjusted plan clears the 60% decision rule.' : 'No safe recommendation is available.'}
         </p>
+        {!draftMode && forecastReadiness.state === 'DEGRADED' && forecastReadiness.qualityMetrics.length > 0 && (
+          <div className="recommend-quality-metrics" aria-label="Forecast quality metrics">
+            {forecastReadiness.qualityMetrics.map(metric => (
+              <span className={metric.limited ? "is-limited" : ""} key={metric.id}>
+                <small>{metric.label}</small><b>{metric.value}%</b>
+              </span>
+            ))}
+          </div>
+        )}
         <div className="recommend-meta">
           <span>
             {draftMode
@@ -5272,8 +5293,13 @@ function MyTeamV2({
         )}
         {!draftMode && !recommendationSafety.actionable && (
           <div className="recommend-actions">
-            <button className="dark-btn" onClick={onOpenSettings}>Confirm free transfers</button>
-            <button className="ghost-btn" onClick={() => setTab("Admin")}>Repair forecast inputs</button>
+            {repairActions.map((action, index) => action === 'CONFIRM_FREE_TRANSFERS' ? (
+              <button className={index === 0 ? "dark-btn" : "ghost-btn"} key={action} onClick={onOpenSettings}>Confirm free transfers</button>
+            ) : action === 'REFRESH_TEAM_PRICES' ? (
+              <button className={index === 0 ? "dark-btn" : "ghost-btn"} key={action} onClick={() => openAdminRepair("admin-action-team-refresh")}>Refresh team prices</button>
+            ) : (
+              <button className={index === 0 ? "dark-btn" : "ghost-btn"} key={action} onClick={() => openAdminRepair("forecast-readiness-panel")}>Review forecast quality</button>
+            ))}
           </div>
         )}
         {draftMode && draftPlan && (

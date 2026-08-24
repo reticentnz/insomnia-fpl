@@ -25,6 +25,16 @@ export type ForecastSummaryInput = {
   quality?: ForecastQualityInput
 }
 
+export function forecastQualityMetrics(quality?: ForecastQualityInput) {
+  if (!quality) return []
+  return [
+    { id: 'fallback', label: 'FDR fallback', value: Math.round(quality.fallbackFixtureRatio * 100), limited: quality.fallbackFixtureRatio >= .5 },
+    { id: 'minutes', label: 'Low minutes confidence', value: Math.round(quality.lowMinutesFixtureRatio * 100), limited: quality.lowMinutesFixtureRatio >= .25 },
+    { id: 'underlying', label: 'Underlying coverage', value: Math.round(quality.underlyingPlayerRatio * 100), limited: quality.underlyingPlayerRatio < .5 },
+    { id: 'market', label: 'Market coverage', value: Math.round(quality.marketFixtureRatio * 100), limited: quality.marketFixtureRatio < .5 },
+  ]
+}
+
 export function deriveForecastReadiness(system: ForecastStatusInput | null, forecast: ForecastSummaryInput | null, now = Date.now()) {
   const intervalHours = Number(system?.ingestIntervalHours || 0)
   const staleAfterHours = Math.max(24, intervalHours > 0 ? intervalHours * 2 : 24)
@@ -56,5 +66,8 @@ export function deriveForecastReadiness(system: ForecastStatusInput | null, fore
     coveredGameweeks: forecast?.gameweeks.length || 0,
     warnings,
     recommendedActions,
+    qualityMetrics: forecastQualityMetrics(forecast?.quality),
   }
 }
+
+export type ForecastReadiness = ReturnType<typeof deriveForecastReadiness>
