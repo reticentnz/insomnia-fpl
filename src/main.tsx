@@ -355,10 +355,10 @@ function playerNewsRelativeTime(iso: string) {
 function playerNewsSourceLabel(sourceType: string) {
   return sourceType === "YOUTUBE_TRANSCRIPT" ? "YouTube" :
     sourceType === "LLM_RESEARCH" ? "Research" :
-    sourceType === "PREDICTED_LINEUP" ? "Predicted lineup" :
+    sourceType === "PREDICTED_LINEUP" ? "Predicted Lineup" :
     sourceType === "MANUAL_OVERRIDE" ? "Manual" :
     sourceType === "OFFICIAL_FPL" ? "Official FPL" :
-    sourceType === "OFFICIAL_CLUB" ? "Official club" :
+    sourceType === "OFFICIAL_CLUB" ? "Official Club" :
     sourceType === "JOURNALIST" ? "Journalist" :
     sourceType === "SCRAPE" ? "News" : "Signal";
 }
@@ -374,10 +374,80 @@ function playerNewsSourceClass(sourceType: string) {
   return "source-badge llm";
 }
 
-function playerNewsSourceName(signal: PlayerSignal) {
-  if (signal.sourceName) return signal.sourceName;
-  if (!signal.sourceUrl) return null;
-  try { return new URL(signal.sourceUrl).hostname.replace(/^www\./, ""); } catch { return null; }
+function cleanSourceDomain(url?: string | null) {
+  if (!url) return null;
+  try {
+    const host = new URL(url).hostname.replace(/^www\./, "");
+    if (host.includes("youtube.com") || host.includes("youtu.be")) return null;
+    return host;
+  } catch {
+    return null;
+  }
+}
+
+function formatNewsSource(signal: PlayerSignal) {
+  const rawName = signal.sourceName?.trim();
+  const domain = cleanSourceDomain(signal.sourceUrl);
+  if (rawName && !rawName.toLowerCase().includes("youtube.com") && !rawName.startsWith("http")) {
+    return rawName;
+  }
+  return domain;
+}
+
+type NewsFilterCategory = "all" | "risk" | "lineup" | "tactics" | "model";
+
+function getSignalCategory(signal: PlayerSignal): "risk" | "lineup" | "tactics" | "model" | "general" {
+  if (
+    signal.kind === "INJURY" ||
+    signal.claimClass === "INJURY" ||
+    signal.claimClass === "AVAILABILITY" ||
+    signal.value?.depthRole === "OUT" ||
+    (typeof signal.value?.startProbability === "number" && signal.value.startProbability < 0.5)
+  ) {
+    return "risk";
+  }
+  if (
+    signal.kind === "SET_PIECES" ||
+    signal.kind === "PENALTIES" ||
+    signal.kind === "TACTICAL_ROLE" ||
+    Boolean(signal.value?.setPieceRole) ||
+    signal.claimClass === "SET_PIECES" ||
+    signal.claimClass === "PENALTIES"
+  ) {
+    return "tactics";
+  }
+  if (
+    signal.kind === "START_PROBABILITY" ||
+    signal.kind === "DEPTH_CHART" ||
+    signal.kind === "EXPECTED_ROLE" ||
+    signal.kind === "PRESEASON_MINUTES" ||
+    signal.claimClass === "ROTATION" ||
+    signal.claimClass === "REAL_WORLD_ROLE" ||
+    signal.sourceType === "PREDICTED_LINEUP"
+  ) {
+    return "lineup";
+  }
+  if (signal.interpretation?.modelImpact === "ROLE" || signal.status === "VERIFIED") {
+    return "model";
+  }
+  return "general";
+}
+
+function getSignalImpactBadge(signal: PlayerSignal, roleImpact: boolean) {
+  const cat = getSignalCategory(signal);
+  if (cat === "risk") {
+    return <span className="player-news-tag risk">🚨 Risk / Injury</span>;
+  }
+  if (cat === "tactics") {
+    return <span className="player-news-tag tactics">🎯 Set Pieces</span>;
+  }
+  if (cat === "lineup") {
+    return <span className="player-news-tag lineup">⏱️ Lineup / Mins</span>;
+  }
+  if (roleImpact || signal.status === "VERIFIED") {
+    return <span className="player-news-tag model">⚡ Model Applied</span>;
+  }
+  return <span className="player-news-tag news">📰 News</span>;
 }
 
 function PlayerNewsFeed({
@@ -393,91 +463,311 @@ function PlayerNewsFeed({
   onSelectPlayer: (player: Player) => void;
   onOpenSignals: () => void;
 }) {
+  const [filterCategory, setFilterCategory] = useState<NewsFilterCategory>("all");
+  const [searchQuery, setSearchQuery] = useState("");
   const [expandedGroups, setExpandedGroups] = useState<Set<string>>(new Set());
-  const squadById = new Map(squad.map((player) => [player.id, player]));
+
+  const squadById = useMemo(() => new Map(squad.map((player) => [player.id, player])), [squad]);
   const seenIds = readSeenSignalIds();
-  const seenSignalIds = new Set<string | number>();
-  const grouped = new Map<string, PlayerSignal[]>();
-  signals
-    .filter((signal) => squadById.has(signal.playerId))
-    .filter((signal) => signal.status === "PENDING" || signal.status === "VERIFIED")
-    .filter((signal) => Date.parse(signal.validUntil) >= Date.now())
-    .forEach((signal) => {
-      if (seenSignalIds.has(signal.id)) return;
-      seenSignalIds.add(signal.id);
-      // A source URL is the stable identity of a video/article. Without one,
-      // keep the signal standalone rather than incorrectly merging unrelated news.
-      const sourceKey = signal.sourceUrl ? signal.sourceUrl.split(/[?#]/, 1)[0] : String(signal.id);
-      const key = `${signal.playerId}|${signal.sourceType}|${sourceKey}`;
-      grouped.set(key, [...(grouped.get(key) || []), signal]);
-    });
-  const items = Array.from(grouped.entries())
-    .map(([key, group]) => ({
-      key,
-      signals: group.sort((a, b) => Date.parse(b.observedAt) - Date.parse(a.observedAt)),
-    }))
-    .sort((a, b) => Date.parse(b.signals[0].observedAt) - Date.parse(a.signals[0].observedAt))
-    .slice(0, 10);
-  const unread = items.filter(({ signals: group }) => group.some((signal) => !seenIds.has(String(signal.id)))).length;
+
+  const allSquadNews = useMemo(() => {
+    const seenSignalIds = new Set<string | number>();
+    const grouped = new Map<string, PlayerSignal[]>();
+
+    signals
+      .filter((signal) => squadById.has(signal.playerId))
+      .filter((signal) => signal.status === "PENDING" || signal.status === "VERIFIED")
+      .filter((signal) => Date.parse(signal.validUntil) >= Date.now())
+      .forEach((signal) => {
+        if (seenSignalIds.has(signal.id)) return;
+        seenSignalIds.add(signal.id);
+        const sourceKey = signal.sourceUrl ? signal.sourceUrl.split(/[?#]/, 1)[0] : String(signal.id);
+        const key = `${signal.playerId}|${signal.sourceType}|${sourceKey}`;
+        grouped.set(key, [...(grouped.get(key) || []), signal]);
+      });
+
+    return Array.from(grouped.entries())
+      .map(([key, group]) => ({
+        key,
+        signals: group.sort((a, b) => Date.parse(b.observedAt) - Date.parse(a.observedAt)),
+        category: getSignalCategory(group[0]),
+      }))
+      .sort((a, b) => Date.parse(b.signals[0].observedAt) - Date.parse(a.signals[0].observedAt));
+  }, [signals, squadById]);
+
+  const filteredItems = useMemo(() => {
+    return allSquadNews
+      .filter((item) => {
+        const signal = item.signals[0];
+        const player = squadById.get(signal.playerId);
+        if (!player) return false;
+
+        // Category filtering
+        if (filterCategory === "risk" && item.category !== "risk") return false;
+        if (filterCategory === "lineup" && item.category !== "lineup") return false;
+        if (filterCategory === "tactics" && item.category !== "tactics") return false;
+        if (filterCategory === "model") {
+          const hasModelImpact = item.signals.some((s) => s.interpretation?.modelImpact === "ROLE" || s.status === "VERIFIED");
+          if (!hasModelImpact) return false;
+        }
+
+        // Search query filtering
+        if (searchQuery.trim()) {
+          const q = searchQuery.toLowerCase();
+          const matchPlayer = player.name.toLowerCase().includes(q) || player.club.toLowerCase().includes(q);
+          const matchText = item.signals.some((s) => (s.evidenceSummary || "").toLowerCase().includes(q));
+          if (!matchPlayer && !matchText) return false;
+        }
+
+        return true;
+      })
+      .slice(0, 15);
+  }, [allSquadNews, filterCategory, searchQuery, squadById]);
+
+  const unreadCount = useMemo(() => {
+    return allSquadNews.filter(({ signals: group }) => group.some((signal) => !seenIds.has(String(signal.id)))).length;
+  }, [allSquadNews, seenIds]);
+
+  const categoryCounts = useMemo(() => {
+    return {
+      all: allSquadNews.length,
+      risk: allSquadNews.filter((i) => i.category === "risk").length,
+      lineup: allSquadNews.filter((i) => i.category === "lineup").length,
+      tactics: allSquadNews.filter((i) => i.category === "tactics").length,
+      model: allSquadNews.filter((i) => i.signals.some((s) => s.interpretation?.modelImpact === "ROLE" || s.status === "VERIFIED")).length,
+    };
+  }, [allSquadNews]);
 
   return (
     <section className="panel player-news-panel">
       <div className="panel-head player-news-heading">
         <div>
-          <h2>Latest Player News</h2>
-          <p>The newest headlines affecting your squad</p>
+          <div className="player-news-title-row">
+            <h2>Latest Player News</h2>
+            {unreadCount > 0 && <span className="pill amber">{unreadCount} unread</span>}
+          </div>
+          <p>Headlines, rotation alerts, and tactical signals affecting your squad</p>
         </div>
         <div className="player-news-heading-actions">
-          {unread > 0 && <span className="pill amber">{unread} new</span>}
-          <button className="text-btn" onClick={onOpenSignals}>View all <ArrowRight size={14} /></button>
+          <button className="text-btn" onClick={onOpenSignals}>
+            All Signals Hub <ArrowRight size={14} />
+          </button>
         </div>
       </div>
-      {items.length === 0 ? (
+
+      {allSquadNews.length > 0 && (
+        <div className="player-news-toolbar">
+          <div className="player-news-tabs">
+            <button
+              className={`player-news-tab ${filterCategory === "all" ? "active" : ""}`}
+              onClick={() => setFilterCategory("all")}
+            >
+              All ({categoryCounts.all})
+            </button>
+            {categoryCounts.risk > 0 && (
+              <button
+                className={`player-news-tab risk-tab ${filterCategory === "risk" ? "active" : ""}`}
+                onClick={() => setFilterCategory("risk")}
+              >
+                🚨 Risk ({categoryCounts.risk})
+              </button>
+            )}
+            {categoryCounts.lineup > 0 && (
+              <button
+                className={`player-news-tab ${filterCategory === "lineup" ? "active" : ""}`}
+                onClick={() => setFilterCategory("lineup")}
+              >
+                ⏱️ Lineup ({categoryCounts.lineup})
+              </button>
+            )}
+            {categoryCounts.tactics > 0 && (
+              <button
+                className={`player-news-tab ${filterCategory === "tactics" ? "active" : ""}`}
+                onClick={() => setFilterCategory("tactics")}
+              >
+                🎯 Set Pieces ({categoryCounts.tactics})
+              </button>
+            )}
+            {categoryCounts.model > 0 && (
+              <button
+                className={`player-news-tab model-tab ${filterCategory === "model" ? "active" : ""}`}
+                onClick={() => setFilterCategory("model")}
+              >
+                ⚡ Model ({categoryCounts.model})
+              </button>
+            )}
+          </div>
+          <div className="player-news-search-box">
+            <input
+              type="text"
+              placeholder="Filter by player or keyword..."
+              value={searchQuery}
+              onChange={(e) => setSearchQuery(e.target.value)}
+              className="player-news-search-input"
+            />
+            {searchQuery && (
+              <button className="player-news-search-clear" onClick={() => setSearchQuery("")}>
+                ✕
+              </button>
+            )}
+          </div>
+        </div>
+      )}
+
+      {allSquadNews.length === 0 ? (
         <div className="player-news-empty">
-          <p>No current player news for your squad.</p>
-          <button className="ghost-btn" onClick={onOpenSignals}>Open Signals</button>
+          <div>
+            <p>No active news signals recorded for players in your squad.</p>
+            <small style={{ color: "#64748b" }}>Ingested YouTube transcripts, press conferences, and verified updates will show here.</small>
+          </div>
+          <button className="ghost-btn" onClick={onOpenSignals}>Explore Signals Hub</button>
+        </div>
+      ) : filteredItems.length === 0 ? (
+        <div className="player-news-empty">
+          <p>No squad news matching the current filter "{filterCategory}"{searchQuery ? ` & search "${searchQuery}"` : ""}.</p>
+          <button className="ghost-btn" onClick={() => { setFilterCategory("all"); setSearchQuery(""); }}>
+            Reset Filters
+          </button>
         </div>
       ) : (
         <div className="player-news-feed">
-          {items.map(({ key, signals: group }) => {
+          {filteredItems.map(({ key, signals: group, category }) => {
             const signal = group[0];
-            const player = squadById.get(signal.playerId)!;
+            const player = squadById.get(signal.playerId);
+            if (!player) return null;
+
             const isUnread = group.some((item) => !seenIds.has(String(item.id)));
-            const roleImpact = group.some((item) => item.interpretation?.modelImpact === "ROLE"
-              || typeof item.value?.startProbability === "number"
-              || Boolean(item.value?.depthRole));
+            const roleImpact = group.some(
+              (item) => item.interpretation?.modelImpact === "ROLE" ||
+                typeof item.value?.startProbability === "number" ||
+                Boolean(item.value?.depthRole)
+            );
             const hasMultiple = group.length > 1;
             const expanded = expandedGroups.has(key);
+            const nextFixture = getPlayerFixtureTicker(player, 1)[0];
+            const secondarySource = formatNewsSource(signal);
+
             return (
-              <article className={`player-news-item${isUnread ? " unread" : ""}`} key={key}>
-                <div className="player-news-item-marker" aria-hidden="true" />
-                <div className="player-news-item-content">
-                  <div className="player-news-item-meta">
-                    <button className="player-news-player-name" onClick={() => onSelectPlayer(player)}>{player.name}</button>
-                    <span>{playerNewsRelativeTime(signal.observedAt)}</span>
-                    <span className={playerNewsSourceClass(signal.sourceType)}>{playerNewsSourceLabel(signal.sourceType)}</span>
-                    {playerNewsSourceName(signal) && <span className="player-news-source-name">{playerNewsSourceName(signal)}</span>}
-                    {hasMultiple && <button className="player-news-count" onClick={() => setExpandedGroups((current) => {
-                      const next = new Set(current);
-                      if (next.has(key)) next.delete(key); else next.add(key);
-                      return next;
-                    })}>{group.length} updates {expanded ? "⌃" : "⌄"}</button>}
-                    {group.some((item) => item.status === "PENDING") && <span className="player-news-status pending">Review</span>}
-                    {signal.status === "VERIFIED" && roleImpact && <span className="player-news-status applied">Affects model</span>}
+              <article className={`player-news-card ${category}${isUnread ? " unread" : ""}`} key={key}>
+                <div className="player-news-card-accent" />
+                <div className="player-news-card-body">
+                  {/* Top Bar: Player Info & Badges */}
+                  <div className="player-news-card-header">
+                    <div className="player-news-player-info">
+                      <span
+                        className="player-news-pos-badge"
+                        style={{ backgroundColor: getPlayerShirtColor(player) }}
+                        title={`${player.club} · ${player.position}`}
+                      >
+                        {player.position}
+                      </span>
+                      <button
+                        className="player-news-player-name"
+                        onClick={() => onSelectPlayer(player)}
+                        title={`View ${player.name} in Player Hub`}
+                      >
+                        {player.name}
+                      </button>
+                      <span className="player-news-club-chip">{player.club}</span>
+                      {nextFixture && (
+                        <span
+                          className={`player-news-fixture-chip ${nextFixture.difficultyClass}`}
+                          title={`GW${nextFixture.gameweek}: vs ${nextFixture.opponent} (${nextFixture.venue})`}
+                        >
+                          v {nextFixture.opponent} ({nextFixture.venue})
+                        </span>
+                      )}
+                    </div>
+
+                    <div className="player-news-card-tags">
+                      {getSignalImpactBadge(signal, roleImpact)}
+                      <span className="player-news-time">{playerNewsRelativeTime(signal.observedAt)}</span>
+                    </div>
                   </div>
-                  <button className="player-news-headline" onClick={() => hasMultiple ? setExpandedGroups((current) => {
-                    const next = new Set(current);
-                    if (next.has(key)) next.delete(key); else next.add(key);
-                    return next;
-                  }) : onSelectPlayer(player)}>
-                    {signal.evidenceSummary || `${player.name}: ${signal.kind.replace(/_/g, " ").toLowerCase()}`}
-                  </button>
-                  {expanded && (
-                    <div className="player-news-details">
-                      {group.map((item) => <p key={item.id}>{item.evidenceSummary}</p>)}
-                      {signal.sourceUrl && <a href={signal.sourceUrl} target="_blank" rel="noreferrer">Open source ↗</a>}
+
+                  {/* Headline & Evidence Text */}
+                  <div className="player-news-headline-row">
+                    <p className="player-news-text">
+                      {signal.evidenceSummary || `${player.name}: ${signal.kind.replace(/_/g, " ").toLowerCase()}`}
+                    </p>
+                  </div>
+
+                  {/* Model Impact Indicators (if present) */}
+                  {(typeof signal.value?.startProbability === "number" || signal.value?.depthRole || signal.value?.setPieceRole) && (
+                    <div className="player-news-metric-strip">
+                      {typeof signal.value?.startProbability === "number" && (
+                        <span className={`player-news-metric ${signal.value.startProbability < 0.6 ? "metric-warn" : "metric-good"}`}>
+                          Start Chance: {Math.round(signal.value.startProbability * 100)}%
+                        </span>
+                      )}
+                      {signal.value?.depthRole && (
+                        <span className="player-news-metric">
+                          Depth: {signal.value.depthRole.replace(/_/g, " ")}
+                        </span>
+                      )}
+                      {signal.value?.setPieceRole && (
+                        <span className="player-news-metric metric-setpiece">
+                          Role: {signal.value.setPieceRole.replace(/_/g, " ")}
+                        </span>
+                      )}
                     </div>
                   )}
+
+                  {/* Expandable History */}
+                  {hasMultiple && (
+                    <button
+                      className="player-news-expand-btn"
+                      onClick={() => setExpandedGroups((current) => {
+                        const next = new Set(current);
+                        if (next.has(key)) next.delete(key); else next.add(key);
+                        return next;
+                      })}
+                    >
+                      {expanded ? "Hide" : "Show"} {group.length} updates on this story {expanded ? "▲" : "▼"}
+                    </button>
+                  )}
+
+                  {expanded && (
+                    <div className="player-news-details">
+                      {group.map((item) => (
+                        <div key={item.id} className="player-news-detail-item">
+                          <span className="detail-time">{playerNewsRelativeTime(item.observedAt)}</span>
+                          <span className="detail-text">{item.evidenceSummary}</span>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+
+                  {/* Card Footer: Source and Direct Links */}
+                  <div className="player-news-footer">
+                    <div className="player-news-source-info">
+                      <span className={playerNewsSourceClass(signal.sourceType)}>
+                        {playerNewsSourceLabel(signal.sourceType)}
+                      </span>
+                      {secondarySource && (
+                        <span className="player-news-source-sub">{secondarySource}</span>
+                      )}
+                    </div>
+
+                    <div className="player-news-actions">
+                      {signal.sourceUrl && (
+                        <a
+                          href={signal.sourceUrl}
+                          target="_blank"
+                          rel="noreferrer"
+                          className="player-news-action-link"
+                        >
+                          Source ↗
+                        </a>
+                      )}
+                      <button
+                        className="player-news-action-link"
+                        onClick={() => onSelectPlayer(player)}
+                      >
+                        Player Hub →
+                      </button>
+                    </div>
+                  </div>
                 </div>
               </article>
             );
@@ -4722,7 +5012,9 @@ function ReviewView() {
                     </span>
                   </div>
                   <p>Expected candidate gain: {decision.expectedCandidateGain == null ? '—' : Number(decision.expectedCandidateGain).toFixed(2)} pts · Realized manager decision result: {decision.realizedPointsDelta == null ? 'Pending' : `${Number(decision.realizedPointsDelta).toFixed(2)} pts`}</p>
-                  <small className="muted">Model forecast error: {decision.outcome?.modelForecastError == null ? 'Pending' : Number(decision.outcome.modelForecastError).toFixed(2)} · {decision.outcome?.wording || 'Pending fixture completion'}</small>
+                  {decision.outcome?.modelForecastError != null && (
+                    <small className="muted">Model forecast error: {Number(decision.outcome.modelForecastError).toFixed(2)} · {decision.outcome?.wording}</small>
+                  )}
                 </div>
               ))}
             </div>
