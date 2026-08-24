@@ -6466,8 +6466,9 @@ function SignalsTab({
           </p>
         </div>
       ) : (
+        <>
         <div className="signal-feed">
-          {filtered.map((signal) => {
+          {filtered.slice(0, displayLimit).map((signal) => {
             const player = playerMap.get(signal.playerId);
             const interpretation = signal.interpretation;
             const modelImpact = interpretation?.modelImpact || (typeof signal.value?.startProbability === "number" || Boolean(signal.value?.depthRole) ? "ROLE" : "NONE");
@@ -6711,6 +6712,17 @@ function SignalsTab({
             );
           })}
         </div>
+        {filtered.length > displayLimit && (
+          <div style={{ display: "flex", justifyContent: "center", padding: "16px 0" }}>
+            <button
+              className="ghost-btn"
+              onClick={() => setDisplayLimit((cur) => cur + 25)}
+            >
+              Show more ({filtered.length - displayLimit} remaining)
+            </button>
+          </div>
+        )}
+        </>
       ))}
     </div>
   );
