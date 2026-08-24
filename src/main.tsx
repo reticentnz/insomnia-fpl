@@ -2,7 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { createRoot } from "react-dom/client";
 import { compareSortValues, nextSortDirection, type SortDirection, type SortValue } from "./table-sorting";
 import { deriveRecommendationRepairActions, deriveRecommendationSafety, type RecommendationAssumptions, type RecommendationSafety } from "./decision-safety";
-import { formatAccounting, formatSigned, optionalRecommendationLabel, recommendationInputStatus, recommendationSensitivity, recommendationTiming } from "./recommendation-presentation";
+import { formatAccounting, formatSigned, optionalRecommendationLabel, recommendationAccounting, recommendationInputStatus, recommendationSensitivity, recommendationTiming } from "./recommendation-presentation";
 import {
   bestXI,
   benchOrder,
@@ -4716,8 +4716,8 @@ function EvidencePanel({
         <div>
           <h2>Challenge this squad with current evidence</h2>
           <p>
-            Searches current sources for role, injury and minutes risks. Findings
-            remain pending until you approve them.
+            Searches current sources for role, injury and minutes risks. Validated findings
+            are auto-approved into model projections.
           </p>
         </div>
         <button
@@ -5704,9 +5704,10 @@ function SignalsTab({
   const [claimReviewingId, setClaimReviewingId] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
   const [sourceFilter, setSourceFilter] = useState("");
-  // Player-drawer links are intended to show the full signal history for that
-  // player. Keep the review queue as the default for the unfiltered Signals tab.
-  const [statusFilter, setStatusFilter] = useState(() => playerFilterId == null ? "PENDING" : "");
+  // Quick-lane filter: defaults to high-impact model adjustments to keep volume clean.
+  const [quickFilter, setQuickFilter] = useState<"ADJUSTMENTS" | "SQUAD" | "RECENT" | "ALL">("ADJUSTMENTS");
+  const [displayLimit, setDisplayLimit] = useState(25);
+  const [statusFilter, setStatusFilter] = useState("");
   const [playerQuery, setPlayerQuery] = useState("");
   const [ingestOpen, setIngestOpen] = useState(false);
   const [ingestText, setIngestText] = useState("");
@@ -5727,6 +5728,20 @@ function SignalsTab({
     catalog.forEach((p) => m.set(p.id, p));
     return m;
   }, [catalog]);
+
+  const squadPlayerIds = useMemo(() => new Set(squad.map((p) => p.id)), [squad]);
+  const adjustmentCount = useMemo(
+    () => signals.filter((s) => s.interpretation?.modelImpact === "ROLE" || (typeof s.value?.startProbability === "number" || Boolean(s.value?.depthRole))).length,
+    [signals]
+  );
+  const squadSignalCount = useMemo(
+    () => signals.filter((s) => squadPlayerIds.has(s.playerId)).length,
+    [signals, squadPlayerIds]
+  );
+  const recentSignalCount = useMemo(() => {
+    const cutoff = Date.now() - 48 * 3600 * 1000;
+    return signals.filter((s) => Date.parse(s.observedAt) >= cutoff).length;
+  }, [signals]);
 
   const loadSignals = useCallback(() => {
     setLoading(true);
@@ -5865,6 +5880,17 @@ function SignalsTab({
   const filtered = useMemo(() => {
     let result = signals;
     if (playerFilterId != null) result = result.filter((signal) => signal.playerId === playerFilterId);
+    if (quickFilter === "SQUAD") {
+      result = result.filter((signal) => squadPlayerIds.has(signal.playerId));
+    } else if (quickFilter === "ADJUSTMENTS") {
+      result = result.filter((signal) => {
+        const modelImpact = signal.interpretation?.modelImpact || (typeof signal.value?.startProbability === "number" || Boolean(signal.value?.depthRole) ? "ROLE" : "NONE");
+        return modelImpact === "ROLE";
+      });
+    } else if (quickFilter === "RECENT") {
+      const cutoff = Date.now() - 48 * 3600 * 1000;
+      result = result.filter((signal) => Date.parse(signal.observedAt) >= cutoff);
+    }
     if (sourceFilter) result = result.filter((s) => s.sourceType === sourceFilter);
     if (statusFilter) result = result.filter((s) => s.status === statusFilter);
     if (laneFilter) result = result.filter((signal) => {
@@ -5885,7 +5911,7 @@ function SignalsTab({
       });
     }
     return result;
-  }, [signals, playerFilterId, sourceFilter, statusFilter, laneFilter, playerQuery, playerMap]);
+  }, [signals, playerFilterId, quickFilter, squadPlayerIds, sourceFilter, statusFilter, laneFilter, playerQuery, playerMap]);
 
   async function handleDeleteSignal(signal: PlayerSignal) {
     const playerName = playerMap.get(signal.playerId)?.name || `Player #${signal.playerId}`;
@@ -6027,7 +6053,7 @@ function SignalsTab({
         setIngestResult("No players found in that text. Try including player names.");
       } else {
         setIngestResult(
-          `✓ Created ${result.created} pending signal${result.created === 1 ? "" : "s"} for: ${result.signals
+          `✓ Created ${result.created} signal${result.created === 1 ? "" : "s"} (auto-approved) for: ${result.signals
             .map((s) => playerMap.get(s.playerId)?.name || `Player #${s.playerId}`)
             .join(", ")}`
         );
@@ -6106,7 +6132,7 @@ function SignalsTab({
       <div className="page-intro">
         <p>
           All intelligence flowing into the model — YouTube transcripts, scrapes, pundit tips, and
-          AI research findings. Review pending signals to update player projections.
+          AI research findings — is 100% auto-approved. Review and audit signals below to customize interpretations or remove findings.
         </p>
         <div className="signals-page-actions">
           {pendingCount > 0 && <span className="pill amber">{pendingCount} pending review</span>}
@@ -6116,7 +6142,7 @@ function SignalsTab({
 
       <nav className="signals-workspace-nav" aria-label="Signals workspace">
         {([
-          ["REVIEW", "Review", pendingCount],
+          ["REVIEW", "Signals Ledger", signals.length],
           ["SOURCES", "Sources", creatorFeeds.sources.length],
           ["MARKET", "Market context", marketSnapshots.length],
         ] as const).map(([value, label, count]) => (
@@ -6212,16 +6238,33 @@ function SignalsTab({
 
       {workspaceView === "REVIEW" && <>
       <div className="signals-filter-bar">
-        <div className="signals-primary-filters" aria-label="Signal review status">
-          {([["PENDING", "Pending"], ["VERIFIED", "Approved"], ["", "All"]] as const).map(([value, label]) => (
+        <div className="signals-primary-filters" aria-label="Signal quick filters">
+          <button
+            className={`filter-chip${quickFilter === "ADJUSTMENTS" ? " active" : ""}`}
+            onClick={() => { setQuickFilter("ADJUSTMENTS"); setDisplayLimit(25); }}
+          >
+            ⚡ Model adjustments ({adjustmentCount})
+          </button>
+          {squad.length > 0 && (
             <button
-              key={value}
-              className={`filter-chip${statusFilter === value ? " active" : ""}`}
-              onClick={() => setStatusFilter(value)}
+              className={`filter-chip${quickFilter === "SQUAD" ? " active" : ""}`}
+              onClick={() => { setQuickFilter("SQUAD"); setDisplayLimit(25); }}
             >
-              {label}
+              🛡️ My squad ({squadSignalCount})
             </button>
-          ))}
+          )}
+          <button
+            className={`filter-chip${quickFilter === "RECENT" ? " active" : ""}`}
+            onClick={() => { setQuickFilter("RECENT"); setDisplayLimit(25); }}
+          >
+            🕒 Last 48h ({recentSignalCount})
+          </button>
+          <button
+            className={`filter-chip${quickFilter === "ALL" ? " active" : ""}`}
+            onClick={() => { setQuickFilter("ALL"); setDisplayLimit(25); }}
+          >
+            All signals ({signals.length})
+          </button>
         </div>
         <div className="signals-search">
           <input
@@ -6632,7 +6675,7 @@ function SignalsTab({
                     <span className={`staged-pill ${stagedStatus === "REJECTED" ? "rejected" : ""}`}>STAGED: {stagedStatus === "VERIFIED" ? "APPROVE" : "REJECT"}</span>
                     <button className="undo-staged-btn" onClick={() => onUnstageSignal(signal.id)}>Undo</button>
                   </div>
-                ) : signal.status === "PENDING" && (
+                ) : signal.status === "PENDING" ? (
                   <div className="signal-actions">
                     {!needsInterpretation && (
                       <button className="dark-btn" disabled={applyingBatch || interpretationSaving} onClick={() => void handleReview(signal, "VERIFIED")}>
@@ -6648,6 +6691,19 @@ function SignalsTab({
                       onClick={() => handleReview(signal, "REJECTED")}
                     >
                       Reject
+                    </button>
+                  </div>
+                ) : (
+                  <div className="signal-actions">
+                    <button className="ghost-btn" disabled={interpretationSaving} onClick={() => setEditingSignalId(editingSignalId === signal.id ? null : signal.id)}>
+                      {editingSignalId === signal.id ? "Close editor" : "Change interpretation"}
+                    </button>
+                    <button
+                      className="ghost-btn"
+                      disabled={applyingBatch}
+                      onClick={() => handleReview(signal, "REJECTED")}
+                    >
+                      Reject / Remove
                     </button>
                   </div>
                 )}
@@ -8243,6 +8299,381 @@ function TargetedReplacementSection({
   );
 }
 
+function SecondaryDismissAction({
+  candidate,
+  onDismiss,
+}: {
+  candidate: CanonicalRecommendation['candidates'][number];
+  onDismiss?: (candidate: CanonicalRecommendation['candidates'][number], decision: 'REJECTED' | 'IGNORED') => void;
+}) {
+  const [open, setOpen] = useState(false);
+  const containerRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    if (!open) return;
+    const handleClickOutside = (e: MouseEvent) => {
+      if (containerRef.current && !containerRef.current.contains(e.target as Node)) {
+        setOpen(false);
+      }
+    };
+    document.addEventListener('mousedown', handleClickOutside);
+    return () => document.removeEventListener('mousedown', handleClickOutside);
+  }, [open]);
+
+  return (
+    <div className="secondary-dismiss-container" ref={containerRef}>
+      <button
+        type="button"
+        className="ghost-btn"
+        onClick={() => setOpen((prev) => !prev)}
+        aria-haspopup="true"
+        aria-expanded={open}
+      >
+        Not for me ▾
+      </button>
+      {open && (
+        <div className="dismiss-dropdown-menu" role="menu">
+          <button
+            type="button"
+            className="dismiss-menu-item"
+            role="menuitem"
+            onClick={() => {
+              setOpen(false);
+              onDismiss?.(candidate, 'REJECTED');
+            }}
+          >
+            <span>Reject plan</span>
+            <small>Records rejection in Review</small>
+          </button>
+          <button
+            type="button"
+            className="dismiss-menu-item"
+            role="menuitem"
+            onClick={() => {
+              setOpen(false);
+              onDismiss?.(candidate, 'IGNORED');
+            }}
+          >
+            <span>Ignore without feedback</span>
+            <small>Dismisses silently</small>
+          </button>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function PrimaryHeroRecommendationCard({
+  candidate,
+  isPrimary,
+  catalog,
+  squad,
+  horizon,
+  recommendationSafety,
+  onApply,
+  onDismiss,
+}: {
+  candidate: CanonicalRecommendation['candidates'][number];
+  isPrimary: boolean;
+  catalog?: Player[];
+  squad?: Player[];
+  horizon: number;
+  recommendationSafety: RecommendationSafety;
+  onApply?: (candidate: CanonicalRecommendation['candidates'][number]) => void;
+  onDismiss?: (candidate: CanonicalRecommendation['candidates'][number], decision: 'REJECTED' | 'IGNORED') => void;
+}) {
+  const accounting = recommendationAccounting(candidate);
+  const sensitivity = recommendationSensitivity(candidate);
+  const timing = recommendationTiming(candidate);
+  const stability = optionalRecommendationLabel(candidate, ['stability', 'horizonStability']);
+  const affordabilityLabel = candidate.affordabilityStatus === 'EXACT' ? 'Exact Affordability' : candidate.affordabilityStatus.replaceAll('_', ' ');
+
+  const probabilityBeatsRollPct = candidate.probabilityBeatsRoll != null ? Math.round(candidate.probabilityBeatsRoll * 100) : null;
+  const clearsDecisionRule = probabilityBeatsRollPct != null ? probabilityBeatsRollPct >= 60 : null;
+
+  return (
+    <article className="primary-hero-card" aria-label="Optimal transfer recommendation">
+      <div className="hero-card-header">
+        <div className="hero-header-badges">
+          <span className="hero-badge-tag">
+            {candidate.action === 'CHIP'
+              ? `⚡ CHIP: ${candidate.chip || 'COUNTERFACTUAL'}`
+              : candidate.action === 'ROLL'
+              ? '🛡️ ROLL TRANSFER'
+              : isPrimary
+              ? '★ PRIMARY RECOMMENDATION'
+              : `OPTION #${candidate.rank}`}
+          </span>
+          <span className={`pill ${candidate.affordabilityStatus === 'EXACT' ? 'green' : 'amber'}`}>
+            {affordabilityLabel}
+          </span>
+          {timing && (
+            <span className="pill cyan" title={timing.details.join(' ')}>
+              ⚡ {timing.verdict}
+            </span>
+          )}
+          {candidate.leagueDifferential != null && candidate.leagueDifferential !== 0 && (
+            <span
+              className={`pill ${candidate.leagueDifferential > 0 ? 'green' : 'amber'}`}
+              title="Ownership leverage: modelled relative exposure vs league field"
+            >
+              📈 {formatSigned(Number(candidate.leagueDifferential))} rel. EO
+            </span>
+          )}
+        </div>
+      </div>
+
+      {candidate.action === 'TRANSFER' && candidate.apiMoves?.length > 0 ? (
+        <div className="hero-moves-container">
+          {candidate.apiMoves.map((move) => {
+            const outPlayer = catalog?.find((p) => p.id === move.outId) || squad?.find((p) => p.id === move.outId);
+            const inPlayer = catalog?.find((p) => p.id === move.inId);
+            const outTicker = outPlayer ? getPlayerFixtureTicker(outPlayer, 1)[0] : null;
+            const inTicker = inPlayer ? getPlayerFixtureTicker(inPlayer, 1)[0] : null;
+            const priceDelta = outPlayer && inPlayer ? +(inPlayer.price - outPlayer.price).toFixed(1) : 0;
+            const inAlert = inPlayer ? priceMovementAlert(inPlayer) : null;
+            const outAlert = outPlayer ? priceMovementAlert(outPlayer) : null;
+
+            return (
+              <div className="move-token-pair" key={`${move.outId}-${move.inId}`}>
+                <div className="move-token">
+                  {outPlayer && (
+                    <span className="shirt" style={{ background: getPlayerShirtColor(outPlayer) }}>
+                      {outPlayer.position}
+                    </span>
+                  )}
+                  <div className="move-token-info">
+                    <b>{outPlayer ? outPlayer.name : `#${move.outId}`}</b>
+                    <small>
+                      {outPlayer ? `${outPlayer.club} · £${outPlayer.price.toFixed(1)}m` : 'Outgoing'}
+                    </small>
+                    <div className="move-token-meta">
+                      {outTicker && (
+                        <span
+                          className={`fixture-ticker-pill ${outTicker.difficultyClass}`}
+                          title={`Next: ${outTicker.opponent} (${outTicker.venue})`}
+                        >
+                          {outTicker.opponent}{outTicker.venue}
+                        </span>
+                      )}
+                      {outAlert === 'FALLING_SOON' && (
+                        <span className="price-trend-badge falling" title="Price falling soon">▼ Fall risk</span>
+                      )}
+                    </div>
+                  </div>
+                </div>
+
+                <div className="move-token-arrow" aria-hidden="true">
+                  <ArrowRight size={22} />
+                </div>
+
+                <div className="move-token">
+                  {inPlayer && (
+                    <span className="shirt" style={{ background: getPlayerShirtColor(inPlayer) }}>
+                      {inPlayer.position}
+                    </span>
+                  )}
+                  <div className="move-token-info">
+                    <b>{inPlayer ? inPlayer.name : `#${move.inId}`}</b>
+                    <small>
+                      {inPlayer
+                        ? `${inPlayer.club} · £${inPlayer.price.toFixed(1)}m (${priceDelta >= 0 ? `+£${priceDelta.toFixed(1)}m` : `-£${Math.abs(priceDelta).toFixed(1)}m`})`
+                        : 'Incoming'}
+                    </small>
+                    <div className="move-token-meta">
+                      {inTicker && (
+                        <span
+                          className={`fixture-ticker-pill ${inTicker.difficultyClass}`}
+                          title={`Next: ${inTicker.opponent} (${inTicker.venue})`}
+                        >
+                          {inTicker.opponent}{inTicker.venue}
+                        </span>
+                      )}
+                      {inAlert === 'RISING_SOON' && (
+                        <span className="price-trend-badge rising" title="Price rising soon">▲ Rising soon</span>
+                      )}
+                    </div>
+                  </div>
+                </div>
+              </div>
+            );
+          })}
+        </div>
+      ) : candidate.action === 'ROLL' ? (
+        <div className="roll-action-banner">
+          <div className="roll-action-icon">🛡️</div>
+          <div className="roll-action-copy">
+            <b>Roll your free transfer</b>
+            <p>
+              No immediate move beats the strategic option value of carrying 2 free transfers into the next gameweek.
+            </p>
+          </div>
+        </div>
+      ) : (
+        <div className="chip-action-banner">
+          <div className="chip-action-icon">⚡</div>
+          <div className="chip-action-copy">
+            <b>Optimized chip counterfactual</b>
+            <p>{candidate.chipReason || 'Simulated strategy using active chip allowances.'}</p>
+          </div>
+        </div>
+      )}
+
+      {/* Hero Metrics Grid */}
+      <div className="hero-metrics-grid">
+        <div className="hero-metric-box">
+          <span className="hero-metric-label">Net Expected Gain</span>
+          <div className="hero-metric-val-row">
+            <span className={`hero-metric-val gain ${candidate.netExpectedGain === 0 ? 'neutral' : ''}`}>
+              {candidate.netExpectedGain >= 0 ? `+${candidate.netExpectedGain.toFixed(2)}` : candidate.netExpectedGain.toFixed(2)}
+            </span>
+            <span className="hero-metric-sub">pts ({horizon} GWs)</span>
+          </div>
+          {candidate.hitCost > 0 && (
+            <small style={{ color: 'var(--accent-rose)', fontSize: '11px' }}>
+              Includes -{candidate.hitCost} pts transfer hit
+            </small>
+          )}
+        </div>
+
+        <div className="hero-metric-box">
+          <span className="hero-metric-label">Confidence (vs Roll)</span>
+          <div className="hero-metric-val-row">
+            <span className="hero-metric-val">
+              {probabilityBeatsRollPct != null ? `${probabilityBeatsRollPct}%` : '—'}
+            </span>
+            {clearsDecisionRule !== null && (
+              <span className={`pill ${clearsDecisionRule ? 'green' : 'amber'}`} style={{ fontSize: '10px' }}>
+                {clearsDecisionRule ? 'Clears 60% rule ✓' : 'Below 60% rule'}
+              </span>
+            )}
+          </div>
+          <span className="hero-metric-sub">Chance of finishing ahead of roll</span>
+        </div>
+
+        {candidate.bankAfterTenths != null && (
+          <div className="hero-metric-box">
+            <span className="hero-metric-label">Remaining Bank</span>
+            <div className="hero-metric-val-row">
+              <span className="hero-metric-val">£{(candidate.bankAfterTenths / 10).toFixed(1)}m</span>
+            </div>
+            <span className="hero-metric-sub">Available ITB after moves</span>
+          </div>
+        )}
+      </div>
+
+      {/* Progressive Disclosure */}
+      <details className="why-recommendation-details">
+        <summary>Why this recommendation? (Math & Model Evidence)</summary>
+        <div className="why-recommendation-content">
+          {accounting && (
+            <div>
+              <b style={{ color: 'var(--text-main)', display: 'block', marginBottom: '6px' }}>
+                Calculation Breakdown
+              </b>
+              <table className="calc-ledger-table">
+                <thead>
+                  <tr>
+                    <th>Component</th>
+                    <th>Value</th>
+                    <th>Impact</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  <tr>
+                    <td>Raw Model Gain</td>
+                    <td>{formatSigned(accounting.rawGain)} pts</td>
+                    <td style={{ color: 'var(--text-muted)' }}>Base horizon projection difference</td>
+                  </tr>
+                  <tr>
+                    <td>Transfer Hit Cost</td>
+                    <td>-{accounting.hitCost.toFixed(2)} pts</td>
+                    <td style={{ color: 'var(--text-muted)' }}>Cost of exceeding free transfer limit</td>
+                  </tr>
+                  <tr>
+                    <td>Uncertainty Penalty</td>
+                    <td>-{accounting.uncertaintyPenalty.toFixed(2)} pts</td>
+                    <td style={{ color: 'var(--text-muted)' }}>Rotation & variance risk buffer</td>
+                  </tr>
+                  <tr>
+                    <td>Saved FT Option Value</td>
+                    <td>
+                      {accounting.savedTransferValue >= 0
+                        ? `-${accounting.savedTransferValue.toFixed(2)}`
+                        : `+${Math.abs(accounting.savedTransferValue).toFixed(2)}`}{' '}
+                      pts
+                    </td>
+                    <td style={{ color: 'var(--text-muted)' }}>
+                      {accounting.savedTransferValue >= 0
+                        ? 'Opportunity cost of burning an FT'
+                        : 'Future-structure flexibility advantage'}
+                    </td>
+                  </tr>
+                  <tr className="total-row">
+                    <td>Net Expected Gain</td>
+                    <td>{formatSigned(accounting.netExpectedGain)} pts</td>
+                    <td>Final model objective score</td>
+                  </tr>
+                </tbody>
+              </table>
+            </div>
+          )}
+
+          {candidate.p10Points != null && candidate.p90Points != null && (
+            <p style={{ color: 'var(--text-muted)', margin: 0 }}>
+              <b>Simulated Team Total Range (p10–p90):</b> {Number(candidate.p10Points).toFixed(1)} –{' '}
+              {Number(candidate.p90Points).toFixed(1)} pts under current assumptions.
+            </p>
+          )}
+
+          {sensitivity.length > 0 && (
+            <div style={{ display: 'flex', alignItems: 'center', gap: '8px', flexWrap: 'wrap' }}>
+              <span style={{ color: 'var(--text-dim)', fontWeight: 700, fontSize: '11px', textTransform: 'uppercase' }}>
+                Sensitivity Flags:
+              </span>
+              {sensitivity.map((flag) => (
+                <span className="pill amber" key={flag}>
+                  {flag}
+                </span>
+              ))}
+            </div>
+          )}
+
+          {timing && timing.details.length > 0 && (
+            <p style={{ color: 'var(--text-muted)', margin: 0 }}>
+              <b>Market Timing Context:</b> {timing.verdict} — {timing.details.join(' ')}
+            </p>
+          )}
+
+          {stability && (
+            <p style={{ color: 'var(--text-muted)', margin: 0 }}>
+              <b>Horizon Stability:</b> {stability}
+            </p>
+          )}
+        </div>
+      </details>
+
+      {/* Action Buttons */}
+      <div className="recommend-actions">
+        {(candidate.apiMoves?.length || candidate.action === 'CHIP' || candidate.action === 'ROLL') ? (
+          <button
+            className="dark-btn"
+            disabled={!recommendationSafety.actionable}
+            onClick={() => onApply?.(candidate)}
+          >
+            {candidate.action === 'CHIP'
+              ? 'Record chip plan'
+              : candidate.action === 'ROLL'
+              ? 'Record roll decision'
+              : 'Apply local plan'}
+          </button>
+        ) : null}
+        <SecondaryDismissAction candidate={candidate} onDismiss={onDismiss} />
+      </div>
+    </article>
+  );
+}
+
 function TransfersV2({
   data,
   horizon,
@@ -8280,13 +8711,23 @@ function TransfersV2({
   onDismissCanonical?: (candidate: CanonicalRecommendation['candidates'][number], decision: 'REJECTED' | 'IGNORED') => void;
   recommendationSafety: RecommendationSafety;
 }) {
+  const [activeTab, setActiveTab] = useState<'STRATEGY' | 'FINDER'>(targetSwapPlayer ? 'FINDER' : 'STRATEGY');
+  const [selectedChip, setSelectedChip] = useState<'TRIPLE_CAPTAIN' | 'BENCH_BOOST' | 'FREE_HIT' | 'WILDCARD' | null>(null);
+  const [explorerSort, setExplorerSort] = useState<'GAIN' | 'PROJECTION' | 'PRICE_ASC' | 'PRICE_DESC' | 'FUNDS_RELEASED'>('GAIN');
   const [limit, setLimit] = useState(8);
+
+  useEffect(() => {
+    if (targetSwapPlayer) {
+      setActiveTab('FINDER');
+    }
+  }, [targetSwapPlayer]);
+
   const squadIds = useMemo(() => new Set(squad?.map((p) => p.id) ?? []), [squad]);
   const maxPrice = targetSwapPlayer ? +(targetSwapPlayer.price + Math.max(0, effectiveBank)).toFixed(1) : 0;
 
   const directSwapData = useMemo(() => {
     if (!targetSwapPlayer || !catalog) return [];
-    return catalog
+    const base = catalog
       .filter(
         (p) =>
           p.position === targetSwapPlayer.position &&
@@ -8314,14 +8755,52 @@ function TransfersV2({
           sellOffWarning: outAlert === "FALLING_SOON" ? "Sell-off risk · act soon" : undefined,
         };
         return transferObj;
-      })
-      .sort((a, b) => (b.inProjection ?? 0) - (a.inProjection ?? 0));
-  }, [catalog, targetSwapPlayer, squadIds, maxPrice, horizon, effectiveBank]);
+      });
+
+    return base.sort((a, b) => {
+      if (explorerSort === 'PROJECTION') {
+        return (b.inProjection ?? 0) - (a.inProjection ?? 0);
+      }
+      if (explorerSort === 'PRICE_ASC') {
+        return a.in.price - b.in.price;
+      }
+      if (explorerSort === 'PRICE_DESC') {
+        return b.in.price - a.in.price;
+      }
+      if (explorerSort === 'FUNDS_RELEASED') {
+        return a.priceDelta - b.priceDelta;
+      }
+      return (b.net ?? 0) - (a.net ?? 0);
+    });
+  }, [catalog, targetSwapPlayer, squadIds, maxPrice, horizon, effectiveBank, explorerSort]);
 
   const activeExplorerData = targetSwapPlayer ? directSwapData : data;
   const visibleData = activeExplorerData.slice(0, limit);
   const recommendationStatus = recommendationInputStatus(canonicalRecommendation);
   const recommendationCreatedAt = canonicalRecommendation?.createdAt || null;
+
+  const primaryCandidate = useMemo(() => {
+    if (!canonicalRecommendation?.candidates?.length) return null;
+    return canonicalRecommendation.candidates.find((c) => c.id === canonicalRecommendation.primaryCandidateId) || canonicalRecommendation.candidates[0];
+  }, [canonicalRecommendation]);
+
+  const alternativeCandidates = useMemo(() => {
+    if (!canonicalRecommendation?.candidates?.length || !primaryCandidate) return [];
+    return canonicalRecommendation.candidates.filter((c) => c.id !== primaryCandidate.id);
+  }, [canonicalRecommendation, primaryCandidate]);
+
+  const chipScenarios: Array<{ id: 'TRIPLE_CAPTAIN' | 'BENCH_BOOST' | 'FREE_HIT' | 'WILDCARD' | null; label: string }> = [
+    { id: null, label: 'Standard' },
+    { id: 'TRIPLE_CAPTAIN', label: 'Triple Captain (TC)' },
+    { id: 'BENCH_BOOST', label: 'Bench Boost (BB)' },
+    { id: 'FREE_HIT', label: 'Free Hit (FH)' },
+    { id: 'WILDCARD', label: 'Wildcard (WC)' },
+  ];
+
+  const handleChipSelect = (chip: 'TRIPLE_CAPTAIN' | 'BENCH_BOOST' | 'FREE_HIT' | 'WILDCARD' | null) => {
+    setSelectedChip(chip);
+    onGenerateCanonical?.(chip);
+  };
 
   if (activeDraftMode)
     return (
@@ -8351,253 +8830,381 @@ function TransfersV2({
 
   return (
     <div className="content">
-      {squad && squad.some(p => (p.roleProfile?.derivedFromSignalIds?.length ?? 0) > 0 && (p.roleProfile?.startProbability ?? 1) < 0.6) && (
+      {squad && squad.some((p) => (p.roleProfile?.derivedFromSignalIds?.length ?? 0) > 0 && (p.roleProfile?.startProbability ?? 1) < 0.6) && (
         <SignalRiskStrip players={squad} />
       )}
-      <div className="panel priority-card">
-        <div className="panel-head"><div><h2>Stored multi-transfer recommendation</h2><p>Uses the latest immutable forecast run, exact selling economics, hit costs, uncertainty penalty, and the 60% decision rule.</p></div><button className="dark-btn" disabled={canonicalLoading} onClick={() => onGenerateCanonical?.(null)}>{canonicalLoading ? 'Calculating…' : 'Generate plan'}</button></div>
-        <div className="recommend-actions">
-          {([['TRIPLE_CAPTAIN','TC'],['BENCH_BOOST','BB'],['FREE_HIT','FH'],['WILDCARD','WC']] as const).map(([chip,label]) => <button className="ghost-btn" disabled={canonicalLoading} onClick={() => onGenerateCanonical?.(chip)} key={chip}>{label} counterfactual</button>)}
-        </div>
-        {!recommendationSafety.actionable && <div className="evidence-warning" role="status"><b>Actionable advice paused.</b> {recommendationSafety.reasons.join(' ')}</div>}
-        {canonicalRecommendation && <>
-          <p className="muted">Forecast {canonicalRecommendation.forecastRunId.slice(0, 8)} · status {canonicalRecommendation.status} · {recommendationStatus || 'stored result'}{recommendationCreatedAt ? ` · last recalculated ${formatOperationalTime(recommendationCreatedAt)}` : ''} · ordering saved for reproducibility{canonicalRecommendation.league?.leagueName ? ` · vs ${canonicalRecommendation.league.leagueName}` : ''}</p>
-          {canonicalRecommendation.candidates.map(candidate => {
-            const names = candidate.apiMoves?.map(move => `${catalog?.find(player => player.id === move.outId)?.name || `#${move.outId}`} → ${catalog?.find(player => player.id === move.inId)?.name || `#${move.inId}`}`) || [];
-            const primary = candidate.id === canonicalRecommendation.primaryCandidateId;
-            const accounting = formatAccounting(candidate);
-            const sensitivity = recommendationSensitivity(candidate);
-            const timing = recommendationTiming(candidate);
-            const stability = optionalRecommendationLabel(candidate, ['stability', 'horizonStability']);
-            const affordabilityLabel = candidate.affordabilityStatus === 'EXACT' ? 'EXACT AFFORDABILITY' : candidate.affordabilityStatus.replaceAll('_', ' ');
-            return <article className="review-card" key={candidate.id}>
-              <div className="card-agent-header"><b>{primary ? 'PRIMARY · ' : ''}{candidate.action}</b><span className={`pill ${candidate.affordabilityStatus === 'EXACT' ? 'green' : 'amber'}`}>{affordabilityLabel}</span></div>
-              <p>{names.length ? names.join(' · ') : candidate.action === 'CHIP' ? 'Optimised chip counterfactual' : 'Roll the transfer'} · net {Number(candidate.netExpectedGain).toFixed(2)} pts · hit {candidate.hitCost} · P(beats roll) {candidate.probabilityBeatsRoll == null ? '—' : `${Math.round(candidate.probabilityBeatsRoll * 100)}%`}</p>
-              {accounting && <small className="recommend-accounting">{accounting}</small>}
-              {candidate.probabilityBeatsRoll != null && <small className="recommend-explainer"><b>P(beats roll)</b> = the share of simulated outcomes where this plan finishes ahead of rolling, after hits, uncertainty, and the one-week saved-transfer lookahead when available.</small>}
-              {sensitivity.length > 0 && <div className="recommend-flags" aria-label="Recommendation sensitivity">{sensitivity.map(flag => <span key={flag}>{flag}</span>)}</div>}
-              {candidate.leagueDifferential != null && candidate.leagueDifferential !== 0 && (
-                <p className="muted">Ownership leverage: <b className={candidate.leagueDifferential > 0 ? 'positive' : 'negative'}>{formatSigned(Number(candidate.leagueDifferential))}</b> modelled relative exposure{canonicalRecommendation.league?.leagueName ? ` vs ${canonicalRecommendation.league.leagueName}` : ' vs the sampled field'} — not actual league points.</p>
-              )}
-              {candidate.p10Points != null && candidate.p90Points != null && <small>Projected team-total range under current assumptions (p10–p90): {Number(candidate.p10Points).toFixed(1)}–{Number(candidate.p90Points).toFixed(1)} pts. This is not the transfer-gain range.</small>}
-              {(timing || stability) && <div className="recommend-optional-metadata">{timing && <small><b>Timing:</b> {timing.verdict}{timing.details.length ? ` — ${timing.details.join(' ')}` : ''}</small>}{stability && <small><b>Horizon stability:</b> {stability}</small>}</div>}
-              <div className="recommend-actions">
-                {(candidate.apiMoves?.length || candidate.action === 'CHIP' || candidate.action === 'ROLL') ? <button className="dark-btn" disabled={!recommendationSafety.actionable} onClick={() => onApplyCanonical?.(candidate)}>{candidate.action === 'CHIP' ? 'Record chip plan' : candidate.action === 'ROLL' ? 'Record roll' : 'Apply local plan'}</button> : null}
-                <button className="ghost-btn" onClick={() => onDismissCanonical?.(candidate, 'REJECTED')}>Reject</button><button className="ghost-btn" onClick={() => onDismissCanonical?.(candidate, 'IGNORED')}>Ignore</button>
-              </div>
-            </article>;
-          })}
-        </>}
-      </div>
-      <div className="page-intro">
-        <div>
-          <p className="eyebrow">TRANSFER PLAN</p>
-          <h2>Direct-swap explorer</h2>
-          <p className="muted">
-            {targetSwapPlayer
-              ? `Comparing ${targetSwapPlayer.position} replacements for ${targetSwapPlayer.name} (£${targetSwapPlayer.price.toFixed(1)}m, budget up to £${maxPrice.toFixed(1)}m over ${horizon} GWs).`
-              : "User-directed comparisons only. The stored optimizer above is the single recommendation source."}
-          </p>
-        </div>
-        <div style={{ display: "flex", gap: "10px", alignItems: "center", flexWrap: "wrap" }}>
-          {squad && squad.length > 0 && (
-            <div style={{ display: "flex", alignItems: "center", gap: "6px" }}>
-              <select
-                id="direct-swap-player-select"
-                aria-label="Select player to replace"
-                style={{
-                  padding: "6px 10px",
-                  borderRadius: "6px",
-                  background: "var(--surface-color, #1e293b)",
-                  color: "inherit",
-                  border: "1px solid var(--border-color, #334155)",
-                  fontSize: "13px",
-                  cursor: "pointer",
-                }}
-                value={targetSwapPlayer?.id ?? ""}
-                onChange={(e) => {
-                  const val = e.target.value;
-                  if (!val) {
-                    onClearTargetSwapPlayer?.();
-                  } else {
-                    const found = squad.find((p) => p.id === Number(val));
-                    if (found) onSelectTargetSwapPlayer?.(found);
-                  }
-                }}
-              >
-                <option value="">-- Choose player from My Team --</option>
-                {squad.map((p) => (
-                  <option key={p.id} value={p.id}>
-                    {p.position} · {p.name} (£{p.price.toFixed(1)}m)
-                  </option>
-                ))}
-              </select>
-              {targetSwapPlayer && (
+
+      {/* Segmented Navigation */}
+      <nav className="transfers-subnav" role="tablist" aria-label="Transfer views">
+        <button
+          type="button"
+          role="tab"
+          aria-selected={activeTab === 'STRATEGY'}
+          className={`transfers-subnav-btn ${activeTab === 'STRATEGY' ? 'active' : ''}`}
+          onClick={() => setActiveTab('STRATEGY')}
+        >
+          <Zap size={15} /> Optimal Strategy
+        </button>
+        <button
+          type="button"
+          role="tab"
+          aria-selected={activeTab === 'FINDER'}
+          className={`transfers-subnav-btn ${activeTab === 'FINDER' ? 'active' : ''}`}
+          onClick={() => setActiveTab('FINDER')}
+        >
+          <Search size={15} /> Replacement Finder
+          {targetSwapPlayer && <span className="tab-pill-badge">{targetSwapPlayer.name}</span>}
+        </button>
+      </nav>
+
+      {activeTab === 'STRATEGY' ? (
+        <div className="panel priority-card">
+          <div className="panel-head">
+            <div>
+              <h2>Stored multi-transfer recommendation</h2>
+              <p>Uses the latest immutable forecast run, exact selling economics, hit costs, uncertainty penalty, and the 60% decision rule.</p>
+            </div>
+            <button className="dark-btn" disabled={canonicalLoading} onClick={() => onGenerateCanonical?.(selectedChip)}>
+              {canonicalLoading ? 'Calculating…' : 'Recalculate plan'}
+            </button>
+          </div>
+
+          {/* Chip Scenario Selector */}
+          <div className="chip-scenario-card">
+            <div className="chip-scenario-header">
+              <span>Chip Counterfactual Scenarios</span>
+              {canonicalLoading && <span style={{ color: 'var(--accent-cyan)' }}>Evaluating…</span>}
+            </div>
+            <div className="chip-scenario-strip">
+              {chipScenarios.map((scenario) => (
                 <button
-                  className="ghost-btn"
-                  style={{ padding: "4px 8px", fontSize: "12px" }}
-                  onClick={onClearTargetSwapPlayer}
-                  title="Clear selected player"
+                  key={scenario.id ?? 'standard'}
+                  type="button"
+                  className={`chip-scenario-btn ${selectedChip === scenario.id ? 'active' : ''}`}
+                  disabled={canonicalLoading}
+                  onClick={() => handleChipSelect(scenario.id)}
                 >
-                  Clear
+                  {scenario.label}
                 </button>
-              )}
+              ))}
+            </div>
+          </div>
+
+          {!recommendationSafety.actionable && (
+            <div className="evidence-warning" role="status">
+              <b>Actionable advice paused.</b> {recommendationSafety.reasons.join(' ')}
             </div>
           )}
-          <div className="filter-pill">
-            <Gauge size={15} /> {manager.freeTransfers} free transfer
-            {manager.freeTransfers === 1 ? "" : "s"} · £{manager.bank.toFixed(1)}m bank
-          </div>
+
+          {canonicalRecommendation && (
+            <>
+              <p className="muted" style={{ marginBottom: '16px' }}>
+                Forecast {canonicalRecommendation.forecastRunId.slice(0, 8)} · status {canonicalRecommendation.status} · {recommendationStatus || 'stored result'}
+                {recommendationCreatedAt ? ` · last recalculated ${formatOperationalTime(recommendationCreatedAt)}` : ''} · ordering saved for reproducibility
+                {canonicalRecommendation.league?.leagueName ? ` · vs ${canonicalRecommendation.league.leagueName}` : ''}
+              </p>
+
+              {/* Primary Hero Recommendation Card */}
+              {primaryCandidate && (
+                <PrimaryHeroRecommendationCard
+                  candidate={primaryCandidate}
+                  isPrimary={true}
+                  catalog={catalog}
+                  squad={squad}
+                  horizon={horizon}
+                  recommendationSafety={recommendationSafety}
+                  onApply={onApplyCanonical}
+                  onDismiss={onDismissCanonical}
+                />
+              )}
+
+              {/* Collapsed Alternative Plans */}
+              {alternativeCandidates.length > 0 && (
+                <details className="alternative-plans-container">
+                  <summary>
+                    Alternative Stored Plans ({alternativeCandidates.length})
+                  </summary>
+                  <div className="alternative-plans-list">
+                    {alternativeCandidates.map((candidate) => {
+                      const names = candidate.apiMoves?.map((move) => {
+                        const outName = catalog?.find((p) => p.id === move.outId)?.name || squad?.find((p) => p.id === move.outId)?.name || `#${move.outId}`;
+                        const inName = catalog?.find((p) => p.id === move.inId)?.name || `#${move.inId}`;
+                        return `${outName} → ${inName}`;
+                      }) || [];
+                      const affordabilityLabel = candidate.affordabilityStatus === 'EXACT' ? 'Exact' : candidate.affordabilityStatus.replaceAll('_', ' ');
+
+                      return (
+                        <article className="alternative-candidate-card" key={candidate.id}>
+                          <div className="card-agent-header">
+                            <b>Option #{candidate.rank} · {candidate.action}</b>
+                            <span className={`pill ${candidate.affordabilityStatus === 'EXACT' ? 'green' : 'amber'}`}>
+                              {affordabilityLabel}
+                            </span>
+                          </div>
+                          <p style={{ margin: '4px 0', fontSize: '13px' }}>
+                            {names.length ? names.join(' · ') : candidate.action === 'CHIP' ? 'Optimised chip counterfactual' : 'Roll the transfer'} · net {Number(candidate.netExpectedGain).toFixed(2)} pts · hit {candidate.hitCost} · P(beats roll) {candidate.probabilityBeatsRoll == null ? '—' : `${Math.round(candidate.probabilityBeatsRoll * 100)}%`}
+                          </p>
+                          <div className="recommend-actions" style={{ marginTop: '6px' }}>
+                            {(candidate.apiMoves?.length || candidate.action === 'CHIP' || candidate.action === 'ROLL') && (
+                              <button
+                                className="dark-btn"
+                                disabled={!recommendationSafety.actionable}
+                                onClick={() => onApplyCanonical?.(candidate)}
+                              >
+                                Apply local plan
+                              </button>
+                            )}
+                            <SecondaryDismissAction candidate={candidate} onDismiss={onDismissCanonical} />
+                          </div>
+                        </article>
+                      );
+                    })}
+                  </div>
+                </details>
+              )}
+            </>
+          )}
         </div>
-      </div>
-      <div className="panel transfer-list">
-        {visibleData.map((t, i) => {
-          const outProj = t.outProjection ?? horizonProjection(t.out, horizon);
-          const inProj = t.inProjection ?? horizonProjection(t.in, horizon);
-          return (
-            <article
-              className="transfer-card-item"
-              key={t.out.id + "-" + t.in.id}
-            >
-              <div className="transfer-row">
-                <span className="rank">{String(i + 1).padStart(2, "0")}</span>
-                <div className="transfer-player">
-                  <span
-                    className="mini-shirt"
-                    style={{ background: getPlayerShirtColor(t.out) }}
+      ) : (
+        /* Replacement Finder (Direct-swap Explorer) */
+        <div className="direct-swap-explorer-container">
+          <div className="page-intro">
+            <div>
+              <p className="eyebrow">TARGETED SWAPS</p>
+              <h2>Replacement Finder</h2>
+              <p className="muted">
+                {targetSwapPlayer
+                  ? `Comparing ${targetSwapPlayer.position} replacements for ${targetSwapPlayer.name} (£${targetSwapPlayer.price.toFixed(1)}m, budget up to £${maxPrice.toFixed(1)}m over ${horizon} GWs).`
+                  : "User-directed comparisons only. Select a player to view all same-position candidates within your budget."}
+              </p>
+            </div>
+            <div style={{ display: "flex", gap: "10px", alignItems: "center", flexWrap: "wrap" }}>
+              {squad && squad.length > 0 && (
+                <div style={{ display: "flex", alignItems: "center", gap: "6px" }}>
+                  <select
+                    id="direct-swap-player-select"
+                    aria-label="Select player to replace"
+                    style={{
+                      padding: "6px 10px",
+                      borderRadius: "6px",
+                      background: "var(--surface-color, #1e293b)",
+                      color: "inherit",
+                      border: "1px solid var(--border-color, #334155)",
+                      fontSize: "13px",
+                      cursor: "pointer",
+                    }}
+                    value={targetSwapPlayer?.id ?? ""}
+                    onChange={(e) => {
+                      const val = e.target.value;
+                      if (!val) {
+                        onClearTargetSwapPlayer?.();
+                      } else {
+                        const found = squad.find((p) => p.id === Number(val));
+                        if (found) onSelectTargetSwapPlayer?.(found);
+                      }
+                    }}
                   >
-                    {t.out.position}
-                  </span>
-                  <div>
-                    <b>{t.out.name}</b>
-                    <small>
-                      {t.out.club} · £{t.out.price.toFixed(1)}m
-                    </small>
-                    {(() => {
-                      const m = momentumBadge(t.out);
-                      return m ? (
-                        <small className={"momentum-badge " + m.tone} title={m.detail}>
-                          {m.label}
-                        </small>
-                      ) : null;
-                    })()}
-                  </div>
-                </div>
-                <ArrowRight size={17} className="arrow-muted" />
-                <div className="transfer-player">
-                  <span
-                    className="mini-shirt"
-                    style={{ background: getPlayerShirtColor(t.in) }}
-                  >
-                    {t.in.position}
-                  </span>
-                  <div>
-                    <b>{t.in.name}</b>
-                    <small>
-                      {t.in.club} · £{t.in.price.toFixed(1)}m ({t.priceDelta >= 0 ? `+£${t.priceDelta.toFixed(1)}m` : `-£${Math.abs(t.priceDelta).toFixed(1)}m`})
-                    </small>
-                    {(() => {
-                      const m = momentumBadge(t.in);
-                      return m ? (
-                        <small className={"momentum-badge " + m.tone} title={m.detail}>
-                          {m.label}
-                        </small>
-                      ) : null;
-                    })()}
-                  </div>
-                </div>
-                <div className="fixture-col">
-                  <span className="fixture">{t.in.fixture}</span>
-                  {t.priceAlert === "RISING_SOON" && (
-                    <span className="price-pill green">🔥 Act now · price rising</span>
-                  )}
-                  {t.sellOffWarning && (
-                    <span className="price-pill red">⚠️ Sell-off risk · act soon</span>
+                    <option value="">-- Choose player from My Team --</option>
+                    {squad.map((p) => (
+                      <option key={p.id} value={p.id}>
+                        {p.position} · {p.name} (£{p.price.toFixed(1)}m)
+                      </option>
+                    ))}
+                  </select>
+                  {targetSwapPlayer && (
+                    <button
+                      type="button"
+                      className="ghost-btn"
+                      style={{ padding: "4px 8px", fontSize: "12px" }}
+                      onClick={onClearTargetSwapPlayer}
+                      title="Clear selected player"
+                    >
+                      Clear
+                    </button>
                   )}
                 </div>
-                <div className="gain">
-                  <b>{t.net >= 0 ? `+${t.net}` : t.net}</b>
-                  <small>pts gain</small>
-                </div>
-                <div className="transfer-actions">
-                  <button className="why-btn" onClick={() => onWhy(t)}>
-                    Review
-                  </button>
-                  <button
-                    className="save-plan-btn"
-                    onClick={() => onApply(t.out.id, t.in.id)}
-                  >
-                    Update plan
-                  </button>
+              )}
+            </div>
+          </div>
+
+          <div className="panel transfer-list">
+            {targetSwapPlayer && (
+              <div style={{ padding: "14px 20px 0" }}>
+                <div className="explorer-toolbar">
+                  <div className="explorer-sort-group">
+                    <label htmlFor="explorer-sort-select">Sort by:</label>
+                    <select
+                      id="explorer-sort-select"
+                      className="explorer-sort-select"
+                      value={explorerSort}
+                      onChange={(e) => setExplorerSort(e.target.value as any)}
+                    >
+                      <option value="GAIN">Net Gain (pts)</option>
+                      <option value="PROJECTION">Projection (xPts)</option>
+                      <option value="PRICE_ASC">Price: Low to High</option>
+                      <option value="PRICE_DESC">Price: High to Low</option>
+                      <option value="FUNDS_RELEASED">Funds Released (£)</option>
+                    </select>
+                  </div>
+                  <div className="filter-pill">
+                    <Gauge size={15} /> {manager.freeTransfers} free transfer
+                    {manager.freeTransfers === 1 ? "" : "s"} · £{manager.bank.toFixed(1)}m bank
+                  </div>
                 </div>
               </div>
-              <details className="calculation-details">
-                <summary>Calculation details</summary>
-                <div>
-                  <span>
-                    {t.out.name}: <b>{outProj.toFixed(1)} xPts</b>
-                  </span>
-                  <span>
-                    {t.in.name}: <b>{inProj.toFixed(1)} xPts</b>
-                  </span>
-                  <span>
-                    Hit: <b>-{(t.hitCost ?? 0).toFixed(1)}</b>
-                  </span>
-                  <span>
-                    Net Gain: <b>{t.net >= 0 ? `+${t.net.toFixed(1)}` : t.net.toFixed(1)} pts</b>
-                  </span>
-                </div>
-              </details>
-            </article>
-          );
-        })}
-        {activeExplorerData.length > limit && (
-          <div
-            style={{
-              display: "flex",
-              justifyContent: "center",
-              alignItems: "center",
-              gap: "12px",
-              padding: "16px",
-            }}
-          >
-            <button
-              className="ghost-btn"
-              onClick={() =>
-                setLimit((prev) => Math.min(prev + 12, activeExplorerData.length))
-              }
-            >
-              Show 12 more
-            </button>
-            <button className="dark-btn" onClick={() => setLimit(activeExplorerData.length)}>
-              Show all {activeExplorerData.length} replacements
-            </button>
+            )}
+
+            {visibleData.map((t, i) => {
+              const outProj = t.outProjection ?? horizonProjection(t.out, horizon);
+              const inProj = t.inProjection ?? horizonProjection(t.in, horizon);
+              return (
+                <article
+                  className="transfer-card-item"
+                  key={t.out.id + "-" + t.in.id}
+                >
+                  <div className="transfer-row">
+                    <span className="rank">{String(i + 1).padStart(2, "0")}</span>
+                    <div className="transfer-player">
+                      <span
+                        className="mini-shirt"
+                        style={{ background: getPlayerShirtColor(t.out) }}
+                      >
+                        {t.out.position}
+                      </span>
+                      <div>
+                        <b>{t.out.name}</b>
+                        <small>
+                          {t.out.club} · £{t.out.price.toFixed(1)}m
+                        </small>
+                        {(() => {
+                          const m = momentumBadge(t.out);
+                          return m ? (
+                            <small className={"momentum-badge " + m.tone} title={m.detail}>
+                              {m.label}
+                            </small>
+                          ) : null;
+                        })()}
+                      </div>
+                    </div>
+                    <ArrowRight size={17} className="arrow-muted" />
+                    <div className="transfer-player">
+                      <span
+                        className="mini-shirt"
+                        style={{ background: getPlayerShirtColor(t.in) }}
+                      >
+                        {t.in.position}
+                      </span>
+                      <div>
+                        <b>{t.in.name}</b>
+                        <small>
+                          {t.in.club} · £{t.in.price.toFixed(1)}m ({t.priceDelta >= 0 ? `+£${t.priceDelta.toFixed(1)}m` : `-£${Math.abs(t.priceDelta).toFixed(1)}m`})
+                        </small>
+                        {(() => {
+                          const m = momentumBadge(t.in);
+                          return m ? (
+                            <small className={"momentum-badge " + m.tone} title={m.detail}>
+                              {m.label}
+                            </small>
+                          ) : null;
+                        })()}
+                      </div>
+                    </div>
+                    <div className="fixture-col">
+                      <span className="fixture">{t.in.fixture}</span>
+                      {t.priceAlert === "RISING_SOON" && (
+                        <span className="price-pill green">🔥 Act now · price rising</span>
+                      )}
+                      {t.sellOffWarning && (
+                        <span className="price-pill red">⚠️ Sell-off risk · act soon</span>
+                      )}
+                    </div>
+                    <div className="gain">
+                      <b>{t.net >= 0 ? `+${t.net}` : t.net}</b>
+                      <small>pts gain</small>
+                    </div>
+                    <div className="transfer-actions">
+                      <button type="button" className="why-btn" onClick={() => onWhy(t)}>
+                        Review
+                      </button>
+                      <button
+                        type="button"
+                        className="save-plan-btn"
+                        onClick={() => onApply(t.out.id, t.in.id)}
+                      >
+                        Update plan
+                      </button>
+                    </div>
+                  </div>
+                  <details className="calculation-details">
+                    <summary>Calculation details</summary>
+                    <div>
+                      <span>
+                        {t.out.name}: <b>{outProj.toFixed(1)} xPts</b>
+                      </span>
+                      <span>
+                        {t.in.name}: <b>{inProj.toFixed(1)} xPts</b>
+                      </span>
+                      <span>
+                        Hit: <b>-{(t.hitCost ?? 0).toFixed(1)}</b>
+                      </span>
+                      <span>
+                        Net Gain: <b>{t.net >= 0 ? `+${t.net.toFixed(1)}` : t.net.toFixed(1)} pts</b>
+                      </span>
+                    </div>
+                  </details>
+                </article>
+              );
+            })}
+            {activeExplorerData.length > limit && (
+              <div
+                style={{
+                  display: "flex",
+                  justifyContent: "center",
+                  alignItems: "center",
+                  gap: "12px",
+                  padding: "16px",
+                }}
+              >
+                <button
+                  type="button"
+                  className="ghost-btn"
+                  onClick={() =>
+                    setLimit((prev) => Math.min(prev + 12, activeExplorerData.length))
+                  }
+                >
+                  Show 12 more
+                </button>
+                <button type="button" className="dark-btn" onClick={() => setLimit(activeExplorerData.length)}>
+                  Show all {activeExplorerData.length} replacements
+                </button>
+              </div>
+            )}
+            {limit > 8 && (
+              <div
+                style={{
+                  display: "flex",
+                  justifyContent: "center",
+                  padding: "8px 16px 16px",
+                }}
+              >
+                <button type="button" className="ghost-btn" onClick={() => setLimit(8)}>
+                  Collapse to top 8
+                </button>
+              </div>
+            )}
+            {activeExplorerData.length === 0 && (
+              <div className="empty">
+                <b>{targetSwapPlayer ? `No affordable ${targetSwapPlayer.position} replacements found.` : "No exploratory swap selected."}</b>
+                <p>
+                  {targetSwapPlayer
+                    ? `No candidate ${targetSwapPlayer.position} players fit within your maximum transfer budget (£${maxPrice.toFixed(1)}m).`
+                    : "Select a player from the dropdown above or click 'Explore all replacements' on any player in My Team to compare same-position options within your budget."}
+                </p>
+              </div>
+            )}
           </div>
-        )}
-        {limit > 8 && (
-          <div
-            style={{
-              display: "flex",
-              justifyContent: "center",
-              padding: "8px 16px 16px",
-            }}
-          >
-            <button className="ghost-btn" onClick={() => setLimit(8)}>
-              Collapse to top 8
-            </button>
-          </div>
-        )}
-        {activeExplorerData.length === 0 && (
-          <div className="empty">
-            <b>{targetSwapPlayer ? `No affordable ${targetSwapPlayer.position} replacements found.` : "No exploratory swap selected."}</b>
-            <p>
-              {targetSwapPlayer
-                ? `No candidate ${targetSwapPlayer.position} players fit within your maximum transfer budget (£${maxPrice.toFixed(1)}m).`
-                : "Select a player from the dropdown above or click 'Explore all replacements' on any player in My Team to compare same-position options within your budget."}
-            </p>
-          </div>
-        )}
-      </div>
+        </div>
+      )}
     </div>
   );
 }

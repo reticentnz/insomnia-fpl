@@ -6062,3 +6062,489 @@ h2 {
   font-size: 11px;
   color: #94a3b8;
 }
+
+/* ==========================================================================
+   Transfers V2 Redesign (Optimal Strategy & Replacement Finder)
+   ========================================================================== */
+
+.transfers-subnav {
+  display: flex;
+  gap: 8px;
+  margin-bottom: 20px;
+  background: rgba(15, 23, 42, 0.6);
+  padding: 6px;
+  border-radius: var(--radius-md);
+  border: 1px solid var(--border-subtle);
+  width: fit-content;
+}
+
+.transfers-subnav-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 16px;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  border: 1px solid transparent;
+  color: var(--text-muted);
+  font-family: var(--font-body);
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all 0.2s ease;
+}
+
+.transfers-subnav-btn:hover {
+  color: var(--text-main);
+  background: rgba(255, 255, 255, 0.04);
+}
+
+.transfers-subnav-btn.active {
+  background: var(--bg-card-solid);
+  color: var(--accent-emerald);
+  border-color: rgba(0, 255, 135, 0.25);
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.3);
+}
+
+.transfers-subnav-btn .tab-pill-badge {
+  font-size: 11px;
+  padding: 2px 8px;
+  border-radius: var(--radius-full);
+  background: rgba(0, 255, 135, 0.15);
+  color: var(--accent-emerald);
+}
+
+/* Chip Scenario Selector */
+.chip-scenario-card {
+  margin-bottom: 16px;
+  padding: 12px 16px;
+  background: rgba(15, 23, 42, 0.4);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-md);
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.chip-scenario-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  font-size: 11px;
+  color: var(--text-dim);
+  font-weight: 700;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+}
+
+.chip-scenario-strip {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.chip-scenario-btn {
+  padding: 6px 12px;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--border-subtle);
+  background: rgba(255, 255, 255, 0.03);
+  color: var(--text-muted);
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+
+.chip-scenario-btn:hover:not(:disabled) {
+  border-color: rgba(255, 255, 255, 0.2);
+  color: var(--text-main);
+}
+
+.chip-scenario-btn.active {
+  background: rgba(0, 255, 135, 0.12);
+  border-color: var(--accent-emerald);
+  color: var(--accent-emerald);
+}
+
+.chip-scenario-btn:disabled {
+  opacity: 0.5;
+  cursor: wait;
+}
+
+/* Primary Optimizer Hero Card */
+.primary-hero-card {
+  background: linear-gradient(180deg, rgba(15, 23, 42, 0.85) 0%, rgba(10, 18, 32, 0.95) 100%);
+  border: 1px solid rgba(0, 255, 135, 0.3);
+  border-radius: var(--radius-lg);
+  padding: 24px;
+  box-shadow: 0 12px 36px -8px rgba(0, 0, 0, 0.6), 0 0 20px rgba(0, 255, 135, 0.08);
+  display: flex;
+  flex-direction: column;
+  gap: 18px;
+  margin-bottom: 20px;
+}
+
+.hero-card-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 10px;
+}
+
+.hero-badge-tag {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 11px;
+  font-weight: 800;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--accent-emerald);
+  background: rgba(0, 255, 135, 0.12);
+  padding: 4px 10px;
+  border-radius: var(--radius-sm);
+  border: 1px solid rgba(0, 255, 135, 0.25);
+}
+
+.hero-header-badges {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+/* Structured Out ➔ In Tokens */
+.hero-moves-container {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.move-token-pair {
+  display: grid;
+  grid-template-columns: 1fr auto 1fr;
+  align-items: center;
+  gap: 16px;
+  background: rgba(0, 0, 0, 0.25);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-md);
+  padding: 14px 18px;
+}
+
+@media (max-width: 640px) {
+  .move-token-pair {
+    grid-template-columns: 1fr;
+    gap: 8px;
+    text-align: center;
+  }
+  .move-token-arrow {
+    transform: rotate(90deg);
+    margin: 4px auto;
+  }
+}
+
+.move-token {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.move-token-info {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.move-token-info b {
+  font-size: 15px;
+  font-weight: 700;
+  color: var(--text-main);
+}
+
+.move-token-info small {
+  color: var(--text-muted);
+  font-size: 12px;
+}
+
+.move-token-meta {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-top: 4px;
+  flex-wrap: wrap;
+}
+
+.move-token-arrow {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--accent-emerald);
+  font-size: 18px;
+}
+
+.roll-action-banner, .chip-action-banner {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  background: rgba(0, 0, 0, 0.25);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-md);
+  padding: 16px 20px;
+}
+
+.roll-action-icon, .chip-action-icon {
+  width: 44px;
+  height: 44px;
+  border-radius: var(--radius-md);
+  display: grid;
+  place-items: center;
+  font-size: 22px;
+  background: rgba(0, 255, 135, 0.1);
+  color: var(--accent-emerald);
+}
+
+.roll-action-copy b, .chip-action-copy b {
+  font-size: 16px;
+  color: var(--text-main);
+  display: block;
+}
+
+.roll-action-copy p, .chip-action-copy p {
+  font-size: 13px;
+  color: var(--text-muted);
+  margin-top: 2px;
+}
+
+/* Hero Metrics Grid */
+.hero-metrics-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+  gap: 12px;
+  padding: 14px 18px;
+  background: rgba(0, 0, 0, 0.2);
+  border-radius: var(--radius-md);
+  border: 1px solid var(--border-subtle);
+}
+
+.hero-metric-box {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+
+.hero-metric-label {
+  font-size: 10px;
+  font-weight: 800;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--text-dim);
+}
+
+.hero-metric-val-row {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+}
+
+.hero-metric-val {
+  font-family: var(--font-heading);
+  font-size: 22px;
+  font-weight: 800;
+  color: var(--text-main);
+}
+
+.hero-metric-val.gain {
+  color: var(--accent-emerald);
+}
+
+.hero-metric-val.gain.neutral {
+  color: #fbbf24;
+}
+
+.hero-metric-sub {
+  font-size: 11px;
+  color: var(--text-muted);
+}
+
+/* Progressive Disclosure details */
+.why-recommendation-details {
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-md);
+  background: rgba(15, 23, 42, 0.4);
+  overflow: hidden;
+}
+
+.why-recommendation-details summary {
+  padding: 12px 16px;
+  font-size: 12px;
+  font-weight: 700;
+  color: var(--text-muted);
+  cursor: pointer;
+  user-select: none;
+  transition: all 0.15s ease;
+}
+
+.why-recommendation-details summary:hover {
+  color: var(--text-main);
+  background: rgba(255, 255, 255, 0.02);
+}
+
+.why-recommendation-content {
+  padding: 14px 16px;
+  border-top: 1px solid var(--border-subtle);
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  font-size: 12px;
+}
+
+.calc-ledger-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 12px;
+}
+
+.calc-ledger-table th, .calc-ledger-table td {
+  padding: 6px 10px;
+  text-align: left;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.05);
+}
+
+.calc-ledger-table th {
+  color: var(--text-dim);
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+}
+
+.calc-ledger-table tr.total-row td {
+  font-weight: 800;
+  color: var(--accent-emerald);
+  border-top: 1px solid var(--border-subtle);
+  border-bottom: 0;
+  padding-top: 8px;
+}
+
+/* Alternative candidates accordion / compact list */
+.alternative-plans-container {
+  margin-top: 16px;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-md);
+  background: rgba(15, 23, 42, 0.3);
+  overflow: hidden;
+}
+
+.alternative-plans-container summary {
+  padding: 12px 18px;
+  font-size: 13px;
+  font-weight: 700;
+  color: var(--text-muted);
+  cursor: pointer;
+  user-select: none;
+}
+
+.alternative-plans-container summary:hover {
+  color: var(--text-main);
+}
+
+.alternative-plans-list {
+  padding: 12px 18px 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  border-top: 1px solid var(--border-subtle);
+}
+
+.alternative-candidate-card {
+  background: rgba(15, 23, 42, 0.5);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-md);
+  padding: 14px 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+/* Unified Secondary Action Dropdown */
+.secondary-dismiss-container {
+  position: relative;
+  display: inline-block;
+}
+
+.dismiss-dropdown-menu {
+  position: absolute;
+  bottom: calc(100% + 6px);
+  left: 0;
+  background: var(--bg-card-solid);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-sm);
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.6);
+  padding: 4px;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 190px;
+  z-index: 50;
+}
+
+.dismiss-menu-item {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  padding: 8px 10px;
+  border-radius: 4px;
+  background: transparent;
+  border: 0;
+  color: var(--text-main);
+  font-size: 12px;
+  font-weight: 600;
+  text-align: left;
+  cursor: pointer;
+  transition: background 0.15s ease;
+  width: 100%;
+}
+
+.dismiss-menu-item small {
+  font-size: 10px;
+  color: var(--text-muted);
+  font-weight: normal;
+}
+
+.dismiss-menu-item:hover {
+  background: rgba(255, 255, 255, 0.08);
+}
+
+/* Replacement Finder Toolbar */
+.explorer-toolbar {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 12px;
+  margin-bottom: 14px;
+}
+
+.explorer-sort-group {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.explorer-sort-group label {
+  font-size: 11px;
+  color: var(--text-dim);
+  font-weight: 700;
+  text-transform: uppercase;
+}
+
+.explorer-sort-select {
+  padding: 6px 10px;
+  border-radius: var(--radius-sm);
+  background: var(--bg-input);
+  color: var(--text-main);
+  border: 1px solid var(--border-subtle);
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+}

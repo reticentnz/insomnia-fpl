@@ -345,19 +345,19 @@ export function interpretManualSignalText(text,catalog){
     for(const player of players){
       let draft
       if(isBackup){
-        draft={playerId:player.id,kind:'DEPTH_CHART',claimClass:'REAL_WORLD_ROLE',modelImpact:'ROLE',value:{depthRole:'BACKUP',startProbability:.08,minutesIfStarting:player.position==='GK'?90:82,substituteProbabilityWhenBenched:player.position==='GK'?.005:.2,minutesIfSubstitute:player.position==='GK'?5:18,note:segment},evidenceSummary:segment,evidenceText:segment,interpretationRationale:'The statement explicitly says the player is not expected to be the regular starter.',confidence:.8,status:'PENDING'}
+        draft={playerId:player.id,kind:'DEPTH_CHART',claimClass:'REAL_WORLD_ROLE',modelImpact:'ROLE',value:{depthRole:'BACKUP',startProbability:.08,minutesIfStarting:player.position==='GK'?90:82,substituteProbabilityWhenBenched:player.position==='GK'?.005:.2,minutesIfSubstitute:player.position==='GK'?5:18,note:segment},evidenceSummary:segment,evidenceText:segment,interpretationRationale:'The statement explicitly says the player is not expected to be the regular starter.',confidence:.8,status:'VERIFIED'}
       }else if(isFirstChoice){
-        draft={playerId:player.id,kind:'DEPTH_CHART',claimClass:'REAL_WORLD_ROLE',modelImpact:'ROLE',value:{depthRole:'FIRST_CHOICE',startProbability:.88,minutesIfStarting:player.position==='GK'?90:84,note:segment},evidenceSummary:segment,evidenceText:segment,interpretationRationale:'The statement explicitly describes the player as a regular or first-choice starter.',confidence:.75,status:'PENDING'}
+        draft={playerId:player.id,kind:'DEPTH_CHART',claimClass:'REAL_WORLD_ROLE',modelImpact:'ROLE',value:{depthRole:'FIRST_CHOICE',startProbability:.88,minutesIfStarting:player.position==='GK'?90:84,note:segment},evidenceSummary:segment,evidenceText:segment,interpretationRationale:'The statement explicitly describes the player as a regular or first-choice starter.',confidence:.75,status:'VERIFIED'}
       }else if(isReduced){
-        draft={playerId:player.id,kind:'EXPECTED_ROLE',claimClass:'ROTATION',modelImpact:'ROLE',value:{depthRole:'ROTATION',startProbability:.55,note:segment},evidenceSummary:segment,evidenceText:segment,interpretationRationale:'The statement describes reduced minutes or rotation risk.',confidence:.6,status:'PENDING'}
+        draft={playerId:player.id,kind:'EXPECTED_ROLE',claimClass:'ROTATION',modelImpact:'ROLE',value:{depthRole:'ROTATION',startProbability:.55,note:segment},evidenceSummary:segment,evidenceText:segment,interpretationRationale:'The statement describes reduced minutes or rotation risk.',confidence:.6,status:'VERIFIED'}
       }else if(isUnavailable){
-        draft={playerId:player.id,kind:'INJURY',claimClass:'INJURY',modelImpact:'ROLE',value:{depthRole:'OUT',startProbability:0,note:segment},evidenceSummary:segment,evidenceText:segment,interpretationRationale:'The statement explicitly says the player is unavailable.',confidence:.75,status:'PENDING'}
+        draft={playerId:player.id,kind:'INJURY',claimClass:'INJURY',modelImpact:'ROLE',value:{depthRole:'OUT',startProbability:0,note:segment},evidenceSummary:segment,evidenceText:segment,interpretationRationale:'The statement explicitly says the player is unavailable.',confidence:.75,status:'VERIFIED'}
       }else if(isInjury){
-        draft={playerId:player.id,kind:'INJURY',claimClass:'AVAILABILITY',modelImpact:'NONE',value:{note:segment},evidenceSummary:segment,evidenceText:segment,interpretationRationale:'An availability concern is mentioned, but its numerical impact is ambiguous.',confidence:.55,status:'PENDING'}
+        draft={playerId:player.id,kind:'INJURY',claimClass:'AVAILABILITY',modelImpact:'NONE',value:{note:segment},evidenceSummary:segment,evidenceText:segment,interpretationRationale:'An availability concern is mentioned, but its numerical impact is ambiguous.',confidence:.55,status:'VERIFIED'}
       }else if(isFplChoice){
         draft={playerId:player.id,kind:'VALUE_OPINION',claimClass:/\bbench|my team|my squad\b/i.test(lower)?'FPL_SELECTION':'CREATOR_RATING',modelImpact:'NONE',value:{note:segment},evidenceSummary:segment,evidenceText:segment,interpretationRationale:'This is an FPL selection or creator preference, not evidence about the player’s real-world minutes.',confidence:.8,status:'VERIFIED'}
       }else{
-        draft={playerId:player.id,kind:'VALUE_OPINION',claimClass:'UNKNOWN',modelImpact:'NONE',value:{note:segment},evidenceSummary:segment,evidenceText:segment,interpretationRationale:'The player is mentioned, but the model impact is ambiguous.',confidence:.4,status:'PENDING'}
+        draft={playerId:player.id,kind:'VALUE_OPINION',claimClass:'UNKNOWN',modelImpact:'NONE',value:{note:segment},evidenceSummary:segment,evidenceText:segment,interpretationRationale:'The player is mentioned, but the model impact is ambiguous.',confidence:.4,status:'VERIFIED'}
       }
       const existing=byPlayer.get(player.id)
       const priority=item=>item.modelImpact==='ROLE'?3:item.claimClass==='UNKNOWN'||item.claimClass==='AVAILABILITY'?2:1

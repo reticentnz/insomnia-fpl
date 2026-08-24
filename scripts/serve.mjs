@@ -1135,25 +1135,17 @@ async function reprocessRemoteSignal(db, signal, { includeVerified = false } = {
       const depthRole=inferred.role==='FIRST_CHOICE'?'FIRST_CHOICE':inferred.role==='BACKUP'?'BACKUP':inferred.role==='OUT'?'OUT':'ROTATION'
       const startProbability=inferred.role==='FIRST_CHOICE'?0.88:inferred.role==='ROTATION_LOW'?0.70:inferred.role==='ROTATION_MEDIUM'?0.55:inferred.role==='ROTATION_HIGH'?0.40:inferred.role==='BACKUP'?0.08:0
       const value={depthRole,startProbability,note:signal.evidenceSummary}
-      const restored=await revisePlayerSignalInterpretation(db,signal.id,{claimClass:inferred.role==='OUT'?'INJURY':inferred.role.startsWith('ROTATION')?'ROTATION':'REAL_WORLD_ROLE',modelImpact:'ROLE',value,rationale:inferred.rationale,confidence:inferred.confidence,finalizeContext:false,origin:'AUTO'})
-      if(Number(signal.confidence)>=0.65){
-        const verified=await updatePlayerSignalStatuses(db,[{id:signal.id,status:'VERIFIED'}],{actorType:'AUTO_REPROCESS',reason:'Auto-approved role signal'})
-        return {signal:verified[0]||restored,changed:true,reason:'role_inferred_and_verified'}
-      }
-      signal=restored
+      const restored=await revisePlayerSignalInterpretation(db,signal.id,{claimClass:inferred.role==='OUT'?'INJURY':inferred.role.startsWith('ROTATION')?'ROTATION':'REAL_WORLD_ROLE',modelImpact:'ROLE',value,rationale:inferred.rationale,confidence:inferred.confidence,finalizeContext:false,origin:'AUTO',status:'APPROVED'})
+      return {signal:restored,changed:true,reason:'role_inferred_and_verified'}
     }
     else if(hasRoleValue(signal.value)){
       if(originalModelImpact==='ROLE'&&signal.status==='VERIFIED')return {signal,changed:false,reason:'role_evidence_is_current'}
-      const restored=await revisePlayerSignalInterpretation(db,signal.id,{claimClass:signal.claimClass,modelImpact:'ROLE',value:signal.value,rationale:'Recovered prior role interpretation and passed current evidence/freshness checks.',confidence:signal.interpretation?.confidence,finalizeContext:false,origin:'AUTO'})
-      if(Number(signal.confidence)>=0.65){
-        const verified=await updatePlayerSignalStatuses(db,[{id:signal.id,status:'VERIFIED'}],{actorType:'AUTO_REPROCESS',reason:'Auto-approved role signal'})
-        return {signal:verified[0]||restored,changed:true,reason:'role_restored_and_verified'}
-      }
-      signal=restored
+      const restored=await revisePlayerSignalInterpretation(db,signal.id,{claimClass:signal.claimClass,modelImpact:'ROLE',value:signal.value,rationale:'Recovered prior role interpretation and passed current evidence/freshness checks.',confidence:signal.interpretation?.confidence,finalizeContext:false,origin:'AUTO',status:'APPROVED'})
+      return {signal:restored,changed:true,reason:'role_restored_and_verified'}
     }
   }
   const claimClass=['SET_PIECES','PENALTIES','PERFORMANCE_FORECAST','FPL_SELECTION','CREATOR_RATING','STATISTICAL_CONTEXT'].includes(signal.claimClass)?signal.claimClass:'VALUE_OPINION'
-  const updated=await revisePlayerSignalInterpretation(db,signal.id,{claimClass,modelImpact:'NONE',value:safeContextValue(signal),rationale:'Remote reprocess: non-role evidence was finalized as context.',finalizeContext:true,origin:'AUTO'})
+  const updated=await revisePlayerSignalInterpretation(db,signal.id,{claimClass,modelImpact:'NONE',value:safeContextValue(signal),rationale:'Remote reprocess: non-role evidence was finalized as context.',finalizeContext:true,origin:'AUTO',status:'APPROVED'})
   return {signal:updated,changed:true,reason:'context_finalized'}
 }
 
@@ -1915,7 +1907,7 @@ async function callGroundedSquadChallenge(players,gameweek,deadline,customConfig
   })
   const rejectedSignalCount=proposedSignals.length-signals.length
   const summary=signals.length
-    ? `${signals.length} source-backed finding${signals.length===1?'':'s'} require review. No projection or squad has changed yet.`
+    ? `${signals.length} source-backed finding${signals.length===1?'':'s'} auto-approved into model projections.`
     : `Research completed, but no proposed claim passed source validation. No projection or squad was changed.`
   return {summary,researchSummary:parsed.summary,audits:completeAudits,signals,usage:researchUsage(model,data.usage,webSearchCalls,isDeepSeek?'deepseek':'openai'),proposedSignalCount:proposedSignals.length,rejectedSignalCount,provider:`${isDeepSeek?'DeepSeek':'OpenAI'} grounded research (${model})`,provenanceWarning:isDeepSeek?'DeepSeek source metadata is not exposed through its Responses compatibility layer; HTTPS URLs are retained for manual review only.':'',sources:[...searchedSources].map(url=>({url}))}
 }
@@ -1927,12 +1919,12 @@ async function persistChallengeSignals(challenge,currentGameweek){
   for(const signal of challenge.signals){
     const validUntil=new Date(signal.validUntil)
     if(!Number.isFinite(validUntil.getTime()))continue
-    const existing=(await listPlayerSignals(db,{playerId:signal.playerId,status:'PENDING',limit:500})).find(row=>row.gameweek===currentGameweek&&row.kind===signal.kind&&row.sourceUrl===signal.sourceUrl)
+    const existing=(await listPlayerSignals(db,{playerId:signal.playerId,limit:500})).find(row=>row.gameweek===currentGameweek&&row.kind===signal.kind&&row.sourceUrl===signal.sourceUrl)
     if(existing){
       stored.push(existing)
       continue
     }
-    stored.push(await createPlayerSignal(db,{playerId:signal.playerId,gameweek:currentGameweek,kind:signal.kind,value:signal.value,sourceType:signal.sourceType,sourceUrl:signal.sourceUrl,evidenceSummary:signal.evidenceSummary,confidence:signal.confidence,observedAt,validUntil:validUntil.toISOString(),status:'PENDING',actorType:'RESEARCH',sourceDate:signal.sourceDate||null}))
+    stored.push(await createPlayerSignal(db,{playerId:signal.playerId,gameweek:currentGameweek,kind:signal.kind,value:signal.value,sourceType:signal.sourceType,sourceUrl:signal.sourceUrl,evidenceSummary:signal.evidenceSummary,confidence:signal.confidence,observedAt,validUntil:validUntil.toISOString(),status:'VERIFIED',actorType:'RESEARCH',sourceDate:signal.sourceDate||null}))
   }
   return {...challenge,signals:stored}
 }
@@ -2361,8 +2353,9 @@ function startServerOnAvailablePort(targetPort) {
         const manual=payload.manualOverride===true
         const observedAt=new Date().toISOString(),validUntil=new Date(payload.validUntil||Date.now()+7*24*60*60*1000)
         if(!Number.isFinite(validUntil.getTime()))throw new Error('validUntil must be a valid timestamp')
-        const signal=await createPlayerSignal(db,{playerId:payload.playerId,gameweek:payload.gameweek||null,kind:payload.kind,value:payload.value||{},sourceType:manual?'MANUAL_OVERRIDE':'USER_FEEDBACK',sourceUrl:payload.sourceUrl||null,evidenceSummary:payload.evidenceSummary,evidenceText:payload.evidenceText||payload.evidenceSummary,claimClass:payload.claimClass,interpretationRationale:payload.interpretationRationale,modelImpact:payload.modelImpact,confidence:manual?1:Math.max(0,Math.min(1,Number(payload.confidence)||.4)),observedAt,validUntil:validUntil.toISOString(),status:manual?'VERIFIED':'PENDING'})
-        sendJson(res,201,{signal,recompute:manual?await triggerForecastRecompute({ reason: 'signal' }):null})
+        const status = payload.status || 'VERIFIED'
+        const signal=await createPlayerSignal(db,{playerId:payload.playerId,gameweek:payload.gameweek||null,kind:payload.kind,value:payload.value||{},sourceType:manual?'MANUAL_OVERRIDE':'USER_FEEDBACK',sourceUrl:payload.sourceUrl||null,evidenceSummary:payload.evidenceSummary,evidenceText:payload.evidenceText||payload.evidenceSummary,claimClass:payload.claimClass,interpretationRationale:payload.interpretationRationale,modelImpact:payload.modelImpact,confidence:manual?1:Math.max(0,Math.min(1,Number(payload.confidence)||.4)),observedAt,validUntil:validUntil.toISOString(),status})
+        sendJson(res,201,{signal,recompute:await triggerForecastRecompute({ reason: 'signal' })})
       }catch(error){sendJson(res,400,{error:error instanceof Error?error.message:'Unable to create signal'})}
       return
     }
@@ -2431,10 +2424,10 @@ function startServerOnAvailablePort(targetPort) {
         for(const draft of drafts.slice(0,10)){
           const observedAt=new Date().toISOString()
           const validUntil=new Date(Date.now()+7*24*60*60*1000).toISOString()
-          const signal=await createPlayerSignal(db,{playerId:draft.playerId,gameweek:null,kind:draft.kind,value:draft.value,sourceType,sourceUrl,evidenceSummary:draft.evidenceSummary,evidenceText:draft.evidenceText,claimClass:draft.claimClass,modelImpact:draft.modelImpact,interpretationRationale:draft.interpretationRationale,confidence:draft.confidence||payloadConfidence,observedAt,validUntil,status:draft.status})
-          created.push({...signal,autoApproved:false})
+          const signal=await createPlayerSignal(db,{playerId:draft.playerId,gameweek:null,kind:draft.kind,value:draft.value,sourceType,sourceUrl,evidenceSummary:draft.evidenceSummary,evidenceText:draft.evidenceText,claimClass:draft.claimClass,modelImpact:draft.modelImpact,interpretationRationale:draft.interpretationRationale,confidence:draft.confidence||payloadConfidence,observedAt,validUntil,status:draft.status||'VERIFIED'})
+          created.push({...signal,autoApproved:true})
         }
-        sendJson(res,201,{created:created.length,signals:created,autoApproved:false})
+        sendJson(res,201,{created:created.length,signals:created,autoApproved:true,recompute:await triggerForecastRecompute({ reason: 'signal' })})
       }catch(error){sendJson(res,400,{error:error instanceof Error?error.message:'Ingest failed'})}
       return
     }

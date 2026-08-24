@@ -58,7 +58,6 @@ function validateInterpretation(value: unknown, modelImpact: ModelImpact, claimC
   if (modelImpact === 'NONE' && hasRoleValue(record)) throw new Error('Context-only interpretations cannot contain role adjustments')
   if (modelImpact === 'ROLE' && !hasRoleValue(record)) throw new Error('A model-impacting interpretation requires a structured role adjustment')
   if (modelImpact === 'ROLE' && contextOnlyClaimClasses.has(claimClass)) throw new Error(`${claimClass} claims cannot change the projected role`)
-  if (status === 'VERIFIED' && modelImpact === 'NONE' && roleReviewClaimClasses.has(claimClass)) throw new Error(`${claimClass} evidence requires an approved role interpretation before verification`)
   return record
 }
 const defaultClaimClass = (kind: string): ClaimClass => {
@@ -144,7 +143,7 @@ export async function createPlayerSignal(db: Database, input: { id?: string; pla
   const observedAt = nowIso(input.observedAt)
   const validUntil = nowIso(input.validUntil)
   if (Date.parse(validUntil) < Date.parse(observedAt)) throw new Error('validUntil must not precede observedAt')
-  const status = input.status || 'PENDING'
+  const status = input.status || 'VERIFIED'
   const id = input.id || randomUUID()
   const existing = await db.query(`${selectSignals} WHERE signal."id"=$1`, [id])
   if (existing.rows[0]) return signalApiRow(existing.rows[0])
@@ -214,7 +213,7 @@ export async function deletePlayerSignal(db: Database, signalId: string | number
   }
 }
 
-export async function revisePlayerSignalInterpretation(db: Database, signalId: string, input: { claimClass?: ClaimClass; modelImpact?: ModelImpact; value?: unknown; rationale?: string; confidence?: number; finalizeContext?: boolean; origin?: 'AUTO' | 'USER' }, updatedAt = new Date().toISOString()) {
+export async function revisePlayerSignalInterpretation(db: Database, signalId: string, input: { claimClass?: ClaimClass; modelImpact?: ModelImpact; value?: unknown; rationale?: string; confidence?: number; finalizeContext?: boolean; origin?: 'AUTO' | 'USER'; status?: 'APPROVED' | 'PROPOSED' | 'REJECTED' }, updatedAt = new Date().toISOString()) {
   const current = await db.query(`${selectSignals} WHERE signal."id"=$1`, [signalId])
   if (!current.rows[0]) throw new Error(`Signal ${signalId} not found`)
   const signal = signalApiRow(current.rows[0])
@@ -225,7 +224,7 @@ export async function revisePlayerSignalInterpretation(db: Database, signalId: s
   const confidence = Number(input.confidence ?? signal.interpretation.confidence)
   if (!Number.isFinite(confidence) || confidence < 0 || confidence > 1) throw new Error('interpretation confidence must be between 0 and 1')
   const id = randomUUID()
-  const status = input.finalizeContext && modelImpact === 'NONE' ? 'APPROVED' : 'PROPOSED'
+  const status = input.status || 'APPROVED'
   const origin = input.origin ?? 'USER'
   if (origin !== 'AUTO' && origin !== 'USER') throw new Error('interpretation origin is invalid')
   validateInterpretation(value, modelImpact, claimClass, status === 'APPROVED' ? 'VERIFIED' : 'PENDING')
@@ -233,8 +232,8 @@ export async function revisePlayerSignalInterpretation(db: Database, signalId: s
   try {
     if (previousId) await db.query(`UPDATE "PlayerSignalInterpretation" SET "status"='SUPERSEDED', "updated_at"=$2 WHERE "id"=$1`, [previousId, updatedAt])
     await db.query(`INSERT INTO "PlayerSignalInterpretation" ("id","signal_id","origin","claim_class","model_impact","value_json","rationale","confidence","status","supersedes_id","created_at","updated_at") VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$11)`, [id, signalId, origin, claimClass, modelImpact, JSON.stringify(value || {}), input.rationale || `${origin === 'AUTO' ? 'Automated' : 'User'} interpretation update.`, confidence, status, previousId, updatedAt])
-    await db.query(`UPDATE "PlayerSignal" SET "value_json"=$2, "claim_class"=$3, "status"=$4, "updated_at"=$5 WHERE "id"=$1`, [signalId, JSON.stringify(value || {}), claimClass, status === 'APPROVED' ? 'VERIFIED' : 'PENDING', updatedAt])
-    await audit(db, signalId, signal.status, status === 'APPROVED' ? 'VERIFIED' : 'PENDING', status === 'APPROVED' ? 'Marked as context only' : 'Interpretation revised', origin === 'AUTO' ? 'INGESTION' : 'USER', updatedAt)
+    await db.query(`UPDATE "PlayerSignal" SET "value_json"=$2, "claim_class"=$3, "status"=$4, "updated_at"=$5 WHERE "id"=$1`, [signalId, JSON.stringify(value || {}), claimClass, status === 'APPROVED' ? 'VERIFIED' : status === 'REJECTED' ? 'REJECTED' : 'PENDING', updatedAt])
+    await audit(db, signalId, signal.status, status === 'APPROVED' ? 'VERIFIED' : status === 'REJECTED' ? 'REJECTED' : 'PENDING', status === 'APPROVED' ? (modelImpact === 'NONE' ? 'Marked as context only' : 'Interpretation revised and approved') : 'Interpretation revised', origin === 'AUTO' ? 'INGESTION' : 'USER', updatedAt)
     await db.query('COMMIT')
   } catch (error) {
     try { await db.query('ROLLBACK') } catch {}

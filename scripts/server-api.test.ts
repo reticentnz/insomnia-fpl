@@ -106,7 +106,7 @@ describe('canonical HTTP API smoke', () => {
 
     const remoteUnauthorized = await fetch(`${baseUrl}/api/remote/signals`)
     expect(remoteUnauthorized.status).toBe(401)
-    const pendingResponse = await fetch(`${baseUrl}/api/player-signals`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ playerId: 11, kind: 'INJURY', evidenceSummary: 'Remote review fixture', confidence: .7 }) })
+    const pendingResponse = await fetch(`${baseUrl}/api/player-signals`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ playerId: 11, kind: 'INJURY', evidenceSummary: 'Remote review fixture', confidence: .7, status: 'PENDING' }) })
     expect(pendingResponse.status).toBe(201)
     const pending = (await pendingResponse.json()).signal
     const remoteFeedResponse = await fetch(`${baseUrl}/api/remote/signals?actionableOnly=true`, { headers: { authorization: 'Bearer fixture-admin-token' } })
