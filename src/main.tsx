@@ -5400,6 +5400,9 @@ function MyTeamV2({
         <div className="card-top">
           <span className="label">THIS WEEK'S VERDICT</span>
           <span className={"pill " + (decision.roll && recommendationSafety.actionable ? "green" : "amber")}>
+            {(draftMode ? forecastLoading : canonicalLoading) && (
+              <span className="llm-spinner llm-spinner-small" aria-hidden="true" />
+            )}
             {draftMode
               ? forecastLoading
                 ? "CALCULATING"
