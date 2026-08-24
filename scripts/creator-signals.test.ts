@@ -74,6 +74,29 @@ describe('creator signal ingestion helpers',()=>{
     expect(matchCreatorClaim({rawPlayerName:'Johansson',clubHint:'Motherwell'},players)).toMatchObject({status:'DISMISSED',reason:'club is outside the active FPL catalog'})
   })
 
+  it('dismisses historical full names instead of suggesting vaguely similar current players',()=>{
+    const players=[
+      {id:1,name:'Dubravka',identityNames:['Martin Dubravka'],club:'TOT',clubName:'Tottenham Hotspur',position:'GK'},
+      {id:2,name:'Rogers',identityNames:['Morgan Rogers'],club:'CHE',clubName:'Chelsea',position:'MID'},
+      {id:3,name:'Colwill',identityNames:['Levi Colwill'],club:'CHE',clubName:'Chelsea',position:'DEF'},
+      {id:4,name:'Lewis-Skelly',identityNames:['Myles Lewis-Skelly'],club:'ARS',clubName:'Arsenal',position:'MID'},
+      {id:5,name:'Dorgu',identityNames:['Patrick Dorgu'],club:'MUN',clubName:'Manchester United',position:'MID'},
+      {id:6,name:'Salah',identityNames:['Mohamed Salah'],club:'LIV',clubName:'Liverpool',position:'MID'},
+    ]
+    for(const claim of [
+      {rawPlayerName:'Martin Skrtel',clubHint:'Liverpool'},
+      {rawPlayerName:'Cesc Fabregas',clubHint:'Chelsea'},
+      {rawPlayerName:'Gary Cahill',clubHint:'Chelsea'},
+      {rawPlayerName:'Laurent Koscielny',clubHint:'Arsenal'},
+      {rawPlayerName:'Michael Carrick',clubHint:'Manchester United'},
+    ])expect(matchCreatorClaim(claim,players)).toMatchObject({status:'DISMISSED',reason:'full name does not identify a player in the active FPL catalog'})
+  })
+
+  it('retains typo-tolerant full-name matching for current players',()=>{
+    expect(matchCreatorClaim({rawPlayerName:'Kai Havt',clubHint:'Arsenal'},catalog)).toMatchObject({status:'MATCHED',player:{id:10}})
+    expect(matchCreatorClaim({rawPlayerName:'Bruno Fernndes',clubHint:'Manchester United'},catalog)).toMatchObject({status:'MATCHED',player:{id:11}})
+  })
+
   it('creates timestamped evidence and only carries explicit role values',()=>{
     const draft=signalDraftFromClaim({category:'VALUE',summary:'Cheap upside',timestampSeconds:69,confidence:.8,startProbability:null,minutesIfStarting:null,substituteProbabilityWhenBenched:null,minutesIfSubstitute:null,depthRole:null},10,{url:'https://www.youtube.com/watch?v=abc123'})
     expect(draft.kind).toBe('VALUE_OPINION')

@@ -53,6 +53,14 @@ function nameScore(rawName,playerName){
   return clamp(Math.max(tokenBest*.82,lastBest*.9,compactBest*.92))
 }
 
+function fullNamePlausibility(rawName,playerName){
+  const raw=normalizeEntityText(rawName),player=normalizeEntityText(playerName)
+  const rawTokens=raw.split(' ').filter(Boolean),playerTokens=player.split(' ').filter(Boolean)
+  if(rawTokens.length<2||!playerTokens.length)return null
+  const tokenCoverage=rawTokens.reduce((total,rawToken)=>total+Math.max(...playerTokens.map(playerToken=>similarity(rawToken,playerToken))),0)/rawTokens.length
+  return Math.max(similarity(compact(raw),compact(player)),tokenCoverage)
+}
+
 const hash=value=>createHash('sha256').update(String(value)).digest('hex').slice(0,24)
 
 function youtubeExternalId(url){
@@ -226,6 +234,14 @@ export function matchCreatorClaim(claim,catalog,aliases=[]){
   if(clubHint&&!catalog.some(player=>Math.max(...[player.club,player.clubName,player.teamName].map(value=>clubScore(claim.clubHint,value)))>=.82)){
     return {status:'DISMISSED',player:null,confidence:1,candidates:[],reason:'club is outside the active FPL catalog'}
   }
+  const rawNameTokens=normalizeEntityText(claim.rawPlayerName).split(' ').filter(Boolean)
+  const isTransfer = String(claim.category || '').toUpperCase() === 'TRANSFER' || /\b(?:transfer(?:s|red|ring)?|sign(?:ed|ing|ings)?|rumou?r(?:s)?|deal|linked with|agreed terms|medical|bid|release clause|loaned to|bought from|joined from|completed a move|switch to|negotiat(?:ing|ions)|target(?:ing|ed)?)\b/i.test(`${claim.summary || ''} ${claim.evidenceText || ''}`)
+  if(rawNameTokens.length>=2&&!catalog.some(player=>{
+    const identityNames=[player.name,...(Array.isArray(player.identityNames)?player.identityNames:[])].filter(Boolean)
+    return identityNames.some(name=>Number(fullNamePlausibility(claim.rawPlayerName,name))>=.7)
+  })){
+    return {status:'DISMISSED',player:null,confidence:1,candidates:[],reason:isTransfer?'transfer claim for player outside active FPL catalog':'full name does not identify a player in the active FPL catalog'}
+  }
   const candidates=catalog.map(player=>{
     const identityNames=[player.name,...(Array.isArray(player.identityNames)?player.identityNames:[])].filter(Boolean)
     const base=Math.max(...identityNames.map(name=>nameScore(claim.rawPlayerName,name)))
@@ -246,7 +262,6 @@ export function matchCreatorClaim(claim,catalog,aliases=[]){
   const clubMatched=best?.reasons.includes('club matched')
   const positionMatched=best?.reasons.includes('position matched')
   const strongContext=clubMatched&&best.confidence>=.62&&margin>=(positionMatched?.1:.12)
-  const isTransfer = String(claim.category || '').toUpperCase() === 'TRANSFER' || /\b(?:transfer(?:s|red|ring)?|sign(?:ed|ing|ings)?|rumou?r(?:s)?|deal|linked with|agreed terms|medical|bid|release clause|loaned to|bought from|joined from|completed a move|switch to|negotiat(?:ing|ions)|target(?:ing|ed)?)\b/i.test(`${claim.summary || ''} ${claim.evidenceText || ''}`)
   if(best&&(strongContext||(best.confidence>=.72&&margin>=(clubHint?.1:.15))))return {status:'MATCHED',player:best.player,confidence:best.confidence,candidates}
   if(isTransfer)return {status:'DISMISSED',player:null,confidence:1,candidates:[],reason:'transfer claim for player outside active FPL catalog'}
   if(best&&best.confidence>=.5)return {status:'AMBIGUOUS',player:null,confidence:best.confidence,candidates}

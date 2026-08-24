@@ -1042,7 +1042,22 @@ function creatorClaimView(row){
 
 async function unresolvedCreatorClaims(db,limit=200){
   const result=await db.query(`SELECT * FROM "CreatorClaim" WHERE "match_status" IN ('AMBIGUOUS','UNRESOLVED') ORDER BY datetime("created_at") DESC LIMIT $1`,[Math.max(1,Math.min(500,Number(limit)||200))])
-  return result.rows.map(creatorClaimView)
+  let rows=result.rows
+  if(rows.length){
+    try{
+      const [data,aliases]=await Promise.all([liveData(),creatorAliases(db)])
+      const retained=[]
+      for(const row of rows){
+        const claim=parseJson(row.claim_json,{rawPlayerName:row.raw_player_name,clubHint:row.club_hint,positionHint:row.position_hint,category:row.category,summary:row.summary})
+        const rematch=matchCreatorClaim(claim,data.players,aliases)
+        if(rematch.status==='DISMISSED'){
+          await db.query(`UPDATE "CreatorClaim" SET "match_status"='DISMISSED',"match_confidence"=$2,"candidates_json"='[]',"updated_at"=$3 WHERE "id"=$1`,[row.id,Number(rematch.confidence||1),new Date().toISOString()])
+        }else retained.push(row)
+      }
+      rows=retained
+    }catch{}
+  }
+  return rows.map(creatorClaimView)
 }
 
 async function resolveCreatorClaim(db, id, { playerId, rememberAlias = true } = {}) {
@@ -1523,6 +1538,7 @@ function researchUsage(model,usage={},webSearchCalls=0,provider='openai'){
 
 function rssExtractionPrompt(item) {
   return `Extract only FPL-relevant, player-specific claims from this RSS or Atom item and its linked article text. The article text was fetched server-side from the publisher URL and is supplied below; do not open any additional links or infer anything beyond the supplied evidence.
+Only emit claims about footballers who are presented as current Premier League/FPL players and whose claim is relevant to the current season. Exclude managers, coaches, pundits, retired or former players, historical match incidents, archive examples, anniversaries, and lists of events from past seasons. A current club name beside a historical player does not make the claim current. If an article discusses team tactics through a manager (for example, "Carrick's side"), do not emit a player claim for the manager. When uncertain whether the named person is a current FPL player, omit the claim.
 Return JSON with one property, "claims", containing at most 20 objects. Each object must contain: rawPlayerName, clubHint (string or null), positionHint (GK/DEF/MID/FWD or null), category (ROLE, ROTATION, INJURY, SET_PIECES, PENALTIES, PRESEASON, TACTICS, VALUE, STATS, TRANSFER, FPL_SELECTION, PERFORMANCE_FORECAST, or OTHER), sentiment (POSITIVE, NEGATIVE, MIXED, or NEUTRAL), summary, evidenceText, timestampSeconds (null), timeHorizon (GW<number>, SHORT_TERM, MEDIUM_TERM, SEASON, or UNKNOWN), and confidence (0 to 1).
 Optional fields are depthRole (FIRST_CHOICE, ROTATION, BACKUP, OUT), startProbability, minutesIfStarting, substituteProbabilityWhenBenched, minutesIfSubstitute, numericClaims, and relatedMentions.
 For claims about real-world availability or minutes, include suggestedInterpretation: {role: FIRST_CHOICE|ROTATION_LOW|ROTATION_MEDIUM|ROTATION_HIGH|BACKUP|OUT, confidence: 0 to 1, rationale: string}. Never infer numeric probabilities or minutes in the source claim fields. Exclude claims not directly supported by the supplied evidence. Do not add facts from general knowledge.
