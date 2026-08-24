@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { createRecommendationSet, getRecommendationSet, planSquad } from './recommendation-service.mjs'
+import { createRecommendationSet, forecastPlayers, getRecommendationSet, planSquad } from './recommendation-service.mjs'
 import { SIMULATION_ENGINE_VERSION } from '../src/core/uncertainty.ts'
 
 const runPlayers = [{ playerId: 'player-1', teamId: 'team-1', position: 'MID', active: true, purchasePriceTenths: 75 }]
@@ -52,6 +52,23 @@ describe('recommendation plan economics', () => {
     const result = await planSquad(database({ officialSellingPrice: null, latestOfficialSellingPrice: 73 }), 'plan-1', runPlayers)
     expect(result.squad[0].sellingPriceTenths).toBe(73)
     expect(result.exactSellingPrices).toBe(true)
+  })
+})
+
+describe('recommendation forecast metadata', () => {
+  it('preserves current-event transfer activity through player-gameweek aggregation', async () => {
+    const db = { async query() { return { rows: [{
+      player_id: 'player-1', fixture_id: 'fixture-1', forecast_run_id: 'run-1', mean_points: 5, standard_deviation: 1,
+      p10_points: 3, p50_points: 5, p90_points: 7, start_probability: .9, substitute_probability: .1,
+      no_show_probability: 0, expected_minutes: 82, goal_points: 1, assist_points: 1, clean_sheet_points: 1,
+      goals_conceded_points: 0, save_points: 0, penalty_points: 0, defensive_contribution_points: 0,
+      bonus_points: 1, card_points: 0, role_source_json: storedSimulationInput('run-1:player-1:fixture-1', 'MID', .9, .1, 82),
+      model_version: 'role-aware-v2.6-early-sample', fpl_id: 10, position: 'MID', team_id: 'team-1', active: 1,
+      price_tenths: 75, transfers_in_event: 54_321, transfers_out_event: 12_345, gameweek_id: 'gw-1', gameweek_fpl_id: 1,
+    }] } } }
+
+    const [player] = await forecastPlayers(db, 'run-1', 1, { aggregate: false })
+    expect(player).toMatchObject({ currentPriceTenths: 75, transfersIn: 54_321, transfersOut: 12_345, transferWindow: 'EVENT' })
   })
 })
 

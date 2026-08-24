@@ -46,7 +46,7 @@ const sensitivityForMoves = moves => {
   }
 }
 
-async function forecastPlayers(db, forecastRunId, horizon, { aggregate = true, gameweekOffset = 0 } = {}) {
+export async function forecastPlayers(db, forecastRunId, horizon, { aggregate = true, gameweekOffset = 0 } = {}) {
   const rows = await db.query(
     `SELECT forecast."player_id", forecast."fixture_id", forecast."forecast_run_id",
       forecast."mean_points", forecast."standard_deviation", forecast."p10_points", forecast."p50_points", forecast."p90_points",
@@ -136,6 +136,10 @@ async function forecastPlayers(db, forecastRunId, horizon, { aggregate = true, g
         teamId: item.teamId,
         active: item.active,
         purchasePriceTenths: item.purchasePriceTenths,
+        currentPriceTenths: item.currentPriceTenths,
+        transfersIn: item.transfersIn,
+        transfersOut: item.transfersOut,
+        transferWindow: item.transferWindow,
         meanPoints: summary.mean,
         standardDeviation: summary.standardDeviation,
         p10Points: summary.p10,
@@ -206,6 +210,10 @@ async function forecastPlayers(db, forecastRunId, horizon, { aggregate = true, g
       teamId: item.teamId,
       active: item.active,
       purchasePriceTenths: item.purchasePriceTenths,
+      currentPriceTenths: item.currentPriceTenths,
+      transfersIn: item.transfersIn,
+      transfersOut: item.transfersOut,
+      transferWindow: item.transferWindow,
       meanPoints: summary.mean,
       standardDeviation: summary.standardDeviation,
       p10Points: summary.p10,
