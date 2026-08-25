@@ -1899,15 +1899,40 @@ function App() {
     if (!activePlanId) { setToast({ message: 'Import and confirm an official squad before generating a stored recommendation.', tone: "warning" }); return; }
     setCanonicalRecommendationLoading(true);
     try {
-      setCanonicalRecommendation(await createPlanRecommendation(activePlanId, { horizon: horizon as 1 | 3 | 5, chip }));
+      const rec = await createPlanRecommendation(activePlanId, { horizon: horizon as 1 | 3 | 5, chip });
+      setCanonicalRecommendation(rec);
+      const recordedIds = rec?.candidates?.filter(c => Boolean(c.decision || c.recordedDecision)).map(c => c.id) || [];
+      if (recordedIds.length) {
+        setRecordedCanonicalCandidateIds(current => {
+          const next = new Set(current);
+          for (const id of recordedIds) next.add(id);
+          return next;
+        });
+      }
     } catch (error) {
       setToast({ message: error instanceof Error ? error.message : 'Recommendation could not be generated.', tone: "error" });
     } finally { setCanonicalRecommendationLoading(false); }
   };
+  useEffect(() => {
+    if (!canonicalRecommendation?.candidates?.length) return;
+    const recordedIds = canonicalRecommendation.candidates.filter(c => Boolean(c.decision || c.recordedDecision)).map(c => c.id);
+    if (!recordedIds.length) return;
+    setRecordedCanonicalCandidateIds(current => {
+      let changed = false;
+      const next = new Set(current);
+      for (const id of recordedIds) {
+        if (!next.has(id)) {
+          next.add(id);
+          changed = true;
+        }
+      }
+      return changed ? next : current;
+    });
+  }, [canonicalRecommendation]);
   const applyCanonicalCandidate = async (candidate: CanonicalRecommendation['candidates'][number]) => {
     if (!canonicalRecommendation || !activePlanId) return;
     if (!recommendationSafety.actionable) { setToast({ message: recommendationSafety.reasons.join(' '), tone: 'warning' }); return; }
-    if (canonicalDecisionInFlightRef.current.has(candidate.id) || recordedCanonicalCandidateIds.has(candidate.id)) return;
+    if (canonicalDecisionInFlightRef.current.has(candidate.id) || recordedCanonicalCandidateIds.has(candidate.id) || Boolean(candidate.decision || candidate.recordedDecision)) return;
     canonicalDecisionInFlightRef.current.add(candidate.id);
     setRecordingCanonicalCandidateIds(current => new Set(current).add(candidate.id));
     try {
@@ -1943,7 +1968,7 @@ function App() {
   };
   const dismissCanonicalCandidate = async (candidate: CanonicalRecommendation['candidates'][number], decision: 'REJECTED' | 'IGNORED') => {
     if (!canonicalRecommendation) return;
-    if (canonicalDecisionInFlightRef.current.has(candidate.id) || recordedCanonicalCandidateIds.has(candidate.id)) return;
+    if (canonicalDecisionInFlightRef.current.has(candidate.id) || recordedCanonicalCandidateIds.has(candidate.id) || Boolean(candidate.decision || candidate.recordedDecision)) return;
     canonicalDecisionInFlightRef.current.add(candidate.id);
     setRecordingCanonicalCandidateIds(current => new Set(current).add(candidate.id));
     try {
@@ -5645,7 +5670,7 @@ function MyTeamV2({
   }) || [];
   const canonicalAccounting = formatAccounting(canonicalPrimary);
   const canonicalSensitivity = recommendationSensitivity(canonicalPrimary);
-  const canonicalDecisionLocked = canonicalPrimary != null && (recordingCanonicalCandidateIds.has(canonicalPrimary.id) || recordedCanonicalCandidateIds.has(canonicalPrimary.id));
+  const canonicalDecisionLocked = canonicalPrimary != null && (recordingCanonicalCandidateIds.has(canonicalPrimary.id) || recordedCanonicalCandidateIds.has(canonicalPrimary.id) || Boolean(canonicalPrimary.decision || canonicalPrimary.recordedDecision));
   const repairActions = deriveRecommendationRepairActions(forecastReadiness.state, recommendationAssumptions);
   const openAdminRepair = (targetId: string) => {
     setTab("Admin");
@@ -5775,7 +5800,7 @@ function MyTeamV2({
         )}
         {canonicalPrimary?.action === 'ROLL' && !draftMode && recommendationSafety.actionable && (
           <div className="recommend-actions">
-            <button className="dark-btn" disabled={canonicalDecisionLocked} onClick={() => onApplyCanonical(canonicalPrimary)}>{recordingCanonicalCandidateIds.has(canonicalPrimary.id) ? 'Recording…' : recordedCanonicalCandidateIds.has(canonicalPrimary.id) ? 'Roll decision recorded' : 'Record roll decision'}</button>
+            <button className="dark-btn" disabled={canonicalDecisionLocked} onClick={() => onApplyCanonical(canonicalPrimary)}>{recordingCanonicalCandidateIds.has(canonicalPrimary.id) ? 'Recording…' : (recordedCanonicalCandidateIds.has(canonicalPrimary.id) || canonicalPrimary.decision || canonicalPrimary.recordedDecision) ? 'Roll decision recorded' : 'Record roll decision'}</button>
             <button className="ghost-btn" onClick={() => setTab("Transfers")}>Review alternatives</button>
           </div>
         )}
@@ -9409,7 +9434,7 @@ function TransfersV2({
                   hasPositiveAlternatives={alternativeCandidates.some(c => c.action === 'TRANSFER' && c.netExpectedGain > 0)}
                   onApply={onApplyCanonical}
                   onDismiss={onDismissCanonical}
-                  decisionLocked={recordingCanonicalCandidateIds.has(primaryCandidate.id) || recordedCanonicalCandidateIds.has(primaryCandidate.id)}
+                  decisionLocked={recordingCanonicalCandidateIds.has(primaryCandidate.id) || recordedCanonicalCandidateIds.has(primaryCandidate.id) || Boolean(primaryCandidate.decision || primaryCandidate.recordedDecision)}
                   decisionRecording={recordingCanonicalCandidateIds.has(primaryCandidate.id)}
                 />
               )}
@@ -9460,13 +9485,13 @@ function TransfersV2({
                             {(candidate.apiMoves?.length || candidate.action === 'CHIP' || candidate.action === 'ROLL') && (
                               <button
                                 className="dark-btn"
-                                disabled={!recommendationSafety.actionable || recordingCanonicalCandidateIds.has(candidate.id) || recordedCanonicalCandidateIds.has(candidate.id)}
+                                disabled={!recommendationSafety.actionable || recordingCanonicalCandidateIds.has(candidate.id) || recordedCanonicalCandidateIds.has(candidate.id) || Boolean(candidate.decision || candidate.recordedDecision)}
                                 onClick={() => onApplyCanonical?.(candidate)}
                               >
-                                {recordingCanonicalCandidateIds.has(candidate.id) ? 'Recording…' : recordedCanonicalCandidateIds.has(candidate.id) ? 'Decision recorded' : candidate.action === 'ROLL' ? 'Record roll decision' : candidate.action === 'CHIP' ? 'Record chip plan' : 'Apply local plan'}
+                                {recordingCanonicalCandidateIds.has(candidate.id) ? 'Recording…' : (recordedCanonicalCandidateIds.has(candidate.id) || candidate.decision || candidate.recordedDecision) ? 'Decision recorded' : candidate.action === 'ROLL' ? 'Record roll decision' : candidate.action === 'CHIP' ? 'Record chip plan' : 'Apply local plan'}
                               </button>
                             )}
-                            <SecondaryDismissAction candidate={candidate} onDismiss={onDismissCanonical} disabled={recordingCanonicalCandidateIds.has(candidate.id) || recordedCanonicalCandidateIds.has(candidate.id)} />
+                            <SecondaryDismissAction candidate={candidate} onDismiss={onDismissCanonical} disabled={recordingCanonicalCandidateIds.has(candidate.id) || recordedCanonicalCandidateIds.has(candidate.id) || Boolean(candidate.decision || candidate.recordedDecision)} />
                           </div>
                         </article>
                       );

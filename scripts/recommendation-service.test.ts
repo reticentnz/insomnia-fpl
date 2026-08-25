@@ -94,6 +94,25 @@ describe('stored recommendation retrieval', () => {
     expect(result?.candidates[0]).toMatchObject({ netExpectedGain: 5, apiMoves: [{ outId: 10, inId: 20 }], savedTransferValue: 0, lookaheadAvailable: false, nextWeekFreeTransfers: null, nextWeekBestNetGain: null, earlySeasonSensitive: true, roleLatestMatchSensitive: true, latestMatchSensitivity: 'HIGH', sensitivityFlags: ['EARLY_SEASON', 'LATEST_MATCH_SENSITIVE', 'RATE_SAMPLE_LATEST_MATCH_SENSITIVE'], timingAdvice: 'WAIT', priceTiming: { verdict: 'WAIT', robustness: 'SENSITIVE', adverseScenarios: [{ adverseSwingTenths: 1, status: 'UNAFFORDABLE' }] } })
   })
 
+  it('hydrates recorded decision state for candidates from DecisionRecord', async () => {
+    const rollCandidate = { id: 'candidate-roll', rank: 2, action: 'ROLL', moves_json: JSON.stringify({ moves: [] }), raw_gain: 0, hit_cost: 0, uncertainty_penalty: 0, net_expected_gain: 0, probability_beats_roll: null, bank_after_tenths: 3, affordability_status: 'EXACT', expected_team_points: 95, p10_points: 80, p50_points: 95, p90_points: 110 }
+    const db = { async query(sql: string) {
+      if (sql.includes('FROM "RecommendationSet"')) return { rows: [storedSet] }
+      if (sql.includes('FROM "RecommendationCandidate"')) return { rows: [storedCandidate, rollCandidate] }
+      if (sql.includes('FROM "Player"')) return { rows: [{ id: 'player-out', fpl_id: 10 }, { id: 'player-in', fpl_id: 20 }] }
+      if (sql.includes('FROM "DecisionRecord"')) return { rows: [{ id: 'decision-1', candidate_id: 'candidate-roll', decision: 'ACCEPTED', created_at: '2026-08-25T10:00:00Z', action: 'ROLL', moves_json: JSON.stringify({ moves: [] }) }] }
+      throw new Error(`Unexpected query: ${sql}`)
+    } }
+    const result = await getRecommendationSet(db, 'set-1')
+    expect(result?.candidates[1].decision).toBe('ACCEPTED')
+    expect(result?.candidates[1].recordedDecision).toEqual({
+      id: 'decision-1',
+      decision: 'ACCEPTED',
+      createdAt: '2026-08-25T10:00:00Z',
+    })
+    expect(result?.candidates[0].decision).toBeUndefined()
+  })
+
   it('returns an identical stored request before loading forecasts or optimizing', async () => {
     const queries: string[] = []
     const db = { async query(sql: string, params: unknown[] = []) {

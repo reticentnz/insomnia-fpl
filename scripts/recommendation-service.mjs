@@ -445,6 +445,30 @@ export async function getRecommendationSet(db, id) {
     const players = await db.query(`SELECT "id","fpl_id" FROM "Player" WHERE "id" IN (${placeholders})`, internalIds)
     for (const player of players.rows) fplByInternalId.set(String(player.id), Number(player.fpl_id))
   }
+  let decisionRecords = []
+  try {
+    const decisionQuery = await db.query(
+      `SELECT decision."id", decision."candidate_id", decision."decision", decision."created_at",
+              existing_candidate."action", existing_candidate."moves_json"
+       FROM "DecisionRecord" decision
+       JOIN "RecommendationSet" rec_set ON rec_set."id"=decision."recommendation_set_id"
+       JOIN "Plan" baseline ON baseline."id"=rec_set."plan_id"
+       JOIN "ForecastRun" run ON run."id"=rec_set."forecast_run_id"
+       LEFT JOIN "RecommendationCandidate" existing_candidate ON existing_candidate."id"=decision."candidate_id"
+       JOIN "RecommendationSet" current_set ON current_set."id"=$1
+       JOIN "Plan" current_baseline ON current_baseline."id"=current_set."plan_id"
+       JOIN "ForecastRun" current_run ON current_run."id"=current_set."forecast_run_id"
+       WHERE (decision."recommendation_set_id"=$1
+              OR (baseline."manager_account_id"=current_baseline."manager_account_id"
+                  AND run."gameweek_id"=current_run."gameweek_id"))
+       ORDER BY decision."created_at" ASC, decision."id" ASC`,
+      [id]
+    )
+    decisionRecords = decisionQuery?.rows || []
+  } catch {
+    decisionRecords = []
+  }
+
   return {
     id: set.rows[0].id,
     planId: set.rows[0].plan_id,
@@ -466,6 +490,10 @@ export async function getRecommendationSet(db, id) {
     candidates: parsedCandidates.map(({ row, detail }) => {
       const sensitivity = detail.sensitivity && typeof detail.sensitivity === 'object' ? detail.sensitivity : null
       const priceTiming = detail.priceTiming && typeof detail.priceTiming === 'object' ? detail.priceTiming : null
+      const matchedDecision = decisionRecords.find(d =>
+        d.candidate_id === row.id ||
+        (d.action === row.action && (row.action === 'ROLL' || d.moves_json === row.moves_json))
+      )
       return {
       id: row.id,
       rank: Number(row.rank),
@@ -491,6 +519,14 @@ export async function getRecommendationSet(db, id) {
       chipReason: detail.reason || undefined,
       chipSquadIds: detail.squadIds || undefined,
       classification: typeof detail.classification === 'string' ? detail.classification : undefined,
+      ...(matchedDecision ? {
+        decision: matchedDecision.decision,
+        recordedDecision: {
+          id: matchedDecision.id,
+          decision: matchedDecision.decision,
+          createdAt: matchedDecision.created_at,
+        },
+      } : {}),
       ...(priceTiming ? { priceTiming, timingAdvice: priceTiming.verdict } : {}),
       ...(sensitivity ? {
         earlySeasonSensitive: Boolean(sensitivity.earlySeasonSensitive),
