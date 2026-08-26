@@ -246,6 +246,20 @@ function signalText(signal: PlayerSignal) {
   return `${signal.evidenceSummary || ""} ${signal.evidenceText || ""} ${signal.value.note || ""}`.toLowerCase();
 }
 
+function isOpeningFixtureOnlySignal(signal: PlayerSignal, gameweek: number | undefined) {
+  if (gameweek == null || gameweek <= 1) return false;
+  // A pre-season/opening-day claim is useful for GW1 but must not suppress a
+  // proven starter in later gameweeks merely because it has a long validity
+  // window. Explicit GW-scoped signals are handled separately above.
+  return /\b(opening day|opening (?:league )?game|gameweek\s*1|gw\s*1|first league game)\b/.test(signalText(signal));
+}
+
+function isConfirmatoryFirstChoiceSignal(signal: PlayerSignal) {
+  const value = signalRole(signal);
+  if (value.depthRole !== 'FIRST_CHOICE' || typeof value.startProbability !== 'number') return false;
+  return !/\b(not expected to start|rotation|rotated|benched|bench|minutes management|rested|injur(?:y|ed)|doubt|competition)\b/.test(signalText(signal));
+}
+
 /**
  * Ingestion can provide an exact evidence key.  Older signals are classified
  * conservatively from their text, so reports of a named/starting XI are only
@@ -319,7 +333,8 @@ export function resolvePlayerRole(
       (!signal.interpretation || (signal.interpretation.status === "APPROVED" && signal.interpretation.modelImpact === "ROLE" && !contextOnlyClaimClasses.has(String(signal.interpretation.claimClass)))) &&
       new Date(signal.validUntil).getTime() >= now.getTime() &&
       hasFreshSourceDate(signal, now) &&
-      (signal.gameweek == null || signal.gameweek === options.gameweek),
+      (signal.gameweek == null || signal.gameweek === options.gameweek) &&
+      !isOpeningFixtureOnlySignal(signal, options.gameweek),
   );
   if (!eligible.length) return normalizeRoleProfile(base);
 
@@ -401,11 +416,17 @@ export function resolvePlayerRole(
     inputs.reduce((sum, signal) => sum + effectiveWeight(signal), 0) /
     inputs.length;
 
-  const rawStartProbability = weighted("startProbability", base.startProbability);
+  const manual = overrides.length > 0;
+  let rawStartProbability = weighted("startProbability", base.startProbability);
+  // Confirmation that a known first-choice player started does not constitute
+  // evidence that their established availability has fallen to 88%. Preserve
+  // the prior unless the signal actually contains rotation/injury evidence.
+  if (!manual && rawStartProbability < base.startProbability && inputs.length > 0 && inputs.every(isConfirmatoryFirstChoiceSignal)) {
+    rawStartProbability = base.startProbability;
+  }
   const completed = options.completedGameweeks;
   const earlySeason = completed != null && completed <= 3;
   const highStartClaim = rawStartProbability >= .85 && rawStartProbability > base.startProbability;
-  const manual = overrides.length > 0;
   const hasManagerEvidence = inputs.some(isExplicitManagerEvidence);
   const independentEvidenceCount = new Set(inputs.map(evidenceClusterKey)).size;
   // A lone, early-season FIRST_CHOICE/high-start claim may be a single lineup

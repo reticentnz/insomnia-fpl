@@ -72,6 +72,17 @@ describe('player evidence signals',()=>{
     expect(resolvePlayerRole(base,[pending,expired,wrongWeek],{now:new Date('2026-08-10T12:00:00Z'),gameweek:1})).toEqual(base)
   })
 
+  it('expires an opening-day role claim after GW1 even if its validity window is longer',()=>{
+    const openingDay=signal({id:31,gameweek:null,value:{depthRole:'ROTATION',startProbability:.4,note:'Not expected to start on the opening day'},evidenceSummary:'Not expected to start on the opening day'})
+    expect(resolvePlayerRole(base,[openingDay],{now:new Date('2026-08-10T12:00:00Z'),gameweek:2})).toEqual(base)
+  })
+
+  it('does not downgrade an established starter from a purely confirmatory first-choice report',()=>{
+    const confirmation=signal({id:32,gameweek:null,value:{depthRole:'FIRST_CHOICE',startProbability:.88,note:'Started and reinforced his key role'},evidenceSummary:'Started and reinforced his key role'})
+    const established={...base,startProbability:.98}
+    expect(resolvePlayerRole(established,[confirmation],{now:new Date('2026-08-10T12:00:00Z'),gameweek:2}).startProbability).toBe(.98)
+  })
+
   it('gives an explicit manual override precedence over researched signals',()=>{
     const manual=signal({id:4,sourceType:'MANUAL_OVERRIDE',value:{startProbability:1,minutesIfStarting:90},confidence:1})
     const resolved=resolvePlayerRole(base,[signal({}),manual],{now:new Date('2026-08-10T12:00:00Z'),gameweek:1})

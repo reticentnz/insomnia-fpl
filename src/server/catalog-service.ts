@@ -16,6 +16,23 @@ const hasRoleValue = (value: unknown) => {
   const record = value && typeof value === 'object' ? value as Record<string, unknown> : {}
   return roleValueKeys.some(key => record[key] !== null && record[key] !== undefined)
 }
+const normalText = (value: unknown) => String(value || '').toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '').replace(/[^a-z0-9]+/g, ' ').trim()
+/**
+ * Creator-signal ids usually contain the entity mention used during
+ * extraction. When a multi-word mention has a different surname from the
+ * matched FPL player, it is a bad entity resolution and must not alter role
+ * minutes (for example an Alexander-Arnold claim attached to Alexander Isak).
+ */
+function hasMismatchedEmbeddedSignalEntity(signal: any, player: any) {
+  if (['MANUAL_OVERRIDE', 'MANUAL', 'USER'].includes(String(signal.source_type))) return false
+  const match = String(signal.id || '').match(/:([^:]+):(ROLE|ROTATION|INJURY|DEPTH_CHART|EXPECTED_ROLE)$/i)
+  if (!match) return false
+  const entityTokens = normalText(match[1]).split(' ').filter(Boolean)
+  if (entityTokens.length < 2) return false
+  const playerNames = [player.web_name, player.first_name, player.second_name, `${player.first_name || ''} ${player.second_name || ''}`]
+  const surnameTokens = playerNames.map(normalText).flatMap(name => name.split(' ').slice(-1)).filter(token => token.length >= 3)
+  return surnameTokens.length > 0 && !surnameTokens.some(token => entityTokens.includes(token))
+}
 const stripRoleValue = (value: unknown, keepSetPieceRole: boolean) => {
   const record = value && typeof value === 'object' && !Array.isArray(value) ? { ...(value as Record<string, unknown>) } : {}
   for (const key of roleValueKeys) delete record[key]
@@ -196,7 +213,10 @@ export async function assembleProjectionInputCatalog(db: Database, options: {
     const strength = strengthByTeam.get(official.team_id)
     const playerSignals = signalsByPlayer.get(player.id) || []
     const manualSignals = playerSignals.filter(signal => ['MANUAL_OVERRIDE', 'MANUAL', 'USER'].includes(signal.source_type))
-    const roleSignals = playerSignals.filter(signal => !manualSignals.some(manual => manual.kind === signal.kind) || ['MANUAL_OVERRIDE', 'MANUAL', 'USER'].includes(signal.source_type))
+    const roleSignals = playerSignals.filter(signal =>
+      (!manualSignals.some(manual => manual.kind === signal.kind) || ['MANUAL_OVERRIDE', 'MANUAL', 'USER'].includes(signal.source_type)) &&
+      !hasMismatchedEmbeddedSignalEntity(signal, player),
+    )
     const fixtures: ProjectionCatalogFixture[] = (fixtureByTeam.get(official.team_id) || []).map(fixture => {
       const home = fixture.home_team_id === official.team_id
       const opponent = teamById.get(home ? fixture.away_team_id : fixture.home_team_id)
