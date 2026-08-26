@@ -38,6 +38,27 @@ describe('WP-14 catalogue cache', () => {
     now += 86_400_001
     expect(await restarted.getRestart(request)).toBeNull()
   })
+
+  it('bounds persisted restart entries and replaces obsolete revisions of the same request', async () => {
+    const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'insomnia-fpl-cache-'))
+    directories.push(directory)
+    const filePath = path.join(directory, 'catalog.json')
+    let now = Date.parse('2026-08-15T12:00:00Z')
+    const cache = new CatalogueCache<{ revision: number }>({ filePath, maxRestartEntries: 3, now: () => now })
+    const live = catalogueRequestKey({})
+    const historic = catalogueRequestKey({ season: '2025/26' })
+    await cache.put('live-v1', live, { revision: 1 })
+    now += 1
+    await cache.put('live-v2', live, { revision: 2 })
+    now += 1
+    await cache.put('historic-v1', historic, { revision: 3 })
+    now += 1
+    await cache.put('third-v1', catalogueRequestKey({ season: '2024/25' }), { revision: 4 })
+    const stored = JSON.parse(fs.readFileSync(filePath, 'utf8'))
+    expect(Object.keys(stored.entries)).toHaveLength(3)
+    expect(stored.entries['live-v2'].payload).toEqual({ revision: 2 })
+    expect(stored.entries['live-v1']).toBeUndefined()
+  })
 })
 
 describe('WP-14 upstream control', () => {

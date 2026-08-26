@@ -17,6 +17,7 @@ type RestartCatalogueFile<T> = { schemaVersion: 1; entries: Record<string, Resta
 export type CatalogueCacheOptions = {
   ttlMs?: number
   maxStaleMs?: number
+  maxRestartEntries?: number
   filePath?: string
   now?: () => number
 }
@@ -28,12 +29,17 @@ export class CatalogueCache<T> {
   private readonly entries = new Map<string, { cachedAt: number; payload: T }>()
   private readonly ttlMs: number
   private readonly maxStaleMs: number
+  private readonly maxRestartEntries: number
   private readonly filePath?: string
   private readonly now: () => number
 
   constructor(options: CatalogueCacheOptions = {}) {
     this.ttlMs = options.ttlMs ?? Number(process.env.FPL_CATALOG_CACHE_TTL_MS || 60_000)
     this.maxStaleMs = options.maxStaleMs ?? Number(process.env.FPL_CATALOG_CACHE_MAX_STALE_MS || 86_400_000)
+    // A catalogue is deliberately rich and can be several megabytes. Retaining
+    // every revision indefinitely makes the restart cache eventually too large
+    // to serialize, turning an otherwise healthy catalogue request into 503.
+    this.maxRestartEntries = Math.max(1, options.maxRestartEntries ?? Number(process.env.FPL_CATALOG_CACHE_MAX_RESTART_ENTRIES || 6))
     this.filePath = options.filePath
     this.now = options.now || defaultNow
   }
@@ -56,8 +62,20 @@ export class CatalogueCache<T> {
       if (existing.schemaVersion === 1 && existing.entries) entries = existing.entries
     } catch { /* first successful catalogue write */ }
     entries[key] = entry
+    // Keep the newest entry per request shape first (normally the unqualified
+    // live catalogue), then cap the file globally for occasional as-of views.
+    const newest = Object.values(entries)
+      .sort((left, right) => Date.parse(right.cachedAt) - Date.parse(left.cachedAt))
+    const retained: Record<string, RestartCatalogueEntry<T>> = {}
+    const seenRequestKeys = new Set<string>()
+    for (const candidate of newest) {
+      if (seenRequestKeys.has(candidate.requestKey)) continue
+      retained[candidate.key] = candidate
+      seenRequestKeys.add(candidate.requestKey)
+      if (Object.keys(retained).length >= this.maxRestartEntries) break
+    }
     const temporaryPath = `${this.filePath}.${process.pid}.${Math.random().toString(16).slice(2)}.tmp`
-    await fs.writeFile(temporaryPath, `${JSON.stringify({ schemaVersion: 1, entries } satisfies RestartCatalogueFile<T>)}\n`, 'utf8')
+    await fs.writeFile(temporaryPath, `${JSON.stringify({ schemaVersion: 1, entries: retained } satisfies RestartCatalogueFile<T>)}\n`, 'utf8')
     await fs.rename(temporaryPath, this.filePath)
   }
 
