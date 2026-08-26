@@ -1,0 +1,15 @@
+{
+  "source": "https://fpl.solioanalytics.com/api/data/latest",
+  "capturedAt": "2026-08-26T19:36:55.997Z",
+  "season": "2026/27",
+  "gameweek": 2,
+  "scope": "Public server-rendered top-30 xPts. Captured within two minutes of the frozen local catalog snapshot; calibration benchmark only, never a production forecast input.",
+  "playerExpectedPoints": [
+    ["B.Fernandes", 7.11], ["Haaland", 6.43], ["Saka", 5.73], ["Palmer", 5.36], ["Szoboszlai", 5.36],
+    ["Isak", 5.35], ["Cunha", 5.25], ["Mbeumo", 5.21], ["Gabriel", 4.99], ["João Pedro", 4.96],
+    ["Gakpo", 4.84], ["Frimpong", 4.76], ["Wirtz", 4.74], ["Tavernier", 4.74], ["Hill", 4.70],
+    ["Semenyo", 4.61], ["Rogers", 4.60], ["Calvert-Lewin", 4.51], ["Virgil", 4.49], ["White", 4.48],
+    ["Silva", 4.47], ["Tzolis", 4.45], ["Foden", 4.42], ["Maguire", 4.36], ["Truffert", 4.35],
+    ["O'Reilly", 4.35], ["Evanilson", 4.34], ["Thomas", 4.33], ["van Ewijk", 4.32], ["Ballard", 4.32]
+  ]
+}

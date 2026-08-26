@@ -75,6 +75,11 @@ describe('WP-08 immutable forecast ledger', () => {
     expect(baseRole(partial, 1).startProbability).toBeLessThan(.9)
   })
 
+  it('does not let a lower historic role share suppress a verified full early-season start', () => {
+    const player = { official: { position: 'DEF', status: 'a', chance_of_playing: null, minutes: 90, starts: 1 }, historicalPrior: { sourceSeason: '2025-26', confidence: 1, minutes: 1_032, starts: 12, expectedGoalsPer90: .05, expectedAssistsPer90: .2, bonusPer90: .1 } } as any
+    expect(baseRole(player, 1).startProbability).toBeGreaterThan(.94)
+  })
+
   it('keeps a high-confidence established starter above low minutes when the current snapshot is incomplete', () => {
     const player = { official: { position: 'FWD', status: 'a', chance_of_playing: null, minutes: 0, starts: 0 }, historicalPrior: { sourceSeason: '2025-26', confidence: 1, minutes: 2_500, starts: 28, expectedGoalsPer90: .5, expectedAssistsPer90: .15, bonusPer90: .4 } } as any
     expect(baseRole(player, 1).startProbability).toBeGreaterThan(.8)

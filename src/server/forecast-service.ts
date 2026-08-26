@@ -77,7 +77,12 @@ export function baseRole(player: ProjectionCatalogPlayer, completedGameweeks = 0
     ? clamp(.62 + .011 * historical.starts + .000025 * historical.minutes, .70, .95)
     : null
   const currentWeight = Math.min(1, Math.max(.1, completed / 8))
-  const roleShare = historicalRoleShare == null ? currentRoleShare : historicalRoleShare * (1 - currentWeight) + observedRoleShare * currentWeight
+  let roleShare = historicalRoleShare == null ? currentRoleShare : historicalRoleShare * (1 - currentWeight) + observedRoleShare * currentWeight
+  // A strong historical minute prior is useful when current evidence is thin,
+  // but it must not overrule an actual 80+ minute start in every completed
+  // match. This was suppressing established players whose historic total was
+  // lower because of an earlier injury/rotation spell (for example Frimpong).
+  if (confirmedFullMatchStarter && completed <= 3) roleShare = Math.max(roleShare, .91)
   const blend = chance * roleShare
   const target = clamp(blend * 90, 0, 90)
   const isGoalkeeper = position === 'GK'
