@@ -288,6 +288,24 @@ let activeApplyDraftPlan = () => {};
 
 const SIGNAL_SEEN_STORAGE_KEY = "insomnia-fpl-seen-signal-ids";
 const ADMIN_TOKEN_STORAGE_KEY = "fpl-admin-token";
+const HORIZON_STORAGE_KEY = "insomnia-fpl:transfer-horizon:v1";
+
+function readSavedHorizon(): 1 | 3 | 5 {
+  try {
+    const value = Number(window.localStorage.getItem(HORIZON_STORAGE_KEY));
+    return value === 1 || value === 3 || value === 5 ? value : 5;
+  } catch {
+    return 5;
+  }
+}
+
+function saveHorizon(horizon: 1 | 3 | 5) {
+  try {
+    window.localStorage.setItem(HORIZON_STORAGE_KEY, String(horizon));
+  } catch {
+    // Storage can be unavailable in private browsing; retaining it in memory is still useful.
+  }
+}
 
 function readAdminToken(): string {
   try {
@@ -1096,7 +1114,7 @@ function App() {
   const [initialCatalog] = useState(() => readCachedClientCatalog());
   const [tab, setTab] = useState("My Team");
   const [signalsPlayerFilterId, setSignalsPlayerFilterId] = useState<number | null>(null);
-  const [horizon, setHorizon] = useState(5);
+  const [horizon, setHorizon] = useState<1 | 3 | 5>(() => readSavedHorizon());
   const [playerQuery, setPlayerQuery] = useState("");
   const [playerFilter, setPlayerFilter] = useState("All");
   const [question, setQuestion] = useState("");
@@ -1136,6 +1154,8 @@ function App() {
   const [forecastSummary, setForecastSummary] = useState<ForecastSummary | null>(null);
   const [canonicalRecommendation, setCanonicalRecommendation] = useState<CanonicalRecommendation | null>(null);
   const [canonicalRecommendationLoading, setCanonicalRecommendationLoading] = useState(false);
+  const recommendationCacheRef = useRef(new Map<string, CanonicalRecommendation>());
+  const recommendationInFlightRef = useRef(new Map<string, Promise<CanonicalRecommendation>>());
   const [recordingCanonicalCandidateIds, setRecordingCanonicalCandidateIds] = useState<Set<string>>(() => new Set());
   const [recordedCanonicalCandidateIds, setRecordedCanonicalCandidateIds] = useState<Set<string>>(() => new Set());
   const canonicalDecisionInFlightRef = useRef(new Set<string>());
@@ -1220,6 +1240,9 @@ function App() {
     ? { ...primaryIcons, "Model Debug": Gauge }
     : primaryIcons;
   const recomputeBusy = recomputeRequest != null || recomputeReadyAt != null;
+  useEffect(() => {
+    saveHorizon(horizon);
+  }, [horizon]);
   useEffect(() => {
     if (!livePlayers?.length) { setForecastSummary(null); return; }
     let active = true;
@@ -1895,11 +1918,34 @@ function App() {
     }
     setEditing(false);
   };
+  const recommendationCacheKey = useCallback((planId: string, targetHorizon: 1 | 3 | 5, chip: 'TRIPLE_CAPTAIN' | 'BENCH_BOOST' | 'FREE_HIT' | 'WILDCARD' | null) => [
+    planId,
+    forecastSummary?.id || '',
+    targetHorizon,
+    recommendationAssumptions.freeTransfersConfirmed,
+    recommendationAssumptions.exactSellingPrices,
+    chip || 'STANDARD',
+  ].join(':'), [forecastSummary?.id, recommendationAssumptions]);
+  const fetchCanonicalRecommendation = useCallback(async (planId: string, targetHorizon: 1 | 3 | 5, chip: 'TRIPLE_CAPTAIN' | 'BENCH_BOOST' | 'FREE_HIT' | 'WILDCARD' | null = null) => {
+    const key = recommendationCacheKey(planId, targetHorizon, chip);
+    const cached = recommendationCacheRef.current.get(key);
+    if (cached) return cached;
+    const inFlight = recommendationInFlightRef.current.get(key);
+    if (inFlight) return inFlight;
+    const request = createPlanRecommendation(planId, { horizon: targetHorizon, chip })
+      .then((recommendation) => {
+        recommendationCacheRef.current.set(key, recommendation);
+        return recommendation;
+      })
+      .finally(() => recommendationInFlightRef.current.delete(key));
+    recommendationInFlightRef.current.set(key, request);
+    return request;
+  }, [recommendationCacheKey]);
   const generateCanonicalRecommendation = async (chip: 'TRIPLE_CAPTAIN' | 'BENCH_BOOST' | 'FREE_HIT' | 'WILDCARD' | null = null) => {
     if (!activePlanId) { setToast({ message: 'Import and confirm an official squad before generating a stored recommendation.', tone: "warning" }); return; }
     setCanonicalRecommendationLoading(true);
     try {
-      const rec = await createPlanRecommendation(activePlanId, { horizon: horizon as 1 | 3 | 5, chip });
+      const rec = await fetchCanonicalRecommendation(activePlanId, horizon, chip);
       setCanonicalRecommendation(rec);
       const recordedIds = rec?.candidates?.filter(c => Boolean(c.decision || c.recordedDecision)).map(c => c.id) || [];
       if (recordedIds.length) {
@@ -1994,6 +2040,23 @@ function App() {
     autoRecommendationKeyRef.current = key;
     void generateCanonicalRecommendation();
   }, [draftMode, activePlanId, forecastSummary?.id, horizon, recommendationAssumptions.freeTransfersConfirmed, recommendationAssumptions.exactSellingPrices]);
+  useEffect(() => {
+    if (draftMode || !activePlanId || !forecastSummary?.id || canonicalRecommendationLoading || !canonicalRecommendation) return;
+    let cancelled = false;
+    const timer = window.setTimeout(() => {
+      void (async () => {
+        for (const targetHorizon of [1, 3, 5] as const) {
+          if (cancelled || targetHorizon === horizon) continue;
+          try {
+            await fetchCanonicalRecommendation(activePlanId, targetHorizon);
+          } catch {
+            // Prewarming is optional: the user-facing request will still surface failures.
+          }
+        }
+      })();
+    }, 750);
+    return () => { cancelled = true; window.clearTimeout(timer); };
+  }, [draftMode, activePlanId, forecastSummary?.id, horizon, canonicalRecommendationLoading, canonicalRecommendation?.id, fetchCanonicalRecommendation]);
   const requestTransfer = (outId: number, inId: number) => {
     const out = squad.find((p) => p.id === outId);
     const incoming = catalog.find((p) => p.id === inId);

@@ -243,6 +243,20 @@ function recommendationSetIdentityQuery(requireVerified = false) {
     ORDER BY datetime("created_at") DESC,"id" DESC LIMIT 1`
 }
 
+// Fast path for an already-safe recommendation.  The caller can use this
+// before fetching optional league EO context, which keeps a cached horizon
+// switch entirely local to the database.
+export async function findVerifiedCachedRecommendationSet(db, { planId, forecastRunId, horizon = 1, maxTransfers = 5, uncertaintyPenaltyRate = .15, chip = null, leagueId = null }) {
+  const run = forecastRunId
+    ? await db.query(`SELECT * FROM "ForecastRun" WHERE "id"=$1 AND "status"='SUCCEEDED'`, [forecastRunId])
+    : await db.query(`SELECT * FROM "ForecastRun" WHERE "status"='SUCCEEDED' ORDER BY datetime("created_at") DESC,"id" DESC LIMIT 1`)
+  const resolvedForecastRunId = run.rows[0]?.id
+  if (!resolvedForecastRunId) return null
+  const inputHash = recommendationInputHash(run.rows[0].input_hash)
+  const cached = await db.query(recommendationSetIdentityQuery(true), [planId, resolvedForecastRunId, horizon, maxTransfers, chip, uncertaintyPenaltyRate, inputHash, leagueId])
+  return cached.rows[0] ? { ...(await getRecommendationSet(db, cached.rows[0].id)), cacheStatus: 'HIT' } : null
+}
+
 export async function planSquad(db, planId, runPlayers) {
   const rows = await db.query(`SELECT plan_player.*, plan."bank_tenths", plan."free_transfers", plan."manager_account_id", plan."official_squad_snapshot_id", snapshot."gameweek_id"
     FROM "PlanPlayer" plan_player

@@ -38,7 +38,7 @@ import { getDb } from './db.mjs'
 import { migrateDatabase } from './db-migrate.mjs'
 import { fetchManagerPayload, fetchManagerRankHistory, getCurrentManager, importManagerPayload, linkManagerAccount, unlinkCurrentManager, updateManagerAssumptions } from './manager-service.mjs'
 import { createPlan, getActivePlan, selectPlan } from './plan-service.mjs'
-import { createRecommendationSet } from './recommendation-service.mjs'
+import { createRecommendationSet, findVerifiedCachedRecommendationSet } from './recommendation-service.mjs'
 import { evaluateDecision, evaluatePendingDecisions, listDecisions, recordDecision } from './decision-journal-service.mjs'
 import { getUserState, updateAiState, updateUserState } from './user-state-service.mjs'
 import { assembleProjectionInputCatalog, projectionCatalogInputVersions } from '../src/server/catalog-service.ts'
@@ -2696,6 +2696,19 @@ function startServerOnAvailablePort(targetPort) {
         try {
           const state = await getUserState(db)
           if (state.preferences.defaultLeagueId != null) {
+            const cached = await findVerifiedCachedRecommendationSet(db, {
+              planId: decodeURIComponent(planRecommendationMatch[1]),
+              forecastRunId: body.forecastRunId,
+              horizon: body.horizon ?? 1,
+              maxTransfers: body.maxTransfers ?? 5,
+              uncertaintyPenaltyRate: body.uncertaintyPenaltyRate ?? .15,
+              chip: body.chip ?? null,
+              leagueId: state.preferences.defaultLeagueId,
+            })
+            if (cached) {
+              sendJson(res, 201, { schemaVersion: 1, ...cached })
+              return
+            }
             const details = await loadLeagueDetailsWithEO(state.preferences.defaultLeagueId, body.gameweek)
             if (details && details.effectiveOwnership?.length) league = leagueCoverageFromResponse(details)
           }
