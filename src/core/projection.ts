@@ -3,7 +3,7 @@ import { expectedRoleMinutes, normalizeRoleProfile, type PlayerRoleProfile } fro
 import { scoringRules } from './scoring.ts'
 
 /** The calculation version recorded with every projection output. */
-export const MODEL_VERSION = 'role-aware-v2.7-market-allocation'
+export const MODEL_VERSION = 'role-aware-v2.8-historical-market-allocation'
 
 /** Direct clean-sheet markets lead the estimate; the player/team model stabilizes thin niche markets. */
 export const MARKET_CLEAN_SHEET_WEIGHT = .75

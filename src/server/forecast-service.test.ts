@@ -41,6 +41,23 @@ describe('WP-08 immutable forecast ledger', () => {
     expect(firstRates.assistShare + secondRates.assistShare).toBeCloseTo(1, 8)
   })
 
+  it('uses established historical xG/xA rates when allocating early-season market totals', () => {
+    const fixture = { id: 'fixture-1', isHome: true, gameweekFplId: 2, market: { homeExpectedGoals: 2.4, awayExpectedGoals: .8 } } as any
+    const candidate = (id: string, historicalGoals: number, historicalAssists: number) => ({
+      id, fplId: Number(id.slice(-1)), name: id, team: { id: 'team-1', fplId: 1, name: 'Team', shortName: 'TST' },
+      official: { position: 'MID', status: 'a', chance_of_playing: null, minutes: 0, starts: 0, observed_at: '2026-08-26T00:00:00Z' },
+      historicalPrior: { confidence: 1, minutes: 2_000, expectedGoalsPer90: historicalGoals, expectedAssistsPer90: historicalAssists },
+      teamStrength: {}, fixtures: [fixture], underlying: null, roleSignals: [], provenance: {},
+    }) as any
+    const creator = candidate('player-1', .5, .4), teammate = candidate('player-2', .1, .1)
+    const catalog = { players: [creator, teammate] } as any
+    const creatorRates = marketAttackingRateOverride(creator, fixture, catalog, 1)!
+    const teammateRates = marketAttackingRateOverride(teammate, fixture, catalog, 1)!
+    expect(creatorRates.goalShare).toBeGreaterThan(.75)
+    expect(creatorRates.assistShare).toBeGreaterThan(.75)
+    expect(creatorRates.goalShare + teammateRates.goalShare).toBeCloseTo(1, 8)
+  })
+
   it('normalizes early-season role evidence by completed matches', () => {
     const player = { official: { position: 'GK', status: 'a', chance_of_playing: null, minutes: 90, starts: 1 } } as any
     const starter = baseRole(player, 1)

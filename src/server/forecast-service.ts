@@ -2,7 +2,7 @@ import { createHash, randomUUID } from 'node:crypto'
 import { canonicalJson, sanitizeError } from '../../scripts/feed-run.mjs'
 import { projectionBreakdown, MODEL_VERSION } from '../model.ts'
 import { resolvePlayerRole, type PlayerRoleProfile } from '../player-signals.ts'
-import { fixtureExpectedMinutes, fixtureRateModel, fixtureRoleStates, MARKET_CLEAN_SHEET_WEIGHT, projectFixture, projectionSampleCalibration } from '../core/projection.ts'
+import { fixtureExpectedMinutes, fixtureRateModel, fixtureRoleStates, HISTORICAL_RATE_PRIOR_MINUTES, MARKET_CLEAN_SHEET_WEIGHT, projectFixture, projectionSampleCalibration } from '../core/projection.ts'
 import { combineSampleStreams, SIMULATION_COUNT, SIMULATION_ENGINE_VERSION, SIMULATION_SEED_VERSION, simulateFixtureOutcomes, simulateFromStoredForecast, summarizeSampleDistribution, type FixtureSimulationInput } from '../core/uncertainty.ts'
 import type { ProjectionCatalogFixture, ProjectionCatalogPlayer, ProjectionInputCatalog } from '../core/types.ts'
 import { assembleProjectionInputCatalog } from './catalog-service.ts'
@@ -156,10 +156,24 @@ function observedAttackingRate(player: ProjectionCatalogPlayer, kind: 'goal' | '
   const officialPer90 = kind === 'goal' ? number(official.expected_goals_per_90) : number(official.expected_assists_per_90)
   const total = kind === 'goal' ? number(official.expected_goals) : number(official.expected_assists)
   const observed = underlying ?? (officialPer90 > 0 ? officialPer90 : minutes > 0 ? total * 90 / minutes : 0)
+  const historical = player.historicalPrior && player.historicalPrior.confidence >= .8 && player.historicalPrior.minutes >= 360
+    ? player.historicalPrior
+    : null
+  const historicalRate = historical ? (kind === 'goal' ? historical.expectedGoalsPer90 : historical.expectedAssistsPer90) : null
+  const historicalWeight = historical ? Math.min(HISTORICAL_RATE_PRIOR_MINUTES, historical.minutes) * historical.confidence : 0
   // This is only an allocation weight. A small position prior prevents a
   // zero-GW1 sample from being assigned none of the team's market output.
   const prior = ATTACKING_RATE_PRIORS[position] || ATTACKING_RATE_PRIORS.MID
-  return Math.max(.001, minutes > 0 ? (observed * minutes + (kind === 'goal' ? prior.goal : prior.assist) * 540) / (minutes + 540) : (kind === 'goal' ? prior.goal : prior.assist))
+  const fallback = kind === 'goal' ? prior.goal : prior.assist
+  // Market xG is the team total. Its allocation must use the same historical
+  // evidence as the player projection; otherwise GW1 samples silently flatten
+  // established attackers to generic position priors.
+  if (historicalRate != null && historicalWeight > 0) {
+    return Math.max(.001, minutes > 0
+      ? (observed * minutes + historicalRate * historicalWeight) / (minutes + historicalWeight)
+      : historicalRate)
+  }
+  return Math.max(.001, minutes > 0 ? (observed * minutes + fallback * 540) / (minutes + 540) : fallback)
 }
 
 function resolvedRole(player: ProjectionCatalogPlayer, fixture: ProjectionCatalogFixture, completedGameweeks?: number) {
