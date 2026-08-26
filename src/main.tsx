@@ -6974,7 +6974,7 @@ function SignalsTab({
             const effectiveStatus = stagedStatus || signal.status;
             const setPieceRole = interpretation?.value?.setPieceRole || signal.value?.setPieceRole;
             const setPieceImpact = setPieceRole === "SET_PIECES" || setPieceRole === "PENALTIES" || setPieceRole === "PENALTIES_AND_SET_PIECES";
-            const originName = playerNewsSourceName(signal);
+            const originName = formatNewsSource(signal);
 
             return (
               <article key={signal.id} className={`signal-card status-${effectiveStatus.toLowerCase()}${stagedStatus ? " is-staged" : ""}`}>
