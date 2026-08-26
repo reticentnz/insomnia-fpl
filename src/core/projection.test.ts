@@ -36,6 +36,17 @@ describe('fixture strength method selection', () => {
     expect(market.total).not.toBe(fallback.total)
   })
 
+  it('uses an absolute market allocation rate without reapplying the capped strength multiplier', () => {
+    const player: Player = { id: 5, name: 'Allocated Test', club: 'TST', position: 'FWD', price: 7, form: 0, ownership: 0, minutes: 90, expectedMinutes: 90, fixture: 'OPP (H)', difficulty: 3, projection: 5, colour: '#000', dataConfidence: 'HIGH', roleProfile: { startProbability: 1, substituteProbabilityWhenBenched: 0, minutesIfStarting: 90, minutesIfSubstitute: 0, confidence: 'HIGH', derivedFromSignalIds: [] } }
+    const fixture = { gameweek: 1, opponent: 'OPP', venue: 'H' as const, difficulty: 3, strength: { method: 'MARKET_XG' as const, attackMultiplier: 1.7, defenceMultiplier: .8, marketTeamExpectedGoals: 2.4 }, attackingRateOverride: { goalRate: .9, assistRate: .2, goalShare: .375, assistShare: .2 } }
+    const rates = fixtureRateModel(player, fixture)
+    const projected = projectFixture(player, fixture)
+    expect(rates.goalRate).toBe(.9)
+    expect(rates.assistRate).toBe(.2)
+    expect(projected.goals).toBeCloseTo(.9 * 4, 8)
+    expect(projected.assists).toBeCloseTo(.2 * 3, 8)
+  })
+
   it('adds only a conservative attacking uplift for confirmed set-piece responsibility', () => {
     const base: Player = { id: 2, name: 'Set Piece Test', club: 'TST', position: 'MID', price: 7, form: 0, ownership: 0, minutes: 90, expectedMinutes: 90, fixture: 'OPP (H)', difficulty: 3, projection: 5, colour: '#000', dataConfidence: 'HIGH', roleProfile: { startProbability: 1, substituteProbabilityWhenBenched: 0, minutesIfStarting: 90, minutesIfSubstitute: 0, confidence: 'HIGH', derivedFromSignalIds: [] } }
     const fixture = { gameweek: 1, opponent: 'OPP', venue: 'H' as const, difficulty: 3 }
@@ -47,6 +58,13 @@ describe('fixture strength method selection', () => {
     expect(setPieces.total).toBeGreaterThan(baseline.total)
     expect(both.total - baseline.total).toBeCloseTo((penalties.total - baseline.total) + (setPieces.total - baseline.total), 6)
     expect(both.total - baseline.total).toBeLessThan(.5)
+  })
+
+  it('uses a high-confidence historical xG/xA prior while the current sample is thin', () => {
+    const base: Player = { id: 6, name: 'Historical Test', club: 'TST', position: 'MID', price: 7, form: 0, ownership: 0, minutes: 90, expectedMinutes: 90, fixture: 'OPP (H)', difficulty: 3, projection: 5, colour: '#000', dataConfidence: 'HIGH', roleProfile: { startProbability: 1, substituteProbabilityWhenBenched: 0, minutesIfStarting: 90, minutesIfSubstitute: 0, confidence: 'HIGH', derivedFromSignalIds: [] }, stats: { minutes: 90, expectedGoalsPer90: .05, expectedAssistsPer90: .05 } }
+    const fixture = { gameweek: 1, opponent: 'OPP', venue: 'H' as const, difficulty: 3 }
+    const historical = projectFixture({ ...base, historicalPrior: { sourceSeason: '2025-26', confidence: 1, minutes: 2_000, starts: 25, expectedGoalsPer90: .45, expectedAssistsPer90: .30, bonusPer90: .45 } }, fixture)
+    expect(historical.total).toBeGreaterThan(projectFixture(base, fixture).total)
   })
 })
 

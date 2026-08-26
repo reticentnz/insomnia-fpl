@@ -3,7 +3,7 @@ import { expectedRoleMinutes, normalizeRoleProfile, type PlayerRoleProfile } fro
 import { scoringRules } from './scoring.ts'
 
 /** The calculation version recorded with every projection output. */
-export const MODEL_VERSION = 'role-aware-v2.6-early-sample'
+export const MODEL_VERSION = 'role-aware-v2.7-market-allocation'
 
 /** Direct clean-sheet markets lead the estimate; the player/team model stabilizes thin niche markets. */
 export const MARKET_CLEAN_SHEET_WEIGHT = .75
@@ -101,6 +101,8 @@ const per90 = (total: number | undefined, minutes: number) => minutes > 0 ? (tot
 const shrunkRate = (observed: number, prior: number, minutes: number, priorMinutes = 540) => (observed * minutes + prior * priorMinutes) / (minutes + priorMinutes)
 
 export const ATTACKING_RATE_PRIOR_MINUTES = 540
+/** At GW2, a matched full-season rate contributes about 80% beside 90 current minutes. */
+export const HISTORICAL_RATE_PRIOR_MINUTES = 360
 
 /**
  * Bonus and defensive-threshold outcomes are much noisier than xG/xA. Their
@@ -177,12 +179,20 @@ function playerRates(player: Player) {
   // partial increments for newly confirmed ownership, not a full second estimate.
   const setPieceGoalUplift = player.setPieceRole === 'PENALTIES' || player.setPieceRole === 'PENALTIES_AND_SET_PIECES' ? .045 : 0
   const setPieceAssistUplift = player.setPieceRole === 'SET_PIECES' || player.setPieceRole === 'PENALTIES_AND_SET_PIECES' ? .030 : 0
-  const goalRate = (minutes > 0 ? shrunkRate(observedGoals, prior.goals, minutes, ATTACKING_RATE_PRIOR_MINUTES) : prior.goals * fallbackStrength) + setPieceGoalUplift
-  const assistRate = (minutes > 0 ? shrunkRate(observedAssists, prior.assists, minutes, ATTACKING_RATE_PRIOR_MINUTES) : prior.assists * fallbackStrength) + setPieceAssistUplift
+  const historical = player.historicalPrior && player.historicalPrior.confidence >= .8 && player.historicalPrior.minutes >= 360 ? player.historicalPrior : null
+  const historicalWeight = historical ? Math.min(HISTORICAL_RATE_PRIOR_MINUTES, historical.minutes) * historical.confidence : 0
+  const blendedRate = (observed: number, historicalRate: number | undefined, fallback: number) => {
+    if (minutes > 0 && historicalRate != null && historicalWeight > 0) return (observed * minutes + historicalRate * historicalWeight) / (minutes + historicalWeight)
+    return minutes > 0 ? shrunkRate(observed, fallback, minutes, ATTACKING_RATE_PRIOR_MINUTES) : historicalRate != null && historicalWeight > 0 ? historicalRate : fallback * fallbackStrength
+  }
+  const goalRate = blendedRate(observedGoals, historical?.expectedGoalsPer90, prior.goals) + setPieceGoalUplift
+  const assistRate = blendedRate(observedAssists, historical?.expectedAssistsPer90, prior.assists) + setPieceAssistUplift
   const xgcObserved = stats?.expectedGoalsConcededPer90 ?? per90(stats?.expectedGoalsConceded, minutes)
   const xgcRate = minutes > 0 ? shrunkRate(xgcObserved || prior.xgc, prior.xgc, minutes, 720) : prior.xgc
   const saveRate = minutes > 0 ? shrunkRate(stats?.savesPer90 ?? per90(stats?.saves, minutes), prior.saves, minutes) : prior.saves
-  const historicalBonusRate = minutes > 0 ? shrunkRate(per90(stats?.bonus, minutes), prior.bonus, minutes, noisyRatePriorMinutes('BONUS', minutes)) : prior.bonus * fallbackStrength
+  const historicalBonusRate = historical && historical.bonusPer90 > 0
+    ? blendedRate(per90(stats?.bonus, minutes), historical.bonusPer90, prior.bonus)
+    : minutes > 0 ? shrunkRate(per90(stats?.bonus, minutes), prior.bonus, minutes, noisyRatePriorMinutes('BONUS', minutes)) : prior.bonus * fallbackStrength
   const cardRate = minutes > 0 ? shrunkRate(per90((stats?.yellowCards || 0) + 3 * (stats?.redCards || 0), minutes), prior.cards, minutes) : prior.cards
   const rawDefensive = (stats?.clearancesBlocksInterceptions || 0) + (stats?.tackles || 0) + (player.position === 'MID' || player.position === 'FWD' ? (stats?.recoveries || 0) : 0)
   const defensiveRate = minutes > 0 ? shrunkRate(per90(rawDefensive, minutes), prior.defensiveActions, minutes, noisyRatePriorMinutes('DEFENSIVE', minutes)) : prior.defensiveActions
@@ -220,7 +230,12 @@ export function fixtureRateModel(player: Player, fixture: FixtureItem): FixtureR
   const rates = playerRates(player), { attack, defence } = fixtureFactors(fixture), minutes = Math.max(1, rates.minutes)
   const defensive = fixtureDefenceRates(player, fixture)
   return {
-    goalRate: rates.goalRate * attack, assistRate: rates.assistRate * attack, xgcRate: defensive.goalsConcededRate,
+    // When the catalogue has a matched market total, forecast-service assigns
+    // each player's share of that total. This deliberately bypasses the
+    // bounded strength multiplier so team attacking output is conserved.
+    goalRate: fixture.attackingRateOverride?.goalRate ?? rates.goalRate * attack,
+    assistRate: fixture.attackingRateOverride?.assistRate ?? rates.assistRate * attack,
+    xgcRate: defensive.goalsConcededRate,
     saveRate: rates.saveRate / Math.max(defence, .75), bonusRate: rates.bonusRate * attack, cardRate: rates.cardRate,
     defensiveRate: rates.defensiveRate,
     penaltySaveRate: per90(player.stats?.penaltiesSaved, minutes), penaltyMissRate: per90(player.stats?.penaltiesMissed, minutes), ownGoalRate: per90(player.stats?.ownGoals, minutes),
@@ -231,7 +246,8 @@ function oneFixtureAtMinutes(player: Player, fixture: FixtureItem, mins: number)
   const rates = playerRates(player), minuteShare = mins / 90, playProbability = mins > 0 ? 1 : 0, sixtyProbability = mins >= 60 ? 1 : 0
   const { attack, defence } = fixtureFactors(fixture)
   const defensive = fixtureDefenceRates(player, fixture)
-  const goals = rates.goalRate * minuteShare * attack * scoringRules.goal[player.position], assists = rates.assistRate * minuteShare * attack * scoringRules.assist
+  const attacking = fixtureRateModel(player, fixture)
+  const goals = attacking.goalRate * minuteShare * scoringRules.goal[player.position], assists = attacking.assistRate * minuteShare * scoringRules.assist
   const appearance = playProbability + sixtyProbability
   const cleanSheetProbability = sixtyProbability ? Math.exp(-defensive.goalsConcededRate * minuteShare) : 0
   const cleanSheet = cleanSheetProbability * scoringRules.cleanSheet[player.position]

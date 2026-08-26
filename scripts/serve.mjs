@@ -118,9 +118,28 @@ const forecastRefreshCoordinator = new ForecastRefreshCoordinator(async reasons 
 }, RECOMPUTE_DEBOUNCE_MS)
 
 let scheduledIngestTimer = null
+let historicalPriorBootstrapRunning = false
 const scheduledAuxiliaryTimers = new Map()
 const INGEST_RETRY_DELAY_MS = 15 * 60 * 1000
 const MAX_TIMER_DELAY_MS = 2_147_483_647
+
+async function triggerHistoricalPriorBootstrap() {
+  if (process.env.HISTORICAL_PRIOR_IMPORT_ENABLED !== '1' || historicalPriorBootstrapRunning) return false
+  const db = await getDb()
+  const result = await db.query('SELECT COUNT(*) AS count FROM "HistoricalPlayerPrior"')
+  if (Number(result.rows[0]?.count || 0) > 0) return false
+  historicalPriorBootstrapRunning = true
+  console.log('📚 Historical priors are empty. Starting one-time prior import...')
+  void runChildScript('scripts/ingest-historical-priors.mjs', [], { FPL_SEASON }).then(async output => {
+    console.log(`✅ Historical prior import completed. ${output}`)
+    await triggerForecastRecompute({ reason: 'historical-priors' })
+  }).catch(error => {
+    // This must not block FPL availability: the importer has a persistent
+    // cache fallback and will be retried on the next container restart.
+    console.error('⚠️ Historical prior import note:', sanitizeError(error))
+  }).finally(() => { historicalPriorBootstrapRunning = false })
+  return true
+}
 
 const adminOperations = Object.fromEntries(['fpl-sync', 'signals-sync', 'odds-sync', 'team-refresh', 'creator-sync', 'rss-sync', 'relink-player-teams'].map(id => [id, {
   id, status: 'IDLE', startedAt: null, finishedAt: null, message: null, error: null,
@@ -369,6 +388,7 @@ async function performColdStartInitialization() {
       systemStatus.message = `System ready with ${count} players.`
       console.log(`✅ Database ready (${count} players loaded).`)
       await finalizePendingIngestionSignals(db).catch(error => console.error('⚠️ Could not finalize pending ingestion signals:', sanitizeError(error)))
+      await triggerHistoricalPriorBootstrap().catch(error => console.error('⚠️ Could not start historical prior import:', sanitizeError(error)))
       await scheduleNextIngestion()
       await scheduleAuxiliaryRefreshes()
     }
@@ -409,6 +429,7 @@ async function triggerBackgroundIngest() {
           systemStatus.playerCount = Number(result.rows[0]?.count || 0)
         } catch {}
         await triggerForecastRecompute({ reason: 'official' })
+        await triggerHistoricalPriorBootstrap().catch(priorError => console.error('⚠️ Could not start historical prior import:', sanitizeError(priorError)))
         await scheduleNextIngestion().catch(scheduleError => console.error('⚠️ Could not schedule next ingestion:', sanitizeError(scheduleError)))
         await scheduleAuxiliaryRefreshes().catch(scheduleError => console.error('⚠️ Could not schedule auxiliary ingestion:', sanitizeError(scheduleError)))
       }

@@ -9,7 +9,19 @@ export type FixtureItem = {
   difficulty: number;
   /** De-vigged market probability that the player's team keeps a clean sheet. */
   marketCleanSheetProbability?: number;
-  strength?: { method: "MARKET_XG" | "OFFICIAL_STRENGTH" | "DERIVED_TEAM_RATING"; attackMultiplier: number; defenceMultiplier: number };
+  strength?: {
+    method: "MARKET_XG" | "OFFICIAL_STRENGTH" | "DERIVED_TEAM_RATING";
+    attackMultiplier: number;
+    defenceMultiplier: number;
+    /** Absolute market team-goal expectation before player allocation. */
+    marketTeamExpectedGoals?: number;
+  };
+  /**
+   * Per-90 player rates allocated from the fixture's market team xG. These
+   * override only goal and assist rates; all other scoring components retain
+   * their existing, independently calibrated model.
+   */
+  attackingRateOverride?: { goalRate: number; assistRate: number; goalShare: number; assistShare: number };
 };
 export type PlayerStats = {
   minutes: number;
@@ -40,6 +52,15 @@ export type PlayerStats = {
   defensiveContribution?: number;
   defensiveContributionPer90?: number;
 };
+export type HistoricalPlayerPrior = {
+  sourceSeason: string;
+  confidence: number;
+  minutes: number;
+  starts: number;
+  expectedGoalsPer90: number;
+  expectedAssistsPer90: number;
+  bonusPer90: number;
+};
 export type Player = {
   id: number;
   name: string;
@@ -67,6 +88,8 @@ export type Player = {
   transfersOut?: number;
   active?: boolean;
   stats?: PlayerStats;
+  /** Matched prior-season rates used only while current-season evidence is thin. */
+  historicalPrior?: HistoricalPlayerPrior;
   upcomingFixtures?: FixtureItem[];
   calibrationFactor?: number;
   dataConfidence?: "LOW" | "MEDIUM" | "HIGH";

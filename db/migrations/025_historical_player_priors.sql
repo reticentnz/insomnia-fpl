@@ -1,0 +1,26 @@
+CREATE TABLE "HistoricalPlayerPrior" (
+  "id" TEXT PRIMARY KEY,
+  "current_player_id" TEXT NOT NULL,
+  "source" TEXT NOT NULL CHECK ("source" IN ('UNDERSTAT', 'FPL_ARCHIVE')),
+  "source_season" TEXT NOT NULL,
+  "source_player_id" TEXT NOT NULL,
+  "source_player_name" TEXT NOT NULL,
+  "match_confidence" REAL NOT NULL CHECK ("match_confidence" BETWEEN 0 AND 1),
+  "captured_at" TEXT NOT NULL,
+  "minutes" REAL NOT NULL DEFAULT 0 CHECK ("minutes" >= 0),
+  "starts" REAL NOT NULL DEFAULT 0 CHECK ("starts" >= 0),
+  "total_points" REAL NOT NULL DEFAULT 0,
+  "goals" REAL NOT NULL DEFAULT 0,
+  "assists" REAL NOT NULL DEFAULT 0,
+  "bonus" REAL NOT NULL DEFAULT 0,
+  "bps" REAL NOT NULL DEFAULT 0,
+  "expected_goals" REAL NOT NULL DEFAULT 0 CHECK ("expected_goals" >= 0),
+  "expected_assists" REAL NOT NULL DEFAULT 0 CHECK ("expected_assists" >= 0),
+  "non_penalty_expected_goals" REAL NOT NULL DEFAULT 0 CHECK ("non_penalty_expected_goals" >= 0),
+  "shots" REAL NOT NULL DEFAULT 0 CHECK ("shots" >= 0),
+  "key_passes" REAL NOT NULL DEFAULT 0 CHECK ("key_passes" >= 0),
+  "raw_payload_json" TEXT NOT NULL,
+  UNIQUE ("source", "source_season", "source_player_id"),
+  FOREIGN KEY ("current_player_id") REFERENCES "Player" ("id") ON DELETE RESTRICT
+);
+CREATE INDEX "HistoricalPlayerPrior_current_source_idx" ON "HistoricalPlayerPrior" ("current_player_id", "source", "captured_at" DESC);

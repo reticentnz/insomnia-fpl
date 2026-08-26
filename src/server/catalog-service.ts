@@ -143,6 +143,23 @@ export async function assembleProjectionInputCatalog(db: Database, options: {
   const underlyingByPlayer = new Map<string, any>()
   for (const row of underlyingRows) if (!underlyingByPlayer.has(row.player_id)) underlyingByPlayer.set(row.player_id, row)
 
+  // Historical data is immutable once imported. Prefer its Understat rates,
+  // while using the FPL archive for the previous season's minutes/bonus data.
+  const historicalRows = (await db.query(
+    `SELECT prior.* FROM "HistoricalPlayerPrior" prior
+     JOIN "Player" player ON player."id"=prior."current_player_id"
+     WHERE player."season"=$1
+     ORDER BY prior."current_player_id", prior."source", datetime(prior."captured_at") DESC, prior."id" DESC`,
+    [season],
+  )).rows
+  const historicalByPlayer = new Map<string, { understat?: any; fpl?: any }>()
+  for (const row of historicalRows) {
+    const current = historicalByPlayer.get(row.current_player_id) || {}
+    if (row.source === 'UNDERSTAT' && !current.understat) current.understat = row
+    if (row.source === 'FPL_ARCHIVE' && !current.fpl) current.fpl = row
+    historicalByPlayer.set(row.current_player_id, current)
+  }
+
   const marketMaxAgeMs = options.marketMaxAgeMs ?? Number(process.env.FPL_MARKET_MAX_AGE_MS || 48 * 60 * 60 * 1000)
   const markets = (await db.query(
     `SELECT observation.* FROM "MarketFixtureObservation" observation JOIN "FeedRun" run ON run."id"=observation."feed_run_id"
@@ -202,6 +219,9 @@ export async function assembleProjectionInputCatalog(db: Database, options: {
       }
     })
     const underlying = underlyingByPlayer.get(player.id) || null
+    const historical = historicalByPlayer.get(player.id)
+    const historicalRates = historical?.understat || historical?.fpl || null
+    const historicalFpl = historical?.fpl || historicalRates
     return {
       id: player.id, fplId: Number(player.fpl_id), name: player.web_name,
       identityNames: [...new Set([player.web_name, player.first_name, player.second_name, `${player.first_name || ''} ${player.second_name || ''}`].map(value => String(value || '').trim()).filter(Boolean))],
@@ -218,6 +238,12 @@ export async function assembleProjectionInputCatalog(db: Database, options: {
       },
       teamStrength: strength ? { strengthAttackHome: number(strength.strength_attack_home), strengthAttackAway: number(strength.strength_attack_away), strengthDefenceHome: number(strength.strength_defence_home), strengthDefenceAway: number(strength.strength_defence_away) } : { strengthAttackHome: null, strengthAttackAway: null, strengthDefenceHome: null, strengthDefenceAway: null },
       fixtures, underlying: underlying && { ...underlying, raw_payload_json: undefined },
+      historicalPrior: historicalRates ? {
+        sourceSeason: String(historicalRates.source_season), confidence: Number(historicalRates.match_confidence), minutes: Number(historicalFpl?.minutes || 0), starts: Number(historicalFpl?.starts || 0),
+        expectedGoalsPer90: Number(historicalRates.expected_goals || 0) * 90 / Math.max(1, Number(historicalRates.minutes || 0)),
+        expectedAssistsPer90: Number(historicalRates.expected_assists || 0) * 90 / Math.max(1, Number(historicalRates.minutes || 0)),
+        bonusPer90: Number(historicalFpl?.bonus || 0) * 90 / Math.max(1, Number(historicalFpl?.minutes || 0)),
+      } : null,
       roleSignals: roleSignals.map(signal => {
         const interpretation = effectiveSignalProjectionValue(signal)
         const sourceConfidence = Number(signal.confidence)
@@ -301,6 +327,7 @@ export async function assembleProjectionInputCatalog(db: Database, options: {
         },
       })),
       underlying: player.underlying ? projectionValue(player.underlying) : null,
+      historicalPrior: player.historicalPrior || null,
       roleSignals: player.roleSignals.map(signal => ({
         kind: signal.kind,
         value: signal.value,

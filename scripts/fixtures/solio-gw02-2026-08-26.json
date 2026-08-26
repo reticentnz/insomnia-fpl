@@ -1,0 +1,23 @@
+{
+  "source": "https://fpl.solioanalytics.com/api/data/latest",
+  "capturedAt": "2026-08-26T04:06:00Z",
+  "season": "2026/27",
+  "gameweek": 2,
+  "scope": "Public server-rendered report: top-30 xPts and published component/team tables only. This is an external calibration benchmark, never a production forecast input.",
+  "playerExpectedPoints": [
+    ["B.Fernandes", 7.12], ["Haaland", 6.50], ["Saka", 5.52], ["Isak", 5.37], ["Szoboszlai", 5.35],
+    ["Palmer", 5.30], ["Cunha", 5.28], ["Mbeumo", 5.16], ["João Pedro", 4.95], ["Gabriel", 4.94],
+    ["Gakpo", 4.86], ["Frimpong", 4.78], ["Tavernier", 4.71], ["Wirtz", 4.70], ["Hill", 4.70],
+    ["Semenyo", 4.63], ["Tzolis", 4.57], ["Calvert-Lewin", 4.56], ["Rogers", 4.51], ["Silva", 4.47],
+    ["Virgil", 4.43], ["Foden", 4.42], ["White", 4.42], ["O'Reilly", 4.40], ["van Ewijk", 4.39],
+    ["Thomas", 4.37], ["Maguire", 4.33], ["Evanilson", 4.32], ["Ballard", 4.32], ["E.Le Fée", 4.31]
+  ],
+  "teamInputs": {
+    "MUN": { "expectedGoals": 2.15, "expectedGoalsConceded": 0.87, "cleanSheetProbability": 0.42 },
+    "MCI": { "expectedGoals": 1.95, "expectedGoalsConceded": 1.01, "cleanSheetProbability": 0.36 },
+    "ARS": { "expectedGoals": 1.92, "expectedGoalsConceded": 0.84, "cleanSheetProbability": 0.43 },
+    "CHE": { "expectedGoals": 1.73, "expectedGoalsConceded": 1.19, "cleanSheetProbability": 0.30 },
+    "LEE": { "expectedGoals": 1.37, "expectedGoalsConceded": 1.32, "cleanSheetProbability": 0.27 },
+    "SUN": { "expectedGoals": 1.61, "expectedGoalsConceded": 1.18, "cleanSheetProbability": 0.31 }
+  }
+}

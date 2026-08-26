@@ -17,6 +17,7 @@
     "db:reset": "node --no-warnings scripts/db-reset.mjs",
     "ingest:fpl": "node --no-warnings --experimental-strip-types scripts/ingest-fpl.mjs",
     "ingest:signals": "node --no-warnings scripts/ingest-signals.mjs",
+    "ingest:historical-priors": "node --no-warnings scripts/ingest-historical-priors.mjs",
     "forecast": "node --no-warnings --experimental-strip-types scripts/create-forecast-run.mjs",
     "backtest": "node --no-warnings --experimental-strip-types scripts/backtest-projections.mjs",
     "db:verify": "node --no-warnings --experimental-strip-types scripts/verify-db.mjs",

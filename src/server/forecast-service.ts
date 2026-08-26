@@ -2,7 +2,7 @@ import { createHash, randomUUID } from 'node:crypto'
 import { canonicalJson, sanitizeError } from '../../scripts/feed-run.mjs'
 import { projectionBreakdown, MODEL_VERSION } from '../model.ts'
 import { resolvePlayerRole, type PlayerRoleProfile } from '../player-signals.ts'
-import { fixtureRateModel, fixtureRoleStates, MARKET_CLEAN_SHEET_WEIGHT, projectFixture, projectionSampleCalibration } from '../core/projection.ts'
+import { fixtureExpectedMinutes, fixtureRateModel, fixtureRoleStates, MARKET_CLEAN_SHEET_WEIGHT, projectFixture, projectionSampleCalibration } from '../core/projection.ts'
 import { combineSampleStreams, SIMULATION_COUNT, SIMULATION_ENGINE_VERSION, SIMULATION_SEED_VERSION, simulateFixtureOutcomes, simulateFromStoredForecast, summarizeSampleDistribution, type FixtureSimulationInput } from '../core/uncertainty.ts'
 import type { ProjectionCatalogFixture, ProjectionCatalogPlayer, ProjectionInputCatalog } from '../core/types.ts'
 import { assembleProjectionInputCatalog } from './catalog-service.ts'
@@ -60,7 +60,17 @@ export function baseRole(player: ProjectionCatalogPlayer, completedGameweeks = 0
   const observedMinutesShare = completed ? clamp(minutes / (completed * 90), 0, 1) : .55
   const observedStartsShare = completed ? clamp(starts / completed, 0, 1) : .55
   const observedRoleShare = .65 * observedStartsShare + .35 * observedMinutesShare
-  const roleShare = completed ? (.55 + completed * observedRoleShare) / (completed + 1) : .55
+  const currentRoleShare = completed ? (.55 + completed * observedRoleShare) / (completed + 1) : .55
+  const historical = player.historicalPrior
+  // A matched, established prior prevents one missing or incomplete GW1
+  // snapshot from reducing a proven starter to bench-player minutes. Its
+  // influence decays through the opening four completed gameweeks.
+  const historicalEligible = historical && historical.confidence >= .8 && historical.minutes >= 900 && historical.starts >= 10
+  const historicalRoleShare = historicalEligible
+    ? clamp(.62 + .011 * historical.starts + .000025 * historical.minutes, .70, .95)
+    : null
+  const currentWeight = Math.min(1, Math.max(.1, completed / 8))
+  const roleShare = historicalRoleShare == null ? currentRoleShare : historicalRoleShare * (1 - currentWeight) + observedRoleShare * currentWeight
   const blend = chance * roleShare
   const target = clamp(blend * 90, 0, 90)
   const isGoalkeeper = position === 'GK'
@@ -117,7 +127,12 @@ export function catalogFixtureStrength(player: ProjectionCatalogPlayer, fixture:
   const marketAttack = fixture.market ? (fixture.isHome ? fixture.market.homeExpectedGoals : fixture.market.awayExpectedGoals) / 1.4 : null
   const marketDefence = fixture.market ? (fixture.isHome ? fixture.market.awayExpectedGoals : fixture.market.homeExpectedGoals) / 1.4 : null
   const officialComplete = [ownAttack, ownDefence, opponentAttack, opponentDefence].every(value => Number.isFinite(value) && value > 0)
-  if (marketAttack != null && marketDefence != null) return { method: 'MARKET_XG' as const, attackMultiplier: marketAttack, defenceMultiplier: marketDefence }
+  if (marketAttack != null && marketDefence != null) return {
+    method: 'MARKET_XG' as const,
+    attackMultiplier: marketAttack,
+    defenceMultiplier: marketDefence,
+    marketTeamExpectedGoals: fixture.isHome ? fixture.market!.homeExpectedGoals : fixture.market!.awayExpectedGoals,
+  }
   if (officialComplete) return { method: 'OFFICIAL_STRENGTH' as const, attackMultiplier: ownAttack / 1000 * (2 - opponentDefence / 1000), defenceMultiplier: opponentAttack / 1000 * (2 - ownDefence / 1000) }
   if (catalog && completedGameweeks > 0) {
     const ratings = deriveTeamRatings(catalog, completedGameweeks)
@@ -126,6 +141,61 @@ export function catalogFixtureStrength(player: ProjectionCatalogPlayer, fixture:
     if (own && opponent) return { method: 'DERIVED_TEAM_RATING' as const, attackMultiplier: own.attack * opponent.defenceWeakness, defenceMultiplier: opponent.attack * own.defenceWeakness }
   }
   return undefined
+}
+
+const ATTACKING_RATE_PRIORS: Record<string, { goal: number; assist: number }> = {
+  GK: { goal: .002, assist: .008 }, DEF: { goal: .055, assist: .095 }, MID: { goal: .205, assist: .185 }, FWD: { goal: .37, assist: .15 },
+}
+const MARKET_ASSISTS_PER_GOAL = .70
+
+function observedAttackingRate(player: ProjectionCatalogPlayer, kind: 'goal' | 'assist') {
+  const official = player.official
+  const position = String(official.position || 'MID')
+  const minutes = Math.max(0, number(official.minutes))
+  const underlying = kind === 'goal' ? nullableNumber(player.underlying?.xg_per_90) : nullableNumber(player.underlying?.xa_per_90)
+  const officialPer90 = kind === 'goal' ? number(official.expected_goals_per_90) : number(official.expected_assists_per_90)
+  const total = kind === 'goal' ? number(official.expected_goals) : number(official.expected_assists)
+  const observed = underlying ?? (officialPer90 > 0 ? officialPer90 : minutes > 0 ? total * 90 / minutes : 0)
+  // This is only an allocation weight. A small position prior prevents a
+  // zero-GW1 sample from being assigned none of the team's market output.
+  const prior = ATTACKING_RATE_PRIORS[position] || ATTACKING_RATE_PRIORS.MID
+  return Math.max(.001, minutes > 0 ? (observed * minutes + (kind === 'goal' ? prior.goal : prior.assist) * 540) / (minutes + 540) : (kind === 'goal' ? prior.goal : prior.assist))
+}
+
+function resolvedRole(player: ProjectionCatalogPlayer, fixture: ProjectionCatalogFixture, completedGameweeks?: number) {
+  return resolvePlayerRole(baseRole(player, completedGameweeks), player.roleSignals.map(signal => toSignal(signal, fixture)), {
+    now: new Date(String(player.official.observed_at)), gameweek: fixture.gameweekFplId || undefined, completedGameweeks,
+  })
+}
+
+/** Allocate a matched market team-goal expectation across expected player minutes. */
+export function marketAttackingRateOverride(player: ProjectionCatalogPlayer, fixture: ProjectionCatalogFixture, catalog: ProjectionInputCatalog | undefined, completedGameweeks?: number) {
+  const teamGoals = fixture.market ? Number(fixture.isHome ? fixture.market.homeExpectedGoals : fixture.market.awayExpectedGoals) : 0
+  if (!catalog || !(teamGoals > 0)) return undefined
+  const teammates = catalog.players.flatMap(candidate => {
+    if (candidate.team.id !== player.team.id) return []
+    const candidateFixture = candidate.fixtures.find(item => item.id === fixture.id)
+    if (!candidateFixture) return []
+    // Resolve every teammate through the same path. Reusing the caller's role
+    // for only one player makes the denominator depend on which player happens
+    // to be forecast first, breaking market-total conservation.
+    const candidateRole = resolvedRole(candidate, candidateFixture, completedGameweeks)
+    const minutes = fixtureExpectedMinutes(candidateRole)
+    return [{ candidate, minutes, goalWeight: observedAttackingRate(candidate, 'goal') * minutes / 90, assistWeight: observedAttackingRate(candidate, 'assist') * minutes / 90 }]
+  })
+  const current = teammates.find(item => item.candidate.id === player.id)
+  if (!current || !(current.minutes > 0)) return undefined
+  const goalTotal = teammates.reduce((sum, item) => sum + item.goalWeight, 0)
+  const assistTotal = teammates.reduce((sum, item) => sum + item.assistWeight, 0)
+  if (!(goalTotal > 0) || !(assistTotal > 0)) return undefined
+  const goalShare = current.goalWeight / goalTotal
+  const assistShare = current.assistWeight / assistTotal
+  return {
+    goalRate: teamGoals * goalShare * 90 / current.minutes,
+    assistRate: teamGoals * MARKET_ASSISTS_PER_GOAL * assistShare * 90 / current.minutes,
+    goalShare,
+    assistShare,
+  }
 }
 
 function toSignal(signal: Record<string, unknown>, fixture: ProjectionCatalogFixture) {
@@ -155,9 +225,7 @@ function setPieceRole(signals: Array<Record<string, unknown>>) {
  */
 export function projectCatalogFixture(player: ProjectionCatalogPlayer, fixture: ProjectionCatalogFixture, catalog?: ProjectionInputCatalog, context?: { forecastRunId: string; modelVersion: string; completedGameweeks: number }): ForecastRow {
   const official = player.official
-  const role = resolvePlayerRole(baseRole(player, context?.completedGameweeks), player.roleSignals.map(signal => toSignal(signal, fixture)), {
-    now: new Date(String(official.observed_at)), gameweek: fixture.gameweekFplId || undefined, completedGameweeks: context?.completedGameweeks,
-  })
+  const role = resolvedRole(player, fixture, context?.completedGameweeks)
   const position = String(official.position || 'MID') as 'GK' | 'DEF' | 'MID' | 'FWD'
   const stats = {
     minutes: number(official.minutes), starts: number(official.starts), totalPoints: number(official.total_points), goals: number(official.goals), assists: number(official.assists), cleanSheets: number(official.clean_sheets), goalsConceded: number(official.goals_conceded), saves: number(official.saves), bonus: number(official.bonus), bps: number(official.bps), yellowCards: number(official.yellow_cards), redCards: number(official.red_cards), ownGoals: number(official.own_goals), penaltiesMissed: number(official.penalties_missed), penaltiesSaved: number(official.penalties_saved), expectedGoals: number(official.expected_goals), expectedAssists: number(official.expected_assists), expectedGoalsConceded: number(official.expected_goals_conceded), expectedGoalsPer90: nullableNumber(player.underlying?.xg_per_90) ?? number(official.expected_goals_per_90), expectedAssistsPer90: nullableNumber(player.underlying?.xa_per_90) ?? number(official.expected_assists_per_90), expectedGoalsConcededPer90: number(official.expected_goals_conceded_per_90), savesPer90: number(official.saves) * 90 / Math.max(1, number(official.minutes)), clearancesBlocksInterceptions: number(official.clearances_blocks_interceptions), tackles: number(official.tackles), recoveries: number(official.recoveries), defensiveContribution: number(official.defensive_contribution), defensiveContributionPer90: number(official.defensive_contribution_per_90),
@@ -166,14 +234,15 @@ export function projectCatalogFixture(player: ProjectionCatalogPlayer, fixture: 
     id: player.fplId, name: player.name, club: player.team.shortName, position, price: number(official.price_tenths) / 10,
     form: number(official.form), ownership: number(official.ownership_percent), minutes: number(official.minutes), fixture: `${fixture.opponent.shortName} (${fixture.isHome ? 'H' : 'A'})`, difficulty: fixture.difficulty || 3, projection: number(official.ep_next), colour: getTeamColor(player.team.shortName), status: String(official.status || 'a'), chanceOfPlaying: nullableNumber(official.chance_of_playing) ?? 100, active: Boolean(official.active), roleProfile: role, stats,
     upcomingFixtures: [{ gameweek: fixture.gameweekFplId || 0, opponent: fixture.opponent.shortName, venue: fixture.isHome ? 'H' : 'A', difficulty: fixture.difficulty || 3 }], dataConfidence: role.confidence,
-    setPieceRole: setPieceRole(player.roleSignals),
+    setPieceRole: setPieceRole(player.roleSignals), historicalPrior: player.historicalPrior || undefined,
   }
   const strength = catalogFixtureStrength(player, fixture, catalog, context?.completedGameweeks)
   const marketCleanSheetProbability = fixture.market
     ? (fixture.isHome ? fixture.market.homeCleanSheetProbability : fixture.market.awayCleanSheetProbability) ?? undefined
     : undefined
-  const fixtureInput = { gameweek: fixture.gameweekFplId || 0, opponent: fixture.opponent.shortName, venue: fixture.isHome ? 'H' as const : 'A' as const, difficulty: fixture.difficulty || 3, marketCleanSheetProbability, strength }
-  const breakdown = projectionBreakdown(modelPlayer, 1)
+  const attackingRateOverride = marketAttackingRateOverride(player, fixture, catalog, context?.completedGameweeks)
+  const fixtureInput = { gameweek: fixture.gameweekFplId || 0, opponent: fixture.opponent.shortName, venue: fixture.isHome ? 'H' as const : 'A' as const, difficulty: fixture.difficulty || 3, marketCleanSheetProbability, strength, attackingRateOverride }
+  const breakdown = projectionBreakdown({ ...modelPlayer, upcomingFixtures: [fixtureInput] }, 1)
   const components = projectFixture(modelPlayer, fixtureInput)
   const states = fixtureRoleStates(role)
   const rates = fixtureRateModel(modelPlayer, fixtureInput)
@@ -206,6 +275,7 @@ export function projectCatalogFixture(player: ProjectionCatalogPlayer, fixture: 
     roleSource: {
       derivedSignalIds: role.derivedFromSignalIds,
       roleCalibration: role.calibration,
+      marketAllocation: attackingRateOverride && { teamExpectedGoals: strength?.marketTeamExpectedGoals, assistsPerGoal: MARKET_ASSISTS_PER_GOAL, ...attackingRateOverride },
       sampleCalibration: projectionSampleCalibration(modelPlayer, context?.completedGameweeks),
       simulationInput,
     }, inputProvenance: player.provenance,

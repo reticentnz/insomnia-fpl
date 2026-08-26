@@ -45,6 +45,7 @@ export type ProjectionCatalogPlayer = {
   teamStrength: Record<string, number | null>
   fixtures: ProjectionCatalogFixture[]
   underlying: Record<string, unknown> | null
+  historicalPrior?: { sourceSeason: string; confidence: number; minutes: number; starts: number; expectedGoalsPer90: number; expectedAssistsPer90: number; bonusPer90: number } | null
   roleSignals: Array<Record<string, unknown>>
   provenance: InputProvenance
   // Fields added by the /api/catalog response transformer (used by client mapper)

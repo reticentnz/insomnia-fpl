@@ -4,7 +4,7 @@ import path from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
 import { closeDb, getDb } from '../../scripts/db.mjs'
 import { ingestOfficialFpl } from '../../scripts/ingest-fpl.mjs'
-import { baseRole, catalogFixtureStrength, createForecastRun, latestEligibleForecastRun, latestForecastSummary } from './forecast-service.ts'
+import { baseRole, catalogFixtureStrength, createForecastRun, latestEligibleForecastRun, latestForecastSummary, marketAttackingRateOverride } from './forecast-service.ts'
 import { SIMULATION_ENGINE_VERSION, simulateFixtureOutcomes, simulateFromStoredForecast } from '../core/uncertainty.ts'
 
 const directories: string[] = []
@@ -22,6 +22,25 @@ async function seeded() {
 afterEach(async () => { await closeDb(); while (directories.length) fs.rmSync(directories.pop()!, { recursive: true, force: true }) })
 
 describe('WP-08 immutable forecast ledger', () => {
+  it('allocates a matched market team-goal total across player rates without losing output to a strength cap', () => {
+    const fixture = { id: 'fixture-1', isHome: true, gameweekFplId: 2, market: { homeExpectedGoals: 2.4, awayExpectedGoals: .8 } } as any
+    const candidate = (id: string, xg: number, xa: number) => ({
+      id, fplId: Number(id.slice(-1)), name: id, team: { id: 'team-1', fplId: 1, name: 'Team', shortName: 'TST' },
+      official: { position: 'FWD', status: 'a', chance_of_playing: null, minutes: 90, starts: 1, expected_goals_per_90: xg, expected_assists_per_90: xa, observed_at: '2026-08-26T00:00:00Z' },
+      teamStrength: {}, fixtures: [fixture], underlying: null, roleSignals: [], provenance: {},
+    }) as any
+    const first = candidate('player-1', .6, .12), second = candidate('player-2', .2, .3)
+    const catalog = { players: [first, second] } as any
+    const firstRates = marketAttackingRateOverride(first, fixture, catalog, 1)!
+    const secondRates = marketAttackingRateOverride(second, fixture, catalog, 1)!
+    expect(firstRates.goalShare).toBeGreaterThan(secondRates.goalShare)
+    expect(firstRates.assistShare).toBeLessThan(secondRates.assistShare)
+    // The shares are exhaustive. Each per-90 rate is derived from this share
+    // and its own expected minutes, so the team expectation remains 2.4.
+    expect(firstRates.goalShare + secondRates.goalShare).toBeCloseTo(1, 8)
+    expect(firstRates.assistShare + secondRates.assistShare).toBeCloseTo(1, 8)
+  })
+
   it('normalizes early-season role evidence by completed matches', () => {
     const player = { official: { position: 'GK', status: 'a', chance_of_playing: null, minutes: 90, starts: 1 } } as any
     const starter = baseRole(player, 1)
@@ -30,6 +49,11 @@ describe('WP-08 immutable forecast ledger', () => {
     expect(unused.startProbability).toBeLessThan(.35)
     expect(starter.confidence).toBe('MEDIUM')
     expect(unused.confidence).toBe('LOW')
+  })
+
+  it('keeps a high-confidence established starter above low minutes when the current snapshot is incomplete', () => {
+    const player = { official: { position: 'FWD', status: 'a', chance_of_playing: null, minutes: 0, starts: 0 }, historicalPrior: { sourceSeason: '2025-26', confidence: 1, minutes: 2_500, starts: 28, expectedGoalsPer90: .5, expectedAssistsPer90: .15, bonusPer90: .4 } } as any
+    expect(baseRole(player, 1).startProbability).toBeGreaterThan(.8)
   })
 
   it('uses shrunk observed team xG ratings when official strengths and future odds are absent', () => {
