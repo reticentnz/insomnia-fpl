@@ -68,6 +68,13 @@ describe('WP-08 immutable forecast ledger', () => {
     expect(unused.confidence).toBe('LOW')
   })
 
+  it('treats a full-length start in every completed early-season match as stronger short-term minutes evidence', () => {
+    const full = { official: { position: 'FWD', status: 'a', chance_of_playing: null, minutes: 90, starts: 1 } } as any
+    const partial = { official: { position: 'FWD', status: 'a', chance_of_playing: null, minutes: 75, starts: 1 } } as any
+    expect(baseRole(full, 1).startProbability).toBeGreaterThan(.94)
+    expect(baseRole(partial, 1).startProbability).toBeLessThan(.9)
+  })
+
   it('keeps a high-confidence established starter above low minutes when the current snapshot is incomplete', () => {
     const player = { official: { position: 'FWD', status: 'a', chance_of_playing: null, minutes: 0, starts: 0 }, historicalPrior: { sourceSeason: '2025-26', confidence: 1, minutes: 2_500, starts: 28, expectedGoalsPer90: .5, expectedAssistsPer90: .15, bonusPer90: .4 } } as any
     expect(baseRole(player, 1).startProbability).toBeGreaterThan(.8)

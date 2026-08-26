@@ -60,7 +60,14 @@ export function baseRole(player: ProjectionCatalogPlayer, completedGameweeks = 0
   const observedMinutesShare = completed ? clamp(minutes / (completed * 90), 0, 1) : .55
   const observedStartsShare = completed ? clamp(starts / completed, 0, 1) : .55
   const observedRoleShare = .65 * observedStartsShare + .35 * observedMinutesShare
-  const currentRoleShare = completed ? (.55 + completed * observedRoleShare) / (completed + 1) : .55
+  let currentRoleShare = completed ? (.55 + completed * observedRoleShare) / (completed + 1) : .55
+  // A healthy player who has started every completed league match and played
+  // at least 80 minutes each time has materially stronger near-term evidence
+  // than an arbitrary one-match appearance. This is deliberately a GW2–3
+  // bridge, not a declaration that the player is season-long nailed; verified
+  // rotation or injury signals can still reduce the role afterwards.
+  const confirmedFullMatchStarter = completed > 0 && starts >= completed && minutes >= completed * 80
+  if (confirmedFullMatchStarter && completed <= 3) currentRoleShare = Math.max(currentRoleShare, .91)
   const historical = player.historicalPrior
   // A matched, established prior prevents one missing or incomplete GW1
   // snapshot from reducing a proven starter to bench-player minutes. Its
