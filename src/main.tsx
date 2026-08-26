@@ -65,6 +65,7 @@ import {
   parseTeamId,
   fetchLLMExplanation,
   fetchFplAccount,
+  fetchFplLiveScore,
   fetchFplRankHistory,
   getUserProfile,
   saveUserProfile,
@@ -2502,6 +2503,39 @@ function App() {
     }
   };
 
+  const refreshLiveGameweekPoints = useCallback(async () => {
+    const liveGameweek = currentGameweek || fplAccount?.currentGameweek;
+    if (!fplAccount?.teamId || !liveGameweek) return;
+    const live = await fetchFplLiveScore(fplAccount.teamId, liveGameweek);
+    setFplAccount((account) => account && account.teamId === fplAccount.teamId
+      ? { ...account, gameweekPoints: live.gameweekPoints }
+      : account);
+  }, [currentGameweek, fplAccount?.teamId, fplAccount?.currentGameweek]);
+
+  useEffect(() => {
+    if (!fplAccount?.teamId || !(currentGameweek || fplAccount.currentGameweek)) return;
+    let refreshing = false;
+    const refresh = async () => {
+      if (refreshing || document.hidden) return;
+      refreshing = true;
+      try {
+        await refreshLiveGameweekPoints();
+      } catch {
+        // Preserve the last confirmed score; the next interval will retry.
+      } finally {
+        refreshing = false;
+      }
+    };
+    void refresh();
+    const timer = window.setInterval(refresh, 60_000);
+    const onVisibilityChange = () => { if (!document.hidden) void refresh(); };
+    document.addEventListener("visibilitychange", onVisibilityChange);
+    return () => {
+      window.clearInterval(timer);
+      document.removeEventListener("visibilitychange", onVisibilityChange);
+    };
+  }, [currentGameweek, fplAccount?.teamId, fplAccount?.currentGameweek, refreshLiveGameweekPoints]);
+
   const automaticOfficialSquadSyncRef = useRef<string | null>(null);
   useEffect(() => {
     if (
@@ -4638,7 +4672,7 @@ function FplAccountPatch({
             </span>
             <span className="patch-card-unit">pts</span>
           </div>
-          <span className="patch-card-sub">Gameweek {account.currentGameweek}</span>
+          <span className="patch-card-sub">Gameweek {account.currentGameweek} · Live refresh every minute</span>
         </div>
 
         <div className="patch-card">

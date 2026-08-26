@@ -512,6 +512,24 @@ export async function fetchFplAccount(teamId: number, gameweek?: number): Promis
   }
 }
 
+export async function fetchFplLiveScore(teamId: number, gameweek: number): Promise<{
+  gameweek: number;
+  gameweekPoints: number;
+  updatedAt: string;
+}> {
+  const response = await fetch(
+    `/api/manager/live-score?teamId=${encodeURIComponent(teamId)}&gameweek=${encodeURIComponent(gameweek)}`,
+    { cache: 'no-store' },
+  )
+  const data = await response.json().catch(() => ({}))
+  if (!response.ok) throw new Error(apiErrorMessage(data, `Live FPL score failed: HTTP ${response.status}`))
+  return {
+    gameweek: Number(data.gameweek),
+    gameweekPoints: Number(data.gameweekPoints),
+    updatedAt: String(data.updatedAt || new Date().toISOString()),
+  }
+}
+
 export async function fetchFplRankHistory(teamId: number): Promise<FplRankHistoryEntry[]> {
   const response = await fetch(`/api/manager/rank-history?teamId=${encodeURIComponent(teamId)}`)
   const data = await response.json().catch(() => ({}))

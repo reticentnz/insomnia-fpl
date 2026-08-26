@@ -5,7 +5,7 @@ import { afterEach, describe, expect, it } from 'vitest'
 import { closeDb, getDb } from './db.mjs'
 import { migrateDatabase } from './db-migrate.mjs'
 import { ingestOfficialFpl } from './ingest-fpl.mjs'
-import { fetchManagerPayload, getCurrentManager, importManagerPayload, linkManagerAccount, sellingPriceFromPurchase, unlinkCurrentManager, updateManagerAssumptions } from './manager-service.mjs'
+import { fetchManagerLiveScore, fetchManagerPayload, getCurrentManager, importManagerPayload, linkManagerAccount, sellingPriceFromPurchase, unlinkCurrentManager, updateManagerAssumptions } from './manager-service.mjs'
 
 const temporaryDirectories: string[] = []
 const fixtureDirectory = path.resolve('scripts', 'fixtures')
@@ -106,6 +106,34 @@ describe('WP-03 manager import and exact economics', () => {
       'entry/123456/transfers/',
       'entry/123456/history/',
     ])
+  })
+
+  it('calculates a live gameweek score from the live player feed and applies transfer hits', async () => {
+    const result = await fetchManagerLiveScore({
+      teamId: 123456,
+      gameweek: 1,
+      fetchJson: async (endpoint: string) => {
+        if (endpoint === 'entry/123456/event/1/picks/') return {
+          entry_history: { event_transfers_cost: 4 },
+          picks: [
+            { element: 10, multiplier: 2 },
+            { element: 11, multiplier: 1 },
+            { element: 12, multiplier: 0 },
+          ],
+        }
+        if (endpoint === 'event/1/live/') return {
+          elements: [
+            { id: 10, stats: { total_points: 6 } },
+            { id: 11, stats: { total_points: 3 } },
+            { id: 12, stats: { total_points: 9 } },
+          ],
+        }
+        throw new Error(`Unexpected endpoint ${endpoint}`)
+      },
+    })
+
+    expect(result).toMatchObject({ gameweek: 1, gameweekPoints: 11 })
+    expect(result.updatedAt).toEqual(expect.any(String))
   })
 
   it('reconstructs initial purchase prices and backfills selling prices from stored official observations', async () => {

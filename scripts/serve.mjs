@@ -36,7 +36,7 @@ const FPL_SEASON = process.env.FPL_SEASON || '2026/27'
 
 import { getDb } from './db.mjs'
 import { migrateDatabase } from './db-migrate.mjs'
-import { fetchManagerPayload, fetchManagerRankHistory, getCurrentManager, importManagerPayload, linkManagerAccount, unlinkCurrentManager, updateManagerAssumptions } from './manager-service.mjs'
+import { fetchManagerLiveScore, fetchManagerPayload, fetchManagerRankHistory, getCurrentManager, importManagerPayload, linkManagerAccount, unlinkCurrentManager, updateManagerAssumptions } from './manager-service.mjs'
 import { createPlan, getActivePlan, selectPlan } from './plan-service.mjs'
 import { createRecommendationSet, findVerifiedCachedRecommendationSet } from './recommendation-service.mjs'
 import { evaluateDecision, evaluatePendingDecisions, listDecisions, recordDecision } from './decision-journal-service.mjs'
@@ -2560,6 +2560,18 @@ function startServerOnAvailablePort(targetPort) {
         scheduleAuxiliaryRefreshes().catch(error => console.error('⚠️ Could not update manager refresh schedule:', sanitizeError(error)))
       } catch (error) {
         sendJson(res, 400, { error: error instanceof Error ? error.message : 'Manager import failed' })
+      }
+      return
+    }
+
+    if (request === '/api/manager/live-score' && req.method === 'GET') {
+      try {
+        const params = new URL(req.url || '/', `http://${host}`).searchParams
+        const teamId = Number(params.get('teamId'))
+        const gameweek = Number(params.get('gameweek'))
+        sendJson(res, 200, await fetchManagerLiveScore({ teamId, gameweek }))
+      } catch (error) {
+        sendJson(res, 400, { error: error instanceof Error ? error.message : 'Live manager score unavailable' })
       }
       return
     }

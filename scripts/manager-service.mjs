@@ -121,6 +121,33 @@ export async function fetchManagerRankHistory({ teamId, fetchJson = officialJson
     .sort((a, b) => a.gameweek - b.gameweek)
 }
 
+// `entry_history.points` is a persisted score snapshot and can trail the live
+// scoring feed during a game.  Keep this separate from a manager import: this
+// is intentionally read-only and does not create another squad snapshot.
+export async function fetchManagerLiveScore({ teamId, gameweek, fetchJson = officialJson } = {}) {
+  const entryId = integer(teamId, 'teamId', { minimum: 1 })
+  const event = integer(gameweek, 'gameweek', { minimum: 1 })
+  const [picks, live] = await Promise.all([
+    fetchJson(`entry/${entryId}/event/${event}/picks/`),
+    fetchJson(`event/${event}/live/`),
+  ])
+  if (!Array.isArray(picks?.picks)) throw new Error('Official picks payload contains no squad')
+  const livePoints = new Map(
+    (Array.isArray(live?.elements) ? live.elements : []).map((element) => [
+      Number(element.id), Number(element?.stats?.total_points) || 0,
+    ]),
+  )
+  if (livePoints.size === 0) throw new Error(`FPL live scoring is unavailable for GW${event}`)
+  const grossPoints = picks.picks.reduce((total, pick) =>
+    total + (Number(pick.multiplier) || 0) * (livePoints.get(Number(pick.element)) || 0), 0)
+  const transferCost = integer(picks?.entry_history?.event_transfers_cost ?? 0, 'event_transfers_cost', { minimum: 0 })
+  return {
+    gameweek: event,
+    gameweekPoints: grossPoints - transferCost,
+    updatedAt: new Date().toISOString(),
+  }
+}
+
 export async function linkManagerAccount(db, {
   entry,
   gameweek,
