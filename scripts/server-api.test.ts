@@ -3,7 +3,9 @@ import os from 'node:os'
 import path from 'node:path'
 import { spawn, type ChildProcess } from 'node:child_process'
 import { afterEach, describe, expect, it } from 'vitest'
+import { closeDb, getDb } from './db.mjs'
 import { ingestOfficialFpl } from './ingest-fpl.mjs'
+import { ingestMarketEvents } from './ingest-signals.mjs'
 
 const directories: string[] = []
 const processes: ChildProcess[] = []
@@ -47,7 +49,24 @@ describe('canonical HTTP API smoke', () => {
     const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'insomnia-fpl-api-'))
     directories.push(directory)
     const databasePath = path.join(directory, 'database.sqlite')
-    await ingestOfficialFpl({ dbPath: databasePath, season: '2026/27', observedAt: '2026-08-10T12:00:00Z', finishedAt: '2026-08-10T12:01:00Z', bootstrap: fixture('wp02-bootstrap.json'), fixtures: fixture('wp02-fixtures.json'), elementSummaries: {} })
+    const bootstrap = fixture<any>('wp02-bootstrap.json')
+    bootstrap.events.find((event: any) => event.id === 2).is_next = true
+    const fplFixtures = fixture<any[]>('wp02-fixtures.json').map((item: any) => item.id === 101 ? { ...item, kickoff_time: '2026-08-29T15:00:00Z' } : item)
+    await ingestOfficialFpl({ dbPath: databasePath, season: '2026/27', observedAt: '2026-08-10T12:00:00Z', finishedAt: '2026-08-10T12:01:00Z', bootstrap, fixtures: fplFixtures, elementSummaries: {} })
+    const db = await getDb(databasePath)
+    const markets = [{
+      id: 'previous-gameweek', commence_time: '2026-08-22T15:00:00Z', home_team: 'Alpha FC', away_team: 'Beta United', bookmakers: [{ markets: [
+        { key: 'h2h', outcomes: [{ name: 'Alpha FC', price: 2 }, { name: 'Draw', price: 3.5 }, { name: 'Beta United', price: 4 }] },
+        { key: 'totals', outcomes: [{ name: 'Over 2.5', price: 2 }, { name: 'Under 2.5', price: 2 }] },
+      ] }],
+    }, {
+      id: 'next-gameweek', commence_time: '2026-08-29T15:00:00Z', home_team: 'Beta United', away_team: 'Alpha FC', bookmakers: [{ markets: [
+        { key: 'h2h', outcomes: [{ name: 'Beta United', price: 2 }, { name: 'Draw', price: 3.5 }, { name: 'Alpha FC', price: 4 }] },
+        { key: 'totals', outcomes: [{ name: 'Over 2.5', price: 2 }, { name: 'Under 2.5', price: 2 }] },
+      ] }],
+    }]
+    await ingestMarketEvents(db, { season: '2026/27', events: markets, capturedAt: '2026-08-26T12:00:00Z' })
+    await closeDb()
     const port = 43000 + Math.floor(Math.random() * 1000)
     const server = spawn(process.execPath, ['--experimental-strip-types', 'scripts/serve.mjs'], { cwd: process.cwd(), env: { ...process.env, PORT: String(port), HOST: '127.0.0.1', DATABASE_URL: `file:${databasePath}`, FPL_SEASON: '2026/27', FPL_INGEST_INTERVAL_HOURS: '876000', ADMIN_TOKEN: 'fixture-admin-token', ODDS_API_KEY: ' ', FPL_CATALOG_CACHE_FILE: path.join(directory, 'catalog-cache.json'), SIGNAL_CONFIG_FILE: path.join(directory, 'signal-config.json'), AI_SETTINGS_FILE: path.join(directory, 'ai-settings.json') }, stdio: ['ignore', 'pipe', 'pipe'] })
     processes.push(server)
@@ -67,7 +86,7 @@ describe('canonical HTTP API smoke', () => {
     expect(admin).toMatchObject({ authenticationRequired: true, season: '2026/27', oddsConfigured: false, unresolved: { players: 0, fixtures: 0 } })
     expect(admin.operations).toHaveLength(7)
     expect(admin.operations).toEqual(expect.arrayContaining([expect.objectContaining({ id: 'signals-sync' })]))
-    expect(admin.feedRuns[0]).toMatchObject({ source: 'OFFICIAL_FPL', status: 'SUCCEEDED' })
+    expect(admin.feedRuns).toEqual(expect.arrayContaining([expect.objectContaining({ source: 'OFFICIAL_FPL', status: 'SUCCEEDED' })]))
     const unauthorizedAdminWrite = await fetch(`${baseUrl}/api/admin/actions/not-real`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: '{}' })
     expect(unauthorizedAdminWrite.status).toBe(401)
     const authorizedUnknownAdminWrite = await fetch(`${baseUrl}/api/admin/actions/not-real`, { method: 'POST', headers: { 'content-type': 'application/json', authorization: 'Bearer fixture-admin-token' }, body: '{}' })
@@ -90,8 +109,9 @@ describe('canonical HTTP API smoke', () => {
     expect(notModified.status).toBe(304)
     const compatibility = await fetch(`${baseUrl}/api/fpl-data`).then(response => response.json())
     expect(compatibility.players.map((player: any) => player.id)).toEqual([10, 11])
-    const markets = await fetch(`${baseUrl}/api/team-market-snapshots`).then(response => response.json())
-    expect(markets.snapshots).toEqual([])
+    const marketSnapshots = await fetch(`${baseUrl}/api/team-market-snapshots`).then(response => response.json())
+    expect(marketSnapshots.snapshots).toHaveLength(1)
+    expect(marketSnapshots.snapshots[0]).toMatchObject({ externalEventId: 'next-gameweek', homeTeam: 'Beta United', awayTeam: 'Alpha FC' })
 
     const removedCreatorWebhook = await fetch(`${baseUrl}/api/signals/ingest`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: '{}' })
     expect(removedCreatorWebhook.status).toBe(404)

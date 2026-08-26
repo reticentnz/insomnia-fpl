@@ -2349,13 +2349,29 @@ function startServerOnAvailablePort(targetPort) {
         const db=await getDb(),params=new URL(req.url||'/',`http://${host}`).searchParams
         const limit=Math.min(50,Math.max(1,Number(params.get('limit'))||12))
         const marketMaxAgeMs=Number(process.env.FPL_MARKET_MAX_AGE_MS||48*60*60*1000)
+        const now=new Date().toISOString()
+        // Market observations are retained for forecast provenance, so this
+        // endpoint must explicitly select the next FPL gameweek instead of
+        // sorting all historical events by kickoff (which surfaces last GW).
         const result=await db.query(`SELECT observation."id",observation."source",observation."external_event_id",observation."captured_at",observation."kickoff_at",observation."home_team_name",observation."away_team_name",observation."home_win_probability",observation."draw_probability",observation."away_win_probability",observation."home_clean_sheet_probability",observation."away_clean_sheet_probability",observation."fixture_id",observation."home_expected_goals",observation."away_expected_goals"
           FROM "MarketFixtureObservation" observation JOIN "FeedRun" run ON run."id"=observation."feed_run_id"
-          WHERE run."status" IN ('SUCCEEDED','PARTIAL') AND NOT EXISTS (
-            SELECT 1 FROM "MarketFixtureObservation" newer JOIN "FeedRun" newer_run ON newer_run."id"=newer."feed_run_id"
-            WHERE newer."external_event_id"=observation."external_event_id" AND newer_run."status" IN ('SUCCEEDED','PARTIAL')
-              AND (datetime(newer."captured_at")>datetime(observation."captured_at") OR (newer."captured_at"=observation."captured_at" AND newer."id">observation."id"))
-          ) ORDER BY COALESCE(observation."kickoff_at",observation."captured_at") ASC,observation."captured_at" DESC LIMIT $1`,[limit])
+          JOIN "FixtureObservation" fixture ON fixture."fixture_id"=observation."fixture_id"
+          JOIN "FeedRun" fixture_run ON fixture_run."id"=fixture."feed_run_id"
+          WHERE run."status" IN ('SUCCEEDED','PARTIAL')
+            AND fixture_run."status" IN ('SUCCEEDED','PARTIAL')
+            AND fixture."gameweek_id"=COALESCE(
+              (SELECT gameweek_observation."gameweek_id" FROM "GameweekObservation" gameweek_observation
+                JOIN "FeedRun" gameweek_run ON gameweek_run."id"=gameweek_observation."feed_run_id"
+                WHERE gameweek_observation."is_next"=1 AND gameweek_run."status" IN ('SUCCEEDED','PARTIAL')
+                ORDER BY datetime(gameweek_observation."observed_at") DESC,datetime(gameweek_observation."deadline_at") ASC,gameweek_observation."id" ASC LIMIT 1),
+              (SELECT fallback_fixture."gameweek_id" FROM "FixtureObservation" fallback_fixture JOIN "FeedRun" fallback_run ON fallback_run."id"=fallback_fixture."feed_run_id" WHERE fallback_fixture."gameweek_id" IS NOT NULL AND fallback_fixture."finished"=0 AND fallback_run."status" IN ('SUCCEEDED','PARTIAL') AND datetime(fallback_fixture."kickoff_at")>=datetime($2) ORDER BY datetime(fallback_fixture."kickoff_at") ASC LIMIT 1)
+            )
+            AND fixture."finished"=0 AND datetime(COALESCE(observation."kickoff_at",fixture."kickoff_at"))>=datetime($2)
+            AND NOT EXISTS (
+              SELECT 1 FROM "MarketFixtureObservation" newer JOIN "FeedRun" newer_run ON newer_run."id"=newer."feed_run_id"
+              WHERE newer."external_event_id"=observation."external_event_id" AND newer_run."status" IN ('SUCCEEDED','PARTIAL')
+                AND (datetime(newer."captured_at")>datetime(observation."captured_at") OR (newer."captured_at"=observation."captured_at" AND newer."id">observation."id"))
+            ) ORDER BY COALESCE(observation."kickoff_at",fixture."kickoff_at",observation."captured_at") ASC,observation."captured_at" DESC LIMIT $1`,[limit,now])
         sendJson(res,200,{snapshots:result.rows.map(row=>({id:row.id,source:row.source,externalEventId:row.external_event_id,capturedAt:row.captured_at,kickoff:row.kickoff_at,homeTeam:row.home_team_name,awayTeam:row.away_team_name,homeWinProb:row.home_win_probability==null?null:Number(row.home_win_probability),drawProb:row.draw_probability==null?null:Number(row.draw_probability),awayWinProb:row.away_win_probability==null?null:Number(row.away_win_probability),homeCleanSheetProb:row.home_clean_sheet_probability==null?null:Number(row.home_clean_sheet_probability),awayCleanSheetProb:row.away_clean_sheet_probability==null?null:Number(row.away_clean_sheet_probability),forecastEligible:Boolean(row.fixture_id&&row.home_expected_goals!=null&&row.away_expected_goals!=null&&Date.parse(row.captured_at)>=Date.now()-marketMaxAgeMs)}))})
       }catch(error){sendJson(res,500,{error:error instanceof Error?error.message:'Unable to read market snapshots'})}
       return
