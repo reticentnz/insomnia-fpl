@@ -4,7 +4,7 @@ import path from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
 import { closeDb, getDb } from '../../scripts/db.mjs'
 import { ingestOfficialFpl } from '../../scripts/ingest-fpl.mjs'
-import { baseRole, catalogFixtureStrength, createForecastRun, latestEligibleForecastRun, latestForecastSummary, marketAttackingRateOverride } from './forecast-service.ts'
+import { baseRole, catalogFixtureStrength, createForecastRun, latestEligibleForecastRun, latestForecastSummary, marketAttackingRateOverride, setPieceRole } from './forecast-service.ts'
 import { SIMULATION_ENGINE_VERSION, simulateFixtureOutcomes, simulateFromStoredForecast } from '../core/uncertainty.ts'
 
 const directories: string[] = []
@@ -22,6 +22,12 @@ async function seeded() {
 afterEach(async () => { await closeDb(); while (directories.length) fs.rmSync(directories.pop()!, { recursive: true, force: true }) })
 
 describe('WP-08 immutable forecast ledger', () => {
+  it('uses verified penalty and set-piece signal kinds when older records lack a structured role value', () => {
+    expect(setPieceRole([{ kind: 'PENALTIES', value: { note: 'On penalties' } }])).toBe('PENALTIES')
+    expect(setPieceRole([{ kind: 'SET_PIECES', value: { note: 'Takes corners' } }])).toBe('SET_PIECES')
+    expect(setPieceRole([{ kind: 'PENALTIES', value: {} }, { kind: 'SET_PIECES', value: {} }])).toBe('PENALTIES_AND_SET_PIECES')
+  })
+
   it('allocates a matched market team-goal total across player rates without losing output to a strength cap', () => {
     const fixture = { id: 'fixture-1', isHome: true, gameweekFplId: 2, market: { homeExpectedGoals: 2.4, awayExpectedGoals: .8 } } as any
     const candidate = (id: string, xg: number, xa: number) => ({

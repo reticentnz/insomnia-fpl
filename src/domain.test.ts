@@ -83,6 +83,12 @@ describe('player evidence signals',()=>{
     expect(resolvePlayerRole(established,[confirmation],{now:new Date('2026-08-10T12:00:00Z'),gameweek:2}).startProbability).toBe(.98)
   })
 
+  it('does not treat a teammate injury mentioned in a first-choice report as a downgrade',()=>{
+    const confirmation=signal({id:33,gameweek:null,value:{depthRole:'FIRST_CHOICE'},evidenceSummary:'First choice centre-back; his partner is injured'})
+    const established={...base,startProbability:.98}
+    expect(resolvePlayerRole(established,[confirmation],{now:new Date('2026-08-10T12:00:00Z'),gameweek:2}).startProbability).toBe(.98)
+  })
+
   it('gives an explicit manual override precedence over researched signals',()=>{
     const manual=signal({id:4,sourceType:'MANUAL_OVERRIDE',value:{startProbability:1,minutesIfStarting:90},confidence:1})
     const resolved=resolvePlayerRole(base,[signal({}),manual],{now:new Date('2026-08-10T12:00:00Z'),gameweek:1})

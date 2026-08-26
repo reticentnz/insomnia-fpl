@@ -177,15 +177,19 @@ function observedAttackingRate(player: ProjectionCatalogPlayer, kind: 'goal' | '
   // zero-GW1 sample from being assigned none of the team's market output.
   const prior = ATTACKING_RATE_PRIORS[position] || ATTACKING_RATE_PRIORS.MID
   const fallback = kind === 'goal' ? prior.goal : prior.assist
+  const responsibility = setPieceRole(player.roleSignals)
+  const responsibilityUplift = kind === 'goal'
+    ? (responsibility === 'PENALTIES' || responsibility === 'PENALTIES_AND_SET_PIECES' ? .045 : 0)
+    : (responsibility === 'SET_PIECES' || responsibility === 'PENALTIES_AND_SET_PIECES' ? .030 : 0)
   // Market xG is the team total. Its allocation must use the same historical
   // evidence as the player projection; otherwise GW1 samples silently flatten
   // established attackers to generic position priors.
   if (historicalRate != null && historicalWeight > 0) {
-    return Math.max(.001, minutes > 0
+    return Math.max(.001, (minutes > 0
       ? (observed * minutes + historicalRate * historicalWeight) / (minutes + historicalWeight)
-      : historicalRate)
+      : historicalRate) + responsibilityUplift)
   }
-  return Math.max(.001, minutes > 0 ? (observed * minutes + fallback * 540) / (minutes + 540) : fallback)
+  return Math.max(.001, (minutes > 0 ? (observed * minutes + fallback * 540) / (minutes + 540) : fallback) + responsibilityUplift)
 }
 
 function resolvedRole(player: ProjectionCatalogPlayer, fixture: ProjectionCatalogFixture, completedGameweeks?: number) {
@@ -236,8 +240,17 @@ function toSignal(signal: Record<string, unknown>, fixture: ProjectionCatalogFix
   } as any
 }
 
-function setPieceRole(signals: Array<Record<string, unknown>>) {
-  const roles = signals.map(signal => (signal.value as Record<string, unknown> | undefined)?.setPieceRole)
+export function setPieceRole(signals: Array<Record<string, unknown>>) {
+  const roles = signals.flatMap(signal => {
+    const structured = (signal.value as Record<string, unknown> | undefined)?.setPieceRole
+    // Older ingestion records classified a verified penalty claim correctly
+    // but stored the prose only, rather than duplicating it as a structured
+    // setPieceRole. The signal kind is already the canonical assertion, so
+    // retain that information at the calculation boundary.
+    if (signal.kind === 'PENALTIES') return [structured, 'PENALTIES']
+    if (signal.kind === 'SET_PIECES') return [structured, 'SET_PIECES']
+    return [structured]
+  })
   if (roles.includes('PENALTIES_AND_SET_PIECES')) return 'PENALTIES_AND_SET_PIECES' as const
   if (roles.includes('PENALTIES') && roles.includes('SET_PIECES')) return 'PENALTIES_AND_SET_PIECES' as const
   if (roles.includes('PENALTIES')) return 'PENALTIES' as const

@@ -257,7 +257,12 @@ function isOpeningFixtureOnlySignal(signal: PlayerSignal, gameweek: number | und
 function isConfirmatoryFirstChoiceSignal(signal: PlayerSignal) {
   const value = signalRole(signal);
   if (value.depthRole !== 'FIRST_CHOICE' || typeof value.startProbability !== 'number') return false;
-  return !/\b(not expected to start|rotation|rotated|benched|bench|minutes management|rested|injur(?:y|ed)|doubt|competition)\b/.test(signalText(signal));
+  // A depth-chart label describes the player's standing, not an 88% absence
+  // forecast.  It must not downgrade a stronger observed/historic role merely
+  // because the supporting article mentions a teammate's injury.  Explicit
+  // rotation/bench language remains contrary role evidence; availability is
+  // modelled by the separate INJURY/official chance-of-playing pathways.
+  return !/\b(not expected to start|rotation|rotated|benched|bench|minutes management|rested|doubt|competition)\b/.test(signalText(signal));
 }
 
 /**
