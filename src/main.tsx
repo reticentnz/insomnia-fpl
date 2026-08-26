@@ -1153,6 +1153,7 @@ function App() {
   const [playerDetail, setPlayerDetail] = useState<Player | null>(null);
   const [livePlayers, setLivePlayers] = useState<Player[] | null>(() => initialCatalog?.players || null);
   const [forecastSummary, setForecastSummary] = useState<ForecastSummary | null>(null);
+  const [oneGameweekForecast, setOneGameweekForecast] = useState<ForecastSummary | null>(null);
   const [canonicalRecommendation, setCanonicalRecommendation] = useState<CanonicalRecommendation | null>(null);
   const [canonicalRecommendationLoading, setCanonicalRecommendationLoading] = useState(false);
   const recommendationCacheRef = useRef(new Map<string, CanonicalRecommendation>());
@@ -1245,9 +1246,16 @@ function App() {
     saveHorizon(horizon);
   }, [horizon]);
   useEffect(() => {
-    if (!livePlayers?.length) { setForecastSummary(null); return; }
+    if (!livePlayers?.length) { setForecastSummary(null); setOneGameweekForecast(null); return; }
     let active = true;
-    const refresh = () => fetchLatestForecast(horizon as 1 | 3 | 5).then(value => { if (active) setForecastSummary(value); }).catch(() => { if (active) setForecastSummary(null); });
+    const refresh = () => Promise.all([
+      fetchLatestForecast(horizon as 1 | 3 | 5),
+      horizon === 1 ? Promise.resolve(null) : fetchLatestForecast(1),
+    ]).then(([selected, oneGameweek]) => {
+      if (!active) return;
+      setForecastSummary(selected);
+      setOneGameweekForecast(horizon === 1 ? selected : oneGameweek);
+    }).catch(() => { if (active) { setForecastSummary(null); setOneGameweekForecast(null); } });
     void refresh();
     const timer = window.setInterval(refresh, recomputeBusy ? 2_000 : 30_000);
     return () => { active = false; window.clearInterval(timer); };
@@ -1286,12 +1294,19 @@ function App() {
   const catalog = useMemo(() => {
     const base = livePlayers && livePlayers.length > 0 ? livePlayers : [];
     if (!forecastSummary || forecastSummary.horizon !== horizon) return base;
-    const forecasts = new Map(forecastSummary.players.map(player => [player.playerId, player]));
+    const summaries = [forecastSummary, oneGameweekForecast]
+      .filter((summary): summary is ForecastSummary => Boolean(summary));
+    const forecastsByHorizon = new Map(summaries.map(summary => [summary.horizon, new Map(summary.players.map(player => [player.playerId, player]))]));
     return base.map(player => {
-      const forecast = forecasts.get(player.id);
-      return forecast ? { ...player, storedForecast: { runId: forecastSummary.id, horizon, ...forecast } } : player;
+      const storedForecasts = Object.fromEntries([...forecastsByHorizon.entries()].flatMap(([summaryHorizon, forecasts]) => {
+        const forecast = forecasts.get(player.id);
+        const summary = summaries.find(candidate => candidate.horizon === summaryHorizon)!;
+        return forecast ? [[summaryHorizon, { runId: summary.id, horizon: summaryHorizon, ...forecast }]] : [];
+      }));
+      const activeForecast = storedForecasts[horizon];
+      return Object.keys(storedForecasts).length ? { ...player, storedForecast: activeForecast, storedForecasts } : player;
     });
-  }, [livePlayers, forecastSummary, horizon]);
+  }, [livePlayers, forecastSummary, oneGameweekForecast, horizon]);
   const squad = useMemo(
     () =>
       selectedIds

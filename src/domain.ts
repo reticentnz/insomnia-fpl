@@ -94,8 +94,13 @@ export type Player = {
   calibrationFactor?: number;
   dataConfidence?: "LOW" | "MEDIUM" | "HIGH";
   coldStart?: boolean;
-  storedForecast?: { runId: string; horizon: number; meanPoints: number; standardDeviation: number; p10Points: number; p50Points: number; p90Points: number; fixtureCount: number; expectedGoals?: number; expectedAssists?: number; goalProbability?: number; assistProbability?: number; cleanSheetProbability?: number; bonusProbability?: number; defensiveContributionProbability?: number };
+  storedForecast?: StoredForecast;
+  /** Forecasts are keyed by horizon so the one-GW lineup never falls back to
+   * heuristic scores while a longer transfer horizon is selected. */
+  storedForecasts?: Partial<Record<number, StoredForecast>>;
 };
+
+export type StoredForecast = { runId: string; horizon: number; meanPoints: number; standardDeviation: number; p10Points: number; p50Points: number; p90Points: number; fixtureCount: number; expectedGoals?: number; expectedAssists?: number; goalProbability?: number; assistProbability?: number; cleanSheetProbability?: number; bonusProbability?: number; defensiveContributionProbability?: number };
 
 export const TEAM_COLORS: Record<string, string> = {
   ARS: "#e74c3c",
@@ -1701,6 +1706,7 @@ export function horizonMultiplier(h: number) {
   return h === 1 ? 1 : h === 3 ? 2.82 : 4.5;
 }
 export function horizonProjection(p: Player, h: number) {
+  if (p.storedForecasts?.[h]) return p.storedForecasts[h]!.meanPoints;
   if (p.storedForecast?.horizon === h) return p.storedForecast.meanPoints;
   return modelHorizonProjection(
     { ...p, upcomingFixtures: getPlayerUpcomingFixtures(p, h) },

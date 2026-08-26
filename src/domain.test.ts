@@ -369,6 +369,11 @@ describe('2026/27 scoring engine',()=>{
     const unknown={...known,id:999,coldStart:true,dataConfidence:'LOW' as const,stats:{minutes:0}}
     expect(horizonProjection(unknown,1)).toBeLessThan(horizonProjection(known,1))
   })
+  it('uses the one-gameweek stored forecast even when a longer forecast is also present',()=>{
+    const player={...players[0],storedForecast:{runId:'five',horizon:5,meanPoints:18,standardDeviation:3,p10Points:12,p50Points:18,p90Points:24,fixtureCount:5},storedForecasts:{1:{runId:'one',horizon:1,meanPoints:6.2,standardDeviation:2,p10Points:3,p50Points:6,p90Points:9,fixtureCount:1},5:{runId:'five',horizon:5,meanPoints:18,standardDeviation:3,p10Points:12,p50Points:18,p90Points:24,fixtureCount:5}}}
+    expect(horizonProjection(player,1)).toBe(6.2)
+    expect(horizonProjection(player,5)).toBe(18)
+  })
   it('collapses indistinguishable transfer alternatives',()=>{
     const squad=getSquad(),out=squad.find(player=>player.name==='Winks')!
     const template={...out,club:'MUN',price:4,projection:20,expectedMinutes:90,dataConfidence:'HIGH' as const,upcomingFixtures:[{gameweek:1,opponent:'SUN',venue:'H' as const,difficulty:2}]}
@@ -803,4 +808,3 @@ describe('deadline formatters and context display', () => {
     expect(formatDeadlineText(targetIso, 2, 2, passed)).toBe('Deadline passed')
   })
 })
-
