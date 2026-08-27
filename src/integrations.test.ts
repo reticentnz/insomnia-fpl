@@ -43,7 +43,7 @@ describe('fetchFplAccount', () => {
 
 describe('fetchFplLiveScore', () => {
   it('requests an uncached score for the linked team and current gameweek', async () => {
-    const payload = { gameweek: 2, gameweekPoints: 47, updatedAt: '2026-08-22T03:00:00.000Z' }
+    const payload = { gameweek: 2, gameweekPoints: 47, updatedAt: '2026-08-22T03:00:00.000Z', chipsUsed: [{ name: 'bboost', time: '2026-08-22T03:00:00.000Z', event: 2 }] }
     const fetchMock = vi.fn().mockResolvedValue(new Response(JSON.stringify(payload), {
       status: 200,
       headers: { 'content-type': 'application/json' },

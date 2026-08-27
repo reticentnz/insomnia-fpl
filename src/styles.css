@@ -5143,6 +5143,17 @@ h2 {
   border-color: rgba(255, 255, 255, 0.25);
 }
 
+.chip-btn:disabled,
+.chip-btn.used {
+  cursor: not-allowed;
+  opacity: 0.58;
+}
+
+.chip-btn:disabled:hover {
+  background: rgba(255, 255, 255, 0.05);
+  border-color: rgba(255, 255, 255, 0.12);
+}
+
 .chip-btn.active {
   background: linear-gradient(135deg, var(--accent-emerald) 0%, #059669 100%);
   color: #000;

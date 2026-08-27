@@ -110,7 +110,11 @@ export function signalApiRow(row: any) {
 }
 
 const selectSignals = `SELECT signal.*, player."fpl_id", gameweek."fpl_id" AS "gameweek_fpl_id",
-    (SELECT creator_source."name" FROM "CreatorVideo" creator_video JOIN "CreatorSource" creator_source ON creator_source."id"=creator_video."source_id" WHERE creator_video."url"=signal."source_url" LIMIT 1) AS "creator_source_name",
+    (SELECT creator_source."name" FROM "CreatorVideo" creator_video JOIN "CreatorSource" creator_source ON creator_source."id"=creator_video."source_id"
+      WHERE creator_video."url"=signal."source_url"
+         OR signal."source_url" LIKE creator_video."url" || '%&t=%'
+         OR signal."source_url" LIKE creator_video."url" || '%?t=%'
+      LIMIT 1) AS "creator_source_name",
     (SELECT rss_source."name" FROM "RssItem" rss_item JOIN "RssSource" rss_source ON rss_source."id"=rss_item."source_id" WHERE rss_item."url"=signal."source_url" LIMIT 1) AS "rss_source_name",
     interpretation."id" AS "interpretation_id", interpretation."origin" AS "interpretation_origin",
     interpretation."claim_class" AS "interpretation_claim_class", interpretation."model_impact" AS "interpretation_model_impact",

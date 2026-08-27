@@ -127,9 +127,10 @@ export async function fetchManagerRankHistory({ teamId, fetchJson = officialJson
 export async function fetchManagerLiveScore({ teamId, gameweek, fetchJson = officialJson } = {}) {
   const entryId = integer(teamId, 'teamId', { minimum: 1 })
   const event = integer(gameweek, 'gameweek', { minimum: 1 })
-  const [picks, live] = await Promise.all([
+  const [picks, live, history] = await Promise.all([
     fetchJson(`entry/${entryId}/event/${event}/picks/`),
     fetchJson(`event/${event}/live/`),
+    fetchJson(`entry/${entryId}/history/`).catch(() => null),
   ])
   if (!Array.isArray(picks?.picks)) throw new Error('Official picks payload contains no squad')
   const livePoints = new Map(
@@ -145,6 +146,7 @@ export async function fetchManagerLiveScore({ teamId, gameweek, fetchJson = offi
     gameweek: event,
     gameweekPoints: grossPoints - transferCost,
     updatedAt: new Date().toISOString(),
+    chipsUsed: Array.isArray(history?.chips) ? history.chips : [],
   }
 }
 
@@ -498,6 +500,8 @@ export async function getCurrentManager(db, { fplEntryId, season } = {}) {
     }
   })
   const economicsUnknown = squad.some(player => player.sellingPriceTenths === null)
+  const rawSnapshot = parseJson(snapshot.raw_payload_json)
+  const chipsUsed = Array.isArray(rawSnapshot?.history?.chips) ? rawSnapshot.history.chips : []
   return {
     account: {
       ...mapAccount(accountRow),
@@ -507,6 +511,7 @@ export async function getCurrentManager(db, { fplEntryId, season } = {}) {
       currentGameweek: Number(snapshot.gameweek_fpl_id),
       transfersCost: Number(snapshot.event_transfer_cost),
       eventTransfers: Number(snapshot.event_transfers),
+      chipsUsed,
     },
     snapshot: {
       id: snapshot.id,

@@ -100,4 +100,19 @@ describe('canonical signal service', () => {
     expect(signals.filter(s => s.id === 'signal-shared-url')).toHaveLength(1)
     expect(signals.find(s => s.id === 'signal-shared-url')?.sourceName).toBe('BBC Sport')
   })
+
+  it('attributes timestamped YouTube claims to their originating channel', async () => {
+    const db = await seed()
+    const now = '2026-08-15T12:00:00Z'
+    await db.query(`INSERT INTO "CreatorSource" ("id","channel_id","name","feed_url","enabled","created_at","updated_at") VALUES ($1,$2,$3,$4,1,$5,$5)`, ['creator-1', 'UC123', 'FPL Wire', 'https://www.youtube.com/feeds/videos.xml?channel_id=UC123', now])
+    await db.query(`INSERT INTO "CreatorVideo" ("id","source_id","title","url","status","created_at","updated_at") VALUES ($1,$2,$3,$4,'COMPLETE',$5,$5)`, ['video-1', 'creator-1', 'Gameweek preview', 'https://www.youtube.com/watch?v=abc123', now])
+    await createPlayerSignal(db, {
+      id: 'timestamped-youtube-signal', playerId: 10, kind: 'VALUE_OPINION', value: { note: 'A strong pick' },
+      sourceType: 'YOUTUBE_TRANSCRIPT', sourceUrl: 'https://www.youtube.com/watch?v=abc123&t=69s',
+      evidenceSummary: 'A strong pick', confidence: .7, observedAt: now, validUntil: '2026-08-22T12:00:00Z', status: 'PENDING',
+    })
+
+    const signals = await listPlayerSignals(db, { playerId: 10 })
+    expect(signals.find(s => s.id === 'timestamped-youtube-signal')?.sourceName).toBe('FPL Wire')
+  })
 })

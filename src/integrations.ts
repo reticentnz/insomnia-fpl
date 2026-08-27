@@ -338,6 +338,8 @@ export interface FplAccount {
     classic: FplLeagueSummary[];
     h2h: FplLeagueSummary[];
   };
+  /** Official chips already played this season, refreshed with live scores. */
+  chipsUsed: LeagueRivalChip[];
 }
 
 export interface FplRankHistoryEntry {
@@ -484,6 +486,11 @@ export async function fetchFplAccount(teamId: number, gameweek?: number): Promis
         classic: Array.isArray(account.leagues?.classic) ? account.leagues.classic : [],
         h2h: Array.isArray(account.leagues?.h2h) ? account.leagues.h2h : [],
       },
+      chipsUsed: Array.isArray(account.chipsUsed) ? account.chipsUsed.map((chip: any) => ({
+        name: String(chip.name || ''),
+        time: String(chip.time || ''),
+        event: Number(chip.event) || 0,
+      })).filter((chip: LeagueRivalChip) => chip.name && chip.event > 0) : [],
       lastSynced: account.lastSynced || new Date().toISOString(),
     },
     picks: (Array.isArray(data.squad) ? data.squad : []).map((player: any) => ({
@@ -516,6 +523,7 @@ export async function fetchFplLiveScore(teamId: number, gameweek: number): Promi
   gameweek: number;
   gameweekPoints: number;
   updatedAt: string;
+  chipsUsed: LeagueRivalChip[];
 }> {
   const response = await fetch(
     `/api/manager/live-score?teamId=${encodeURIComponent(teamId)}&gameweek=${encodeURIComponent(gameweek)}`,
@@ -527,6 +535,11 @@ export async function fetchFplLiveScore(teamId: number, gameweek: number): Promi
     gameweek: Number(data.gameweek),
     gameweekPoints: Number(data.gameweekPoints),
     updatedAt: String(data.updatedAt || new Date().toISOString()),
+    chipsUsed: Array.isArray(data.chipsUsed) ? data.chipsUsed.map((chip: any) => ({
+      name: String(chip.name || ''),
+      time: String(chip.time || ''),
+      event: Number(chip.event) || 0,
+    })).filter((chip: LeagueRivalChip) => chip.name && chip.event > 0) : [],
   }
 }
 

@@ -373,7 +373,7 @@ function playerNewsRelativeTime(iso: string) {
 
 function playerNewsSourceLabel(sourceType: string) {
   return sourceType === "YOUTUBE_TRANSCRIPT" ? "YouTube" :
-    sourceType === "LLM_RESEARCH" ? "Research" :
+    sourceType === "LLM_RESEARCH" ? "RSS" :
     sourceType === "PREDICTED_LINEUP" ? "Predicted Lineup" :
     sourceType === "MANUAL_OVERRIDE" ? "Manual" :
     sourceType === "OFFICIAL_FPL" ? "Official FPL" :
@@ -1480,8 +1480,11 @@ function App() {
   );
 
   const chipImpacts = useMemo(
-    () => calculateChipImpact(squad, currentGameweek || 1),
-    [squad, currentGameweek],
+    // A chip is a decision for the next deadline, rather than a projection of
+    // a live or already-completed round. `nextGameweek` also aligns with the
+    // future-only fixture list returned by the client catalogue.
+    () => calculateChipImpact(squad, nextGameweek || currentGameweek || 1),
+    [squad, nextGameweek, currentGameweek],
   );
 
   const exportText = useMemo(
@@ -2523,7 +2526,7 @@ function App() {
     if (!fplAccount?.teamId || !liveGameweek) return;
     const live = await fetchFplLiveScore(fplAccount.teamId, liveGameweek);
     setFplAccount((account) => account && account.teamId === fplAccount.teamId
-      ? { ...account, gameweekPoints: live.gameweekPoints }
+      ? { ...account, gameweekPoints: live.gameweekPoints, chipsUsed: live.chipsUsed }
       : account);
   }, [currentGameweek, fplAccount?.teamId, fplAccount?.currentGameweek]);
 
@@ -2927,6 +2930,7 @@ function App() {
             {(tab === "My Team" || tab === "Transfers") && (
               <ChipPlannerBar
                 chips={chipImpacts}
+                chipsUsed={fplAccount?.chipsUsed || []}
                 activeChip={activeChip}
                 onSelectChip={setActiveChip}
               />
@@ -3387,28 +3391,36 @@ function PlanControls({
 
 function ChipPlannerBar({
   chips,
+  chipsUsed,
   activeChip,
   onSelectChip,
 }: {
   chips: ChipImpact[];
+  chipsUsed: Array<{ name: string; event: number }>;
   activeChip: ChipType;
   onSelectChip: (c: ChipType) => void;
 }) {
+  const usedChip = (chip: ChipImpact["chip"]) => {
+    const officialName = ({ TC: "3xc", BB: "bboost", WC: "wildcard", FH: "freehit" })[chip];
+    return chipsUsed.find((used) => used.name.toLowerCase().replace(/[^a-z0-9]/g, "") === officialName) || null;
+  };
   return (
     <div className="chip-planner-bar">
       <span className="chip-planner-title">⚡ Chip Planner</span>
       <div className="chip-options">
         {chips.map((item) => {
           const isActive = activeChip === item.chip;
+          const used = usedChip(item.chip);
           return (
             <button
               key={item.chip}
-              className={`chip-btn ${isActive ? "active" : ""}`}
+              className={`chip-btn ${isActive ? "active" : ""} ${used ? "used" : ""}`}
+              disabled={Boolean(used)}
               onClick={() => onSelectChip(isActive ? null : item.chip)}
-              title={`${item.description} - ${item.notes}`}
+              title={used ? `${item.name} was used in GW${used.event}.` : `${item.description} - ${item.notes}`}
             >
               <span>{item.name}</span>
-              {item.projectedGain === null ? <span className="chip-gain-tag">Unavailable</span> : <span className="chip-gain-tag">+{item.projectedGain} xPts</span>}
+              {used ? <span className="chip-gain-tag">Used (GW{used.event})</span> : item.projectedGain === null ? <span className="chip-gain-tag">Unavailable</span> : <span className="chip-gain-tag">+{item.projectedGain} xPts</span>}
             </button>
           );
         })}
