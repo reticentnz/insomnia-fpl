@@ -64,6 +64,18 @@ describe('WP-12 deadline-safe backtesting and calibration', () => {
     expect(empty.models[0]).toMatchObject({ modelVersion: 'no-results-model', observationCount: 0, calibrationSetId: null })
   })
 
+  it('keeps recent forecast models visible before their fixtures have settled', async () => {
+    const db = await seeded()
+    await createForecastRun(db, { modelVersion: 'new-model', asOf: '2026-08-13T12:00:00Z', createdAt: '2026-08-14T18:00:00Z' })
+    const result = await runBacktest(db)
+    expect(result.models.find(model => model.modelVersion === 'new-model')).toMatchObject({
+      modelVersion: 'new-model',
+      lastForecastAt: '2026-08-14T18:00:00.000Z',
+      observationCount: 0,
+      calibrationSetId: null,
+    })
+  })
+
   it('enforces the 100-observation threshold, capped factors, coverage and rank correlation', () => {
     const inputs = Array.from({ length: 99 }, () => ({ position: 'MID' as const, expectedPoints: 4, actualPoints: 8, p10Points: 2, p90Points: 7 }))
     const dimensions = { position: 'MID' as const, horizon: 1, confidenceBand: 'HIGH', strengthMethod: 'MARKET_XG' }

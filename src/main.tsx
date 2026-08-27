@@ -5079,9 +5079,10 @@ function ReviewView() {
         </div>
       )}
 
-      {loading && !backtest && !decisions.length && (
+      {loading && !backtest && (
         <div className="panel draft-empty draft-loading" role="status" aria-live="polite">
-          <p className="muted">Loading review metrics and decision history…</p>
+          <span className="loading-spinner" aria-hidden="true" />
+          <p className="muted">Calculating review metrics and loading decision history…</p>
         </div>
       )}
 
@@ -5097,16 +5098,19 @@ function ReviewView() {
             </span>
           </div>
           <div className="review-panel-body">
-            {backtest.models?.map((model: any) => (
+            {[...(backtest.models || [])].sort((left: any, right: any) =>
+              String(right.lastForecastAt || '').localeCompare(String(left.lastForecastAt || '')) || String(right.modelVersion).localeCompare(String(left.modelVersion))
+            ).map((model: any) => (
               <div key={model.modelVersion}>
                 <div className="review-strip">
                   <span><b>Model</b>{model.modelVersion}</span>
+                  <span><b>Latest forecast</b>{model.lastForecastAt ? new Date(model.lastForecastAt).toLocaleString() : '—'}</span>
                   <span><b>Sample</b>{model.observationCount}</span>
                   <span><b>Training cutoff</b>{model.trainingCutoff || '—'}</span>
-                  <span><b>MAE</b>{Number(model.summary?.mae || 0).toFixed(2)}</span>
-                  <span><b>Rank correlation</b>{model.summary?.rankCorrelation == null ? '—' : Number(model.summary.rankCorrelation).toFixed(3)}</span>
+                  <span><b>MAE</b>{model.observationCount ? Number(model.summary?.mae || 0).toFixed(2) : 'Awaiting results'}</span>
+                  <span><b>Rank correlation</b>{model.observationCount && model.summary?.rankCorrelation != null ? Number(model.summary.rankCorrelation).toFixed(3) : '—'}</span>
                 </div>
-                {model.baselines?.map((baseline: any) => (
+                {model.observationCount > 0 && model.baselines?.map((baseline: any) => (
                   <div className="review-strip baseline-strip" key={baseline.name}>
                     <span><b>Baseline</b>{String(baseline.name).replace('FPL_', '').replaceAll('_', ' ')}</span>
                     <span><b>Sample</b>{baseline.sampleSize}</span>

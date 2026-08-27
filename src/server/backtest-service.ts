@@ -16,7 +16,7 @@ export type BacktestResult = {
   observationCount: number
   status: 'UNCALIBRATED' | 'CALIBRATED'
   trainingCutoff: string | null
-  models: Array<{ modelVersion: string; calibrationSetId: string | null; status: 'UNCALIBRATED' | 'CALIBRATED'; trainingCutoff: string | null; observationCount: number; metrics: BacktestMetric[]; summary: BacktestMetric; baselines: BaselineMetric[]; gameweeks: Array<{ gameweekId: string; sampleSize: number; model: BacktestMetric; baselines: BaselineMetric[] }> }>
+  models: Array<{ modelVersion: string; lastForecastAt: string | null; calibrationSetId: string | null; status: 'UNCALIBRATED' | 'CALIBRATED'; trainingCutoff: string | null; observationCount: number; metrics: BacktestMetric[]; summary: BacktestMetric; baselines: BaselineMetric[]; gameweeks: Array<{ gameweekId: string; sampleSize: number; model: BacktestMetric; baselines: BaselineMetric[] }> }>
 }
 
 const number = (value: unknown) => Number(value)
@@ -93,7 +93,17 @@ async function persistCalibration(db: Database, modelVersion: string, rows: Back
 
 export async function runBacktest(db: Database, options: { modelVersion?: string } = {}): Promise<BacktestResult> {
   const observations = await eligibleBacktestObservations(db, options.modelVersion)
-  const models = [...new Set(observations.map(row => row.modelVersion))]
+  // Models with recent forecasts often have no completed fixtures yet. Include
+  // them in the review so they do not disappear until their first backtest can
+  // be calculated.
+  const recordedModels = await db.query(`
+    SELECT "model_version", MAX("created_at") AS "last_forecast_at"
+    FROM "ForecastRun"
+    WHERE "status"='SUCCEEDED' AND ($1 IS NULL OR "model_version"=$1)
+    GROUP BY "model_version"
+  `, [options.modelVersion || null])
+  const lastForecastAt = new Map(recordedModels.rows.map(row => [String(row.model_version), row.last_forecast_at ? String(row.last_forecast_at) : null]))
+  const models = [...new Set([...observations.map(row => row.modelVersion), ...lastForecastAt.keys()])]
   // A requested version should be visible even while it has no eligible results.
   if (options.modelVersion && !models.includes(options.modelVersion)) models.push(options.modelVersion)
   const summaries: BacktestResult['models'] = []
@@ -106,7 +116,7 @@ export async function runBacktest(db: Database, options: { modelVersion?: string
       const gameweekRows = rows.filter(row => row.gameweekId === gameweekId)
       return { gameweekId, sampleSize: gameweekRows.length, model: summarizeBacktestRows(gameweekRows, { position: 'ALL', horizon: 1, confidenceBand: 'ALL', strengthMethod: 'ALL' }), baselines: evaluateBaselineMetrics(gameweekRows) }
     })
-    summaries.push({ modelVersion, calibrationSetId: saved?.id || null, status: saved?.status || 'UNCALIBRATED', trainingCutoff: saved?.cutoff || null, observationCount: rows.length, metrics, summary, baselines: evaluateBaselineMetrics(rows), gameweeks })
+    summaries.push({ modelVersion, lastForecastAt: lastForecastAt.get(modelVersion) || null, calibrationSetId: saved?.id || null, status: saved?.status || 'UNCALIBRATED', trainingCutoff: saved?.cutoff || null, observationCount: rows.length, metrics, summary, baselines: evaluateBaselineMetrics(rows), gameweeks })
   }
   return { observationCount: observations.length, status: summaries.some(model => model.status === 'CALIBRATED') ? 'CALIBRATED' : 'UNCALIBRATED', trainingCutoff: observations.map(row => row.deadlineAt).sort().at(-1) || null, models: summaries }
 }

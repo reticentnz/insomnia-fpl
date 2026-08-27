@@ -91,6 +91,7 @@ const forecastRefreshCoordinator = new ForecastRefreshCoordinator(async reasons 
   systemStatus.recomputeReason = reasons
   systemStatus.recomputeMessage = `Checking projection inputs after ${reasons.join(', ')} refresh...`
   systemStatus.recomputeError = null
+  console.log(`⏱️ Starting forecast input check after ${reasons.join(', ')} refresh...`)
   try {
     const result = await refreshForecastIfInputsChanged(await getDb(), { reasons })
     systemStatus.lastForecastRecalculatedAt = result.checkedAt
@@ -104,6 +105,11 @@ const forecastRefreshCoordinator = new ForecastRefreshCoordinator(async reasons 
       systemStatus.recomputeMessage = result.status === 'CREATED'
         ? `Forecast recalculated from changed ${reasons.join(', ')} inputs.`
         : 'Forecast inputs are unchanged; existing forecast remains current.'
+      if (result.status === 'CREATED') {
+        console.log(`✅ Forecast run ${result.forecastRunId} created from changed ${reasons.join(', ')} inputs.`)
+      } else {
+        console.log('✅ Forecast inputs unchanged; existing forecast remains current.')
+      }
     }
     return result
   } catch (error) {
@@ -450,6 +456,9 @@ async function triggerForecastRecompute({ reason = 'manual' } = {}) {
   const queued = forecastRefreshCoordinator.request(reason)
   systemStatus.recomputeReason = [reason]
   systemStatus.recomputeMessage = 'Forecast input check scheduled.'
+  console.log(queued.status === 'started'
+    ? `⏱️ Forecast input check scheduled after ${reason} refresh.`
+    : `⏱️ Forecast input check queued after ${reason} refresh.`)
   return { ...queued, message: queued.status === 'started' ? 'Forecast input check scheduled.' : 'A forecast input check is already queued; this refresh will be included.' }
 }
 
