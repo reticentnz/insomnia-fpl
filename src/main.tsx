@@ -1547,7 +1547,7 @@ function App() {
         );
         const issues = incomingDraftMode
           ? validateInitialSquad(mapped)
-          : validateSquad(mapped, manager.bank);
+          : validateSquad(mapped);
         if (hadSavedSquad && (mapped.length !== 15 || issues.length)) {
           setCatalogMode("demo-conflict");
         } else {
@@ -3819,7 +3819,7 @@ function Dashboard({
   const starters = new Set(xi.map((p) => p.id));
   const captain = [...xi].sort((a, b) => b.projection - a.projection)[0];
   const vice = [...xi].sort((a, b) => b.projection - a.projection)[1];
-  const issues = validateSquad(squad, 1.2);
+  const issues = validateSquad(squad);
   return (
     <div className="content">
       <section className="hero-grid">
@@ -4087,7 +4087,7 @@ function SquadEditor({
     () =>
       draftMode
         ? validateInitialSquad(currentSquad)
-        : validateSquad(currentSquad, bank),
+        : validateSquad(currentSquad),
     [currentSquad, bank, draftMode],
   );
   const totalPrice = useMemo(
@@ -5811,7 +5811,7 @@ function MyTeamV2({
     )[0];
   const issues = draftMode
     ? validateInitialSquad(squad)
-    : validateSquad(squad, bank);
+    : validateSquad(squad);
   const squadValue = squad.reduce((sum, p) => sum + p.price, 0);
   const totalScore = projectedTeamScore(
     1,
@@ -5963,7 +5963,7 @@ function MyTeamV2({
       <div className="hero-grid" style={{ marginBottom: "20px" }}>
         <div className="hero-card">
           <div className="card-top">
-            <span className="label">PLANNED SQUAD VALUE</span>
+            <span className="label">{draftMode ? "PLANNED SQUAD VALUE" : "SQUAD VALUE"}</span>
             <span className="pill green">£{bank.toFixed(1)}m in bank</span>
           </div>
           <div className="big-number">
@@ -8413,7 +8413,7 @@ function DashboardV2({
     )[0];
   const issues = draftMode
     ? validateInitialSquad(squad)
-    : validateSquad(squad, bank);
+    : validateSquad(squad);
   const score = xi.reduce((sum, p) => sum + horizonProjection(p, horizon), 0);
   const storedRanges = xi.map(player => player.storedForecast).filter((value): value is NonNullable<Player['storedForecast']> => Boolean(value && value.horizon === horizon));
   const outcomeRange = storedRanges.length === xi.length && xi.length > 0

@@ -1796,7 +1796,7 @@ export function leagueLineupExpectedPoints(
 
   return +total.toFixed(1);
 }
-export function validateSquad(squad: Player[], bank = 0): SquadIssue[] {
+export function validateSquad(squad: Player[]): SquadIssue[] {
   const issues: SquadIssue[] = [];
   const counts = {
     GK: squad.filter((p) => p.position === "GK").length,
@@ -1832,11 +1832,6 @@ export function validateSquad(squad: Player[], bank = 0): SquadIssue[] {
         detail: `${club} has ${n} players; maximum is 3.`,
       }),
     );
-  if (squad.reduce((sum, p) => sum + p.price, 0) > 100 + bank)
-    issues.push({
-      rule: "Budget",
-      detail: `Squad value exceeds the £${(100 + bank).toFixed(1)}m budget.`,
-    });
   return issues;
 }
 
@@ -1844,9 +1839,7 @@ export function validateInitialSquad(
   squad: Player[],
   budget = INITIAL_SQUAD_BUDGET,
 ): SquadIssue[] {
-  const issues = validateSquad(squad, 0).filter(
-    (issue) => issue.rule !== "Budget",
-  );
+  const issues = validateSquad(squad);
   const cost = squad.reduce((sum, player) => sum + player.price, 0);
   if (cost > budget + 0.0001)
     issues.push({
@@ -1883,7 +1876,7 @@ export function isLegalTransfer(
   const next = squad.map((p) => (p.id === out.id ? inc : p));
   return (
     inc.price - sellingPrice <= bank &&
-    validateSquad(next, 1000).filter((issue) => issue.rule !== "Budget").length === 0
+    validateSquad(next).length === 0
   );
 }
 

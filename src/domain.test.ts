@@ -197,10 +197,14 @@ describe('FPL domain rules', () => {
     expect(isPlayerFlagged(doubtfulPlayer)).toBe(true)
     expect(isPlayerFlagged(fitPlayer)).toBe(false)
   })
-  it('accepts the demo squad shape', () => expect(validateSquad(getSquad(), 1.2)).toHaveLength(0))
+  it('accepts the demo squad shape', () => expect(validateSquad(getSquad())).toHaveLength(0))
   it('rejects a fourth player from one club', () => {
     const squad = getSquad().map((p, i) => i < 4 ? {...p, club:'ARS'} : p)
-    expect(validateSquad(squad, 1.2).some(x => x.rule === 'Club limit')).toBe(true)
+    expect(validateSquad(squad).some(x => x.rule === 'Club limit')).toBe(true)
+  })
+  it('does not treat an in-season squad value above £100m as a rules violation', () => {
+    const squad = getSquad().map((player, index) => index === 0 ? {...player, price: player.price + 10} : player)
+    expect(validateSquad(squad)).toHaveLength(0)
   })
   it('requires like-for-like legal transfers and blocks owned players', () => {
     const squad = getSquad(); const out = squad.find(p=>p.name==='Winks')!; const incoming = players.find(p=>p.name==='Eze')!
@@ -242,14 +246,14 @@ describe('FPL domain rules', () => {
   it('builds legal squad from scratch when given empty array', () => {
     const fromScratch = buildLegalRemainingSquad([], players, 1, 100.0)
     expect(fromScratch).toHaveLength(15)
-    expect(validateSquad(fromScratch, 1.2)).toHaveLength(0)
+    expect(validateSquad(fromScratch)).toHaveLength(0)
   })
   it('auto-fills remaining squad slots legally keeping existing picks', () => {
     const existing = [1, 8, 13] // Raya, Saka, Haaland
     const filled = buildLegalRemainingSquad(existing, players, 1, 100.0)
     expect(filled).toHaveLength(15)
     expect(existing.every(id => filled.some(p => p.id === id))).toBe(true)
-    expect(validateSquad(filled, 1.2)).toHaveLength(0)
+    expect(validateSquad(filled)).toHaveLength(0)
   })
 })
 
