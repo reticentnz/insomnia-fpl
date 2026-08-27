@@ -3841,13 +3841,13 @@ h2 {
 .recommend-meta { display: none; }
 .primary-recommend .recommend-actions .ghost-btn { display: none; }
 .squad-availability .panel-head { margin-bottom: 10px; }
-.availability-risk-list { display: grid; gap: 8px; }
+.availability-risk-list { display: grid; gap: 8px; margin: 0 20px 20px; }
 .availability-risk { display: flex; align-items: center; justify-content: space-between; gap: 8px; width: 100%; padding: 8px 10px; color: var(--text-main); text-align: left; border: 1px solid var(--border-subtle); border-radius: var(--radius-sm); background: rgba(0, 0, 0, .16); }
 .availability-risk:hover { border-color: var(--border-focus); background: rgba(0, 255, 135, .05); }
 .availability-risk > span:first-child { min-width: 0; display: grid; gap: 2px; }
 .availability-risk small { overflow: hidden; color: var(--text-muted); font-size: 11px; text-overflow: ellipsis; white-space: nowrap; }
 .availability-risk .status-badge { flex: none; margin-left: 0; }
-.availability-clear { margin: 0; color: var(--accent-emerald); font-size: 13px; }
+.availability-clear { margin: 0 24px 20px; color: var(--accent-emerald); font-size: 13px; line-height: 1.4; }
 
 /* Keep the decision review user-facing: model roles are evidence, not navigation. */
 .review-section-header { display: none; }
@@ -5837,9 +5837,14 @@ h2 {
   flex-wrap: wrap;
 }
 .player-news-source-info .source-badge {
+  width: auto;
+  height: auto;
+  min-height: 22px;
   font-size: 9px;
   padding: 2px 6px;
   border-radius: 4px;
+  line-height: 1.2;
+  white-space: nowrap;
 }
 .player-news-source-sub {
   font-size: 10px;
