@@ -5809,9 +5809,13 @@ function MyTeamV2({
     .sort(
       (a, b) => horizonProjection(b, 1) - horizonProjection(a, 1),
     )[0];
-  const issues = draftMode
-    ? validateInitialSquad(squad)
-    : validateSquad(squad);
+  const issues = draftMode ? validateInitialSquad(squad) : [];
+  const availabilityRisks = squad
+    .filter(isPlayerFlagged)
+    .sort((a, b) =>
+      Number(isPlayerInjured(b)) - Number(isPlayerInjured(a)) ||
+      Number(starters.has(b.id)) - Number(starters.has(a.id)),
+    );
   const squadValue = squad.reduce((sum, p) => sum + p.price, 0);
   const totalScore = projectedTeamScore(
     1,
@@ -6101,31 +6105,65 @@ function MyTeamV2({
               </div>
             </div>
           </div>
-          <div className="panel priority-card squad-health">
-            <div className="panel-head">
-              <div>
-                <h2>Squad Rules & Health</h2>
-                <p>
-                  {issues.length ? "Attention needed" : "All rules compliant"}
-                </p>
+          {draftMode ? (
+            <div className="panel priority-card squad-health">
+              <div className="panel-head">
+                <div>
+                  <h2>Squad Rules & Health</h2>
+                  <p>{issues.length ? "Attention needed" : "All rules compliant"}</p>
+                </div>
+                <Shield size={19} />
               </div>
-              <Shield size={19} />
+              {issues.length ? (
+                <>
+                  <p style={{ color: "#ef4444", fontSize: "13px" }}>{issues[0].detail}</p>
+                  <button className="text-btn" onClick={onEdit}>
+                    Fix squad <ArrowRight size={14} />
+                  </button>
+                </>
+              ) : (
+                <p className="health-ok">✓ 15-player squad legal · Max 3 per club ok</p>
+              )}
             </div>
-            {issues.length ? (
-              <>
-                <p style={{ color: "#ef4444", fontSize: "13px" }}>
-                  {issues[0].detail}
-                </p>
-                <button className="text-btn" onClick={onEdit}>
-                  Fix squad <ArrowRight size={14} />
-                </button>
-              </>
-            ) : (
-              <p className="health-ok">
-                ✓ 15-player squad legal · Max 3 per club ok
-              </p>
-            )}
-          </div>
+          ) : (
+            <div className="panel priority-card squad-availability">
+              <div className="panel-head">
+                <div>
+                  <h2>Squad Availability</h2>
+                  <p>
+                    {availabilityRisks.length
+                      ? `${availabilityRisks.length} player${availabilityRisks.length === 1 ? "" : "s"} flagged`
+                      : "No availability concerns"}
+                  </p>
+                </div>
+                <Shield size={19} />
+              </div>
+              {availabilityRisks.length ? (
+                <div className="availability-risk-list">
+                  {availabilityRisks.slice(0, 2).map((player) => (
+                    <button
+                      className="availability-risk"
+                      key={player.id}
+                      onClick={() => onSelectPlayer(player)}
+                    >
+                      <span>
+                        <b>{player.name}</b>
+                        <small>{player.news || `${player.club} · Check availability`}</small>
+                      </span>
+                      {renderStatusBadge(player)}
+                    </button>
+                  ))}
+                  {availabilityRisks.length > 2 && (
+                    <button className="text-btn" onClick={onOpenSignals}>
+                      Review all {availabilityRisks.length} flags <ArrowRight size={14} />
+                    </button>
+                  )}
+                </div>
+              ) : (
+                <p className="availability-clear">✓ No injured, doubtful, or suspended players in your squad</p>
+              )}
+            </div>
+          )}
         </div>
       </section>
       <PlayerNewsFeed
