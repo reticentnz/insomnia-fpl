@@ -4,6 +4,13 @@
   "season": "2026/27",
   "gameweek": 2,
   "scope": "Public server-rendered report: top-30 xPts and published component/team tables only. This is an external calibration benchmark, never a production forecast input.",
+  "replayAssertions": {
+    "minSpearman": 0.6,
+    "maxRankRegression": 15,
+    "minBenchmarkedCaptainCandidates": 3,
+    "minBenchmarkedXIPlayers": 4,
+    "materialRankDifference": 8
+  },
   "playerExpectedPoints": [
     ["B.Fernandes", 7.12], ["Haaland", 6.50], ["Saka", 5.52], ["Isak", 5.37], ["Szoboszlai", 5.35],
     ["Palmer", 5.30], ["Cunha", 5.28], ["Mbeumo", 5.16], ["João Pedro", 4.95], ["Gabriel", 4.94],

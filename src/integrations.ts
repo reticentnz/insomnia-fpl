@@ -458,11 +458,27 @@ export async function fetchFplAccount(teamId: number, gameweek?: number): Promis
   notice?: string;
   recommendationAssumptions: { freeTransfersConfirmed: boolean; exactSellingPrices: boolean };
 }> {
-  const response = await fetch('/api/manager/import', {
-    method: 'POST',
-    headers: { 'content-type': 'application/json' },
-    body: JSON.stringify({ teamId, gameweek }),
-  })
+  // League discovery is triggered automatically when an imported account has
+  // no league list. Keep a stalled official-FPL request from trapping the
+  // Leagues page in its loading state forever.
+  const controller = new AbortController()
+  const timeoutId = setTimeout(() => controller.abort(), 15_000)
+  let response: Response
+  try {
+    response = await fetch('/api/manager/import', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      signal: controller.signal,
+      body: JSON.stringify({ teamId, gameweek }),
+    })
+  } catch (error) {
+    if (error instanceof Error && error.name === 'AbortError') {
+      throw new Error('FPL account import timed out. Check the connection and try again.')
+    }
+    throw error instanceof Error ? error : new Error('FPL account import failed.')
+  } finally {
+    clearTimeout(timeoutId)
+  }
   const data = await response.json().catch(() => ({}))
   if (!response.ok) throw new Error(apiErrorMessage(data, `FPL account import failed: HTTP ${response.status}`))
   const account = data.account || {}

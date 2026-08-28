@@ -2525,9 +2525,19 @@ function App() {
     const liveGameweek = currentGameweek || fplAccount?.currentGameweek;
     if (!fplAccount?.teamId || !liveGameweek) return;
     const live = await fetchFplLiveScore(fplAccount.teamId, liveGameweek);
-    setFplAccount((account) => account && account.teamId === fplAccount.teamId
-      ? { ...account, gameweekPoints: live.gameweekPoints, chipsUsed: live.chipsUsed }
-      : account);
+    setFplAccount((account) => {
+      if (!account || account.teamId !== fplAccount.teamId) return account;
+      // An imported account can remain stamped with the last completed GW.
+      // Promote it when the live feed for the current GW is available.
+      const advancedToNewGameweek = (account.currentGameweek || 0) < liveGameweek;
+      return {
+        ...account,
+        currentGameweek: liveGameweek,
+        totalPoints: advancedToNewGameweek ? account.totalPoints + live.gameweekPoints : account.totalPoints,
+        gameweekPoints: live.gameweekPoints,
+        chipsUsed: live.chipsUsed,
+      };
+    });
   }, [currentGameweek, fplAccount?.teamId, fplAccount?.currentGameweek]);
 
   useEffect(() => {
@@ -2903,6 +2913,7 @@ function App() {
         {(tab === "My Team" || tab === "Transfers") && (
           <FplAccountPatch
             account={fplAccount}
+            currentGameweek={currentGameweek}
             rankHistory={rankHistory}
             onSync={() => syncAccount()}
             isSyncing={syncingAccount}
@@ -2983,6 +2994,7 @@ function App() {
             horizon={horizon}
             captain={captain}
             bank={effectiveBank}
+            officialSquadValue={draftMode ? null : fplAccount?.squadValue ?? null}
             onEdit={() => {
               setInitialClear(false);
               setEditing(true);
@@ -3041,7 +3053,7 @@ function App() {
             deadlineIso={deadlineTime}
             catalog={catalog}
             userSquad={squad}
-            onSyncAccount={(id) => syncAccount(id)}
+            onSyncAccount={syncAccount}
           />
         ) : tab === "Review" ? (
           <ReviewView />
@@ -4605,12 +4617,14 @@ function SquadEditor({
 }
 function FplAccountPatch({
   account,
+  currentGameweek,
   rankHistory,
   onSync,
   isSyncing,
   onChangeAccount,
 }: {
   account: FplAccount | null;
+  currentGameweek: number | null;
   rankHistory: FplRankHistoryEntry[];
   onSync: () => void;
   isSyncing: boolean;
@@ -4639,6 +4653,8 @@ function FplAccountPatch({
       </div>
     );
   }
+
+  const displayGameweek = currentGameweek ?? account.currentGameweek;
 
   const timeAgo = account.lastSynced
     ? (() => {
@@ -4700,7 +4716,7 @@ function FplAccountPatch({
             </span>
             <span className="patch-card-unit">pts</span>
           </div>
-          <span className="patch-card-sub">Gameweek {account.currentGameweek} · Live refresh every minute</span>
+          <span className="patch-card-sub">Gameweek {displayGameweek} · Live refresh every minute</span>
         </div>
 
         <div className="patch-card">
@@ -4724,7 +4740,7 @@ function FplAccountPatch({
             <span className="patch-card-unit">made</span>
           </div>
           <span className="patch-card-sub">
-            GW{account.currentGameweek}: {account.eventTransfers} made {account.transfersCost > 0 ? `(-${account.transfersCost}pts)` : '(0 hit)'}
+            GW{displayGameweek}: {account.eventTransfers} made {account.transfersCost > 0 ? `(-${account.transfersCost}pts)` : '(0 hit)'}
           </span>
         </div>
 
@@ -5697,6 +5713,7 @@ function MyTeamV2({
   horizon,
   captain,
   bank = activeManagerSettings.bank,
+  officialSquadValue,
   onEdit,
   onSelectPlayer,
   challenge,
@@ -5744,6 +5761,7 @@ function MyTeamV2({
   horizon: number;
   captain: Player | null;
   bank?: number;
+  officialSquadValue?: number | null;
   onEdit: () => void;
   onSelectPlayer: (p: Player) => void;
   challenge: SquadChallengeResult | null;
@@ -5835,7 +5853,7 @@ function MyTeamV2({
       Number(isPlayerInjured(b)) - Number(isPlayerInjured(a)) ||
       Number(starters.has(b.id)) - Number(starters.has(a.id)),
     );
-  const squadValue = squad.reduce((sum, p) => sum + p.price, 0);
+  const squadValue = officialSquadValue ?? squad.reduce((sum, p) => sum + p.price, 0);
   const totalScore = projectedTeamScore(
     1,
     squad,
@@ -7468,7 +7486,7 @@ function LeaguesView({
   deadlineIso: string | null;
   catalog: Player[];
   userSquad: Player[];
-  onSyncAccount?: (id?: number) => void;
+  onSyncAccount?: (id?: number) => Promise<void>;
 }) {
   const [fetchedLeagues, setFetchedLeagues] = useState<FplLeagueSummary[]>([]);
   const [discoveringLeagues, setDiscoveringLeagues] = useState<boolean>(false);
@@ -7644,24 +7662,30 @@ function LeaguesView({
     }
   };
 
-  const handleDiscoverLeagues = (e: React.FormEvent) => {
+  const handleDiscoverLeagues = async (e: React.FormEvent) => {
     e.preventDefault();
     const parsed = parseTeamId(teamInput);
     if (parsed) {
-      if (onSyncAccount) {
-        onSyncAccount(parsed);
-      }
       setDiscoveringLeagues(true);
-      fetchFplAccount(parsed, currentGameweek).then((res) => {
-        if (res.account.leagues?.classic) {
-          setFetchedLeagues(res.account.leagues.classic);
-          if (res.account.leagues.classic.length > 0) {
-            setSelectedLeagueId(res.account.leagues.classic[0].id);
+      setError(null);
+      try {
+        if (onSyncAccount) {
+          // The app-level sync already performs this import. Reuse it instead
+          // of firing a second identical request just for this view.
+          await onSyncAccount(parsed);
+        } else {
+          const res = await fetchFplAccount(parsed, currentGameweek);
+          const leagues = res.account.leagues?.classic ?? [];
+          setFetchedLeagues(leagues);
+          if (leagues.length > 0) {
+            setSelectedLeagueId(leagues[0].id);
           }
         }
-      }).catch((err) => {
+      } catch (err) {
         setError(err instanceof Error ? err.message : "Could not discover leagues for team ID");
-      }).finally(() => setDiscoveringLeagues(false));
+      } finally {
+        setDiscoveringLeagues(false);
+      }
     } else {
       setError("Please enter a valid numeric FPL Team ID or team URL.");
     }

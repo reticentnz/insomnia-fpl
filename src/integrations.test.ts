@@ -39,6 +39,20 @@ describe('fetchFplAccount', () => {
 
     expect(result.account.leagues).toEqual({ classic: [], h2h: [] })
   })
+
+  it('fails predictably when account import never responds', async () => {
+    vi.useFakeTimers()
+    vi.stubGlobal('fetch', vi.fn((_input: RequestInfo | URL, init?: RequestInit) => new Promise<Response>((_resolve, reject) => {
+      init?.signal?.addEventListener('abort', () => reject(Object.assign(new Error('aborted'), { name: 'AbortError' })))
+    })))
+
+    const request = fetchFplAccount(123, 1)
+    const assertion = expect(request).rejects.toThrow('FPL account import timed out')
+    await vi.advanceTimersByTimeAsync(15_000)
+
+    await assertion
+    vi.useRealTimers()
+  })
 })
 
 describe('fetchFplLiveScore', () => {

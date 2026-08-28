@@ -11,5 +11,12 @@ describe('Solio GW2 external benchmark snapshot', () => {
     expect(points.get('B.Fernandes')).toBe(7.12)
     expect(points.get('Haaland')).toBeGreaterThan(points.get('João Pedro'))
     expect(snapshot.teamInputs.MUN.expectedGoals).toBe(2.15)
+    expect(snapshot.replayAssertions).toMatchObject({
+      minSpearman: 0.6,
+      maxRankRegression: 15,
+      minBenchmarkedCaptainCandidates: 3,
+      minBenchmarkedXIPlayers: 4,
+      materialRankDifference: 8,
+    })
   })
 })
