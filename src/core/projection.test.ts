@@ -16,6 +16,15 @@ describe('fixture role states', () => {
     const high = fixtureExpectedMinutes({ startProbability: .7, substituteProbabilityWhenBenched: .2, minutesIfStarting: 86, minutesIfSubstitute: 18 })
     expect(high).toBeGreaterThanOrEqual(low)
   })
+
+  it('represents an uncertain 50-minute role as start, cameo and no-show states', () => {
+    const role = { startProbability: .55, substituteProbabilityWhenBenched: .35, minutesIfStarting: 86, minutesIfSubstitute: 18 }
+    const states = fixtureRoleStates(role)
+    expect(states.startProbability).toBeCloseTo(.55, 8)
+    expect(states.substituteProbability).toBeCloseTo(.1575, 8)
+    expect(states.noShowProbability).toBeCloseTo(.2925, 8)
+    expect(fixtureExpectedMinutes(role)).toBeCloseTo(50.135, 8)
+  })
 })
 
 describe('fixture strength method selection', () => {

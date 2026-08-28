@@ -21,6 +21,7 @@
     "forecast": "node --no-warnings --experimental-strip-types scripts/create-forecast-run.mjs",
     "backtest": "node --no-warnings --experimental-strip-types scripts/backtest-projections.mjs",
     "replay:solio": "node --no-warnings --experimental-strip-types scripts/replay-solio.mts",
+    "replay:fpl-core": "node --no-warnings --experimental-strip-types scripts/replay-fpl-core-insights.mts",
     "db:verify": "node --no-warnings --experimental-strip-types scripts/verify-db.mjs",
     "preview": "node --no-warnings --experimental-strip-types scripts/serve.mjs"
   },

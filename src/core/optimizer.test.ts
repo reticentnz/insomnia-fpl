@@ -40,9 +40,13 @@ describe('bounded transfer recommendations', () => {
       candidates.push({ id, club: `club-${index % 20}`, position, active: true, purchasePriceTenths: 50, sellingPriceTenths: 50 })
       allForecasts.push({ playerId: id, gameweekId: 'gw1', position, meanPoints: 5 + (index % 10) / 10, standardDeviation: 2, p10Points: 2, p50Points: 5, p90Points: 9, startProbability: .9, noShowProbability: .05 })
     }
+    const elite = { ...squad[7], id: 'elite-mid', club: 'elite-mid', purchasePriceTenths: 50, sellingPriceTenths: 50 }
+    candidates.push(elite)
+    allForecasts.push({ ...forecasts[7], playerId: 'elite-mid', meanPoints: 5.5, selectionScore: 1 })
     const result = boundedTransferSearch({ squad, candidates, forecasts: allForecasts, bankBeforeTenths: 0, freeTransfers: 1, maxTransfers: 5 })
     expect(result[0].moves).toEqual([])
     for (const draft of result.slice(1)) expect(evaluateSimultaneousTransfers({ squad, moves: draft.moves, bankBeforeTenths: 0, freeTransfers: 1 }).legal).toBe(true)
+    expect(result.slice(1).some(draft => draft.moves.some(move => move.incoming.id === 'elite-mid'))).toBe(true)
   }, 20_000)
 })
 

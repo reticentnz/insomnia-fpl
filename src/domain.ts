@@ -2253,6 +2253,14 @@ export function transfers(
       const afterScore = draftSquadScore(h, afterSquad).total;
       option.selectionAwareGain = +(afterScore - baselineScore - option.hitCost).toFixed(1);
     }
+    // The draft score includes role uncertainty, autosub cover and corrected
+    // captain/vice fallback. Make that decision-aware value authoritative for
+    // ordering instead of calculating it only for display after ranking.
+    final.sort(
+      (a, b) =>
+        (b.selectionAwareGain ?? b.net) - (a.selectionAwareGain ?? a.net) ||
+        b.net - a.net,
+    );
   }
 
   return final;
@@ -2274,7 +2282,7 @@ export function transferDecisionFromRanked(
   ranked: Transfer[],
 ): TransferDecision {
   const best = ranked[0] ?? null;
-  if (!best || best.net < 1)
+  if (!best || (best.selectionAwareGain ?? best.net) < 1)
     return {
       transfer: null,
       roll: true,

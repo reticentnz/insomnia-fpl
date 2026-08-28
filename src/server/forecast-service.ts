@@ -41,7 +41,61 @@ const number = (value: unknown, fallback = 0) => Number.isFinite(Number(value)) 
 const nullableNumber = (value: unknown) => value == null ? undefined : number(value)
 const clamp = (value: number, min: number, max: number) => Math.min(max, Math.max(min, value))
 
-export function baseRole(player: ProjectionCatalogPlayer, completedGameweeks = 0): PlayerRoleProfile {
+function officialPriceTenths(player: ProjectionCatalogPlayer) {
+  return number(player.official.price_tenths, number(player.official.now_cost))
+}
+
+function coldStartRolePrior(player: ProjectionCatalogPlayer, position: string) {
+  const ownership = Math.max(0, number(player.official.ownership_percent, number(player.official.selected_by_percent)))
+  const base = position === 'GK' ? .025 : position === 'FWD' ? .12 : .09
+  // Ownership is only a weak squad-depth signal, but it distinguishes a new
+  // first-team signing from the many zero-history catalogue players. The
+  // saturating uplift cannot make a player "nailed" without starts or news.
+  return clamp(base + .52 * (1 - Math.exp(-ownership / 12)), base, .62)
+}
+
+function historicalRolePrior(player: ProjectionCatalogPlayer) {
+  const historical = player.historicalPrior
+  if (!historical || historical.confidence < .8 || historical.minutes < 360) return null
+  const startShare = clamp(historical.starts / 38, 0, 1)
+  const minuteShare = clamp(historical.minutes / (38 * 90), 0, 1)
+  // A ten-start season is rotation evidence, not a 70% starting role. Retain
+  // starts as the strongest observation while allowing regular cameos to add
+  // a small amount of role probability.
+  return clamp(.78 * startShare + .22 * minuteShare, .015, .96)
+}
+
+function goalkeeperDepthRange(player: ProjectionCatalogPlayer, teammates: ProjectionCatalogPlayer[], completedGameweeks: number) {
+  const neutral = { floor: 0, cap: 1 }
+  if (String(player.official.position) !== 'GK') return neutral
+  const available = (candidate: ProjectionCatalogPlayer) => {
+    const status = String(candidate.official.status || 'a')
+    const reportedChance = nullableNumber(candidate.official.chance_of_playing)
+    return !['i', 'u'].includes(status) && reportedChance !== 0
+  }
+  const goalkeepers = teammates.filter(candidate => candidate.team.id === player.team.id && String(candidate.official.position) === 'GK' && (candidate.id === player.id || available(candidate)))
+  if (goalkeepers.length < 2) return neutral
+  const starts = Math.max(0, number(player.official.starts))
+  const strongestCurrentRival = Math.max(...goalkeepers.filter(candidate => candidate.id !== player.id).map(candidate => Math.max(0, number(candidate.official.starts))), 0)
+  if (completedGameweeks > 0) {
+    if (strongestCurrentRival > starts) return { floor: 0, cap: .015 }
+    if (starts > strongestCurrentRival) return { floor: .97, cap: 1 }
+  }
+
+  if (completedGameweeks === 0) {
+    const historicalStarts = Math.max(0, number(player.historicalPrior?.starts))
+    const strongestHistoricalRival = Math.max(...goalkeepers.filter(candidate => candidate.id !== player.id).map(candidate => Math.max(0, number(candidate.historicalPrior?.starts))), 0)
+    if (strongestHistoricalRival >= Math.max(5, historicalStarts + 3)) return { floor: 0, cap: .02 }
+    if (historicalStarts >= Math.max(5, strongestHistoricalRival + 3)) return { floor: .94, cap: 1 }
+    const price = officialPriceTenths(player)
+    const strongestRivalPrice = Math.max(...goalkeepers.filter(candidate => candidate.id !== player.id).map(officialPriceTenths), 0)
+    if (strongestRivalPrice >= price + 5) return { floor: 0, cap: .03 }
+    if (price >= strongestRivalPrice + 5) return { floor: .82, cap: 1 }
+  }
+  return neutral
+}
+
+export function baseRole(player: ProjectionCatalogPlayer, completedGameweeks = 0, teammates: ProjectionCatalogPlayer[] = []): PlayerRoleProfile {
   const official = player.official
   const position = String(official.position || 'MID')
   const minutes = Math.max(0, number(official.minutes))
@@ -51,49 +105,42 @@ export function baseRole(player: ProjectionCatalogPlayer, completedGameweeks = 0
   const reportedChance = nullableNumber(official.chance_of_playing)
   const defaultChance = ['i', 'u'].includes(String(official.status)) ? 0 : 100
   const chance = clamp(reportedChance ?? defaultChance, 0, 100) / 100
-  // Normalize current-season evidence by matches actually completed. A one-match
-  // prior prevents GW1 from making either a starter or an unused squad player a
-  // certainty, while avoiding the old full-season denominator that suppressed
-  // every early-season starter.
+  // Estimate the three role states from a prior plus current starts. This keeps
+  // the zero-minute mass explicit: a catalogue player with no evidence begins
+  // as a likely no-show, while an established starter retains a strong prior.
   const completed = Math.max(0, Math.floor(completedGameweeks))
   const starts = Math.max(0, number(official.starts))
-  const observedMinutesShare = completed ? clamp(minutes / (completed * 90), 0, 1) : .55
-  const observedStartsShare = completed ? clamp(starts / completed, 0, 1) : .55
-  const observedRoleShare = .65 * observedStartsShare + .35 * observedMinutesShare
-  let currentRoleShare = completed ? (.55 + completed * observedRoleShare) / (completed + 1) : .55
-  // A healthy player who has started every completed league match and played
-  // at least 80 minutes each time has materially stronger near-term evidence
-  // than an arbitrary one-match appearance. This is deliberately a GW2–3
-  // bridge, not a declaration that the player is season-long nailed; verified
-  // rotation or injury signals can still reduce the role afterwards.
+  const observedMinutesShare = completed ? clamp(minutes / (completed * 90), 0, 1) : 0
+  const observedStartsShare = completed ? clamp(starts / completed, 0, 1) : 0
+  const observedRoleShare = .78 * observedStartsShare + .22 * observedMinutesShare
+  const historicalPrior = historicalRolePrior(player)
+  const prior = historicalPrior ?? coldStartRolePrior(player, position)
+  const priorMatches = historicalPrior == null
+    ? 1.25
+    : clamp(number(player.historicalPrior?.minutes) / 900, .5, 3) * clamp(number(player.historicalPrior?.confidence), 0, 1)
+  let roleShare = completed
+    ? (priorMatches * prior + completed * observedRoleShare) / (priorMatches + completed)
+    : prior
+
+  // One full early start is strong evidence, but not the old 91% declaration.
+  // The 72% bridge preserves new signings and promoted starters while leaving
+  // meaningful rotation/no-show probability until more matches are observed.
   const confirmedFullMatchStarter = completed > 0 && starts >= completed && minutes >= completed * 80
-  if (confirmedFullMatchStarter && completed <= 3) currentRoleShare = Math.max(currentRoleShare, .91)
-  const historical = player.historicalPrior
-  // A matched, established prior prevents one missing or incomplete GW1
-  // snapshot from reducing a proven starter to bench-player minutes. Its
-  // influence decays through the opening four completed gameweeks.
-  const historicalEligible = historical && historical.confidence >= .8 && historical.minutes >= 900 && historical.starts >= 10
-  const historicalRoleShare = historicalEligible
-    ? clamp(.62 + .011 * historical.starts + .000025 * historical.minutes, .70, .95)
-    : null
-  const currentWeight = Math.min(1, Math.max(.1, completed / 8))
-  let roleShare = historicalRoleShare == null ? currentRoleShare : historicalRoleShare * (1 - currentWeight) + observedRoleShare * currentWeight
-  // A strong historical minute prior is useful when current evidence is thin,
-  // but it must not overrule an actual 80+ minute start in every completed
-  // match. This was suppressing established players whose historic total was
-  // lower because of an earlier injury/rotation spell (for example Frimpong).
-  if (confirmedFullMatchStarter && completed <= 3) roleShare = Math.max(roleShare, .91)
-  const blend = chance * roleShare
-  const target = clamp(blend * 90, 0, 90)
+  if (confirmedFullMatchStarter && completed <= 3) roleShare = Math.max(roleShare, .72 + .05 * (completed - 1))
+  const goalkeeperDepth = goalkeeperDepthRange(player, teammates, completed)
+  roleShare = clamp(roleShare, goalkeeperDepth.floor, goalkeeperDepth.cap)
+  const startProbability = clamp(chance * roleShare, 0, 1)
   const isGoalkeeper = position === 'GK'
   const minutesIfStarting = isGoalkeeper ? 90 : 86
-  const substituteProbabilityWhenBenched = isGoalkeeper ? .005 : .2
+  // Rotation players are much likelier to make a cameo than deep reserves.
+  // Keeping this conditional probability separate prevents an artificial
+  // dependable 45–75-minute role; simulations draw 0, cameo, or start states.
+  const substituteProbabilityWhenBenched = isGoalkeeper ? .005 : roleShare >= .35 ? .35 : .12
   const minutesIfSubstitute = isGoalkeeper ? 5 : 18
-  const cameo = substituteProbabilityWhenBenched * minutesIfSubstitute
   return {
-    startProbability: clamp((target - cameo) / (minutesIfStarting - cameo), 0, 1),
+    startProbability,
     minutesIfStarting, substituteProbabilityWhenBenched, minutesIfSubstitute,
-    confidence: minutes >= 900 ? 'HIGH' : minutes > 0 ? 'MEDIUM' : 'LOW', derivedFromSignalIds: [],
+    confidence: number(player.historicalPrior?.minutes) >= 900 && number(player.historicalPrior?.starts) >= 8 || completed >= 4 && (starts > 0 || minutes > 0) ? 'HIGH' : historicalPrior != null || starts > 0 || minutes > 0 || prior >= .45 ? 'MEDIUM' : 'LOW', derivedFromSignalIds: [],
   }
 }
 
@@ -192,8 +239,8 @@ function observedAttackingRate(player: ProjectionCatalogPlayer, kind: 'goal' | '
   return Math.max(.001, (minutes > 0 ? (observed * minutes + fallback * 540) / (minutes + 540) : fallback) + responsibilityUplift)
 }
 
-function resolvedRole(player: ProjectionCatalogPlayer, fixture: ProjectionCatalogFixture, completedGameweeks?: number) {
-  return resolvePlayerRole(baseRole(player, completedGameweeks), player.roleSignals.map(signal => toSignal(signal, fixture)), {
+function resolvedRole(player: ProjectionCatalogPlayer, fixture: ProjectionCatalogFixture, completedGameweeks?: number, catalog?: ProjectionInputCatalog) {
+  return resolvePlayerRole(baseRole(player, completedGameweeks, catalog?.players), player.roleSignals.map(signal => toSignal(signal, fixture)), {
     now: new Date(String(player.official.observed_at)), gameweek: fixture.gameweekFplId || undefined, completedGameweeks,
   })
 }
@@ -209,7 +256,7 @@ export function marketAttackingRateOverride(player: ProjectionCatalogPlayer, fix
     // Resolve every teammate through the same path. Reusing the caller's role
     // for only one player makes the denominator depend on which player happens
     // to be forecast first, breaking market-total conservation.
-    const candidateRole = resolvedRole(candidate, candidateFixture, completedGameweeks)
+    const candidateRole = resolvedRole(candidate, candidateFixture, completedGameweeks, catalog)
     const minutes = fixtureExpectedMinutes(candidateRole)
     return [{ candidate, minutes, goalWeight: observedAttackingRate(candidate, 'goal') * minutes / 90, assistWeight: observedAttackingRate(candidate, 'assist') * minutes / 90 }]
   })
@@ -262,9 +309,9 @@ export function setPieceRole(signals: Array<Record<string, unknown>>) {
  * Adapts the canonical catalogue at the calculation boundary only. The actual
  * component calculation remains the shared projection model used by live code.
  */
-export function projectCatalogFixture(player: ProjectionCatalogPlayer, fixture: ProjectionCatalogFixture, catalog?: ProjectionInputCatalog, context?: { forecastRunId: string; modelVersion: string; completedGameweeks: number }): ForecastRow {
+export function projectCatalogFixture(player: ProjectionCatalogPlayer, fixture: ProjectionCatalogFixture, catalog?: ProjectionInputCatalog, context?: { forecastRunId: string; modelVersion: string; completedGameweeks: number; deterministic?: boolean }): ForecastRow {
   const official = player.official
-  const role = resolvedRole(player, fixture, context?.completedGameweeks)
+  const role = resolvedRole(player, fixture, context?.completedGameweeks, catalog)
   const position = String(official.position || 'MID') as 'GK' | 'DEF' | 'MID' | 'FWD'
   const stats = {
     minutes: number(official.minutes), starts: number(official.starts), totalPoints: number(official.total_points), goals: number(official.goals), assists: number(official.assists), cleanSheets: number(official.clean_sheets), goalsConceded: number(official.goals_conceded), saves: number(official.saves), bonus: number(official.bonus), bps: number(official.bps), yellowCards: number(official.yellow_cards), redCards: number(official.red_cards), ownGoals: number(official.own_goals), penaltiesMissed: number(official.penalties_missed), penaltiesSaved: number(official.penalties_saved), expectedGoals: number(official.expected_goals), expectedAssists: number(official.expected_assists), expectedGoalsConceded: number(official.expected_goals_conceded), expectedGoalsPer90: nullableNumber(player.underlying?.xg_per_90) ?? number(official.expected_goals_per_90), expectedAssistsPer90: nullableNumber(player.underlying?.xa_per_90) ?? number(official.expected_assists_per_90), expectedGoalsConcededPer90: number(official.expected_goals_conceded_per_90), savesPer90: number(official.saves) * 90 / Math.max(1, number(official.minutes)), clearancesBlocksInterceptions: number(official.clearances_blocks_interceptions), tackles: number(official.tackles), recoveries: number(official.recoveries), defensiveContribution: number(official.defensive_contribution), defensiveContributionPer90: number(official.defensive_contribution_per_90),
@@ -301,15 +348,18 @@ export function projectCatalogFixture(player: ProjectionCatalogPlayer, fixture: 
     defensiveActionRate: rates.defensiveRate, bonusRate: rates.bonusRate,
     samples: SIMULATION_COUNT,
   }
-  const outcome = simulateFixtureOutcomes(simulationInput)
-  const mean = outcome.mean
+  // Calibration replays rank the analytical expected value, not a finite
+  // sample of it.  Skipping the simulator here both preserves that contract
+  // and keeps a full-catalog historical replay practical.
+  const outcome = context?.deterministic ? null : simulateFixtureOutcomes(simulationInput)
+  const mean = outcome?.mean ?? components.total
   return {
-    playerId: player.id, fixtureId: fixture.id, expectedMinutes: outcome.minuteSamples?.reduce((sum, value) => sum + value, 0)! / outcome.samples.length,
+    playerId: player.id, fixtureId: fixture.id, expectedMinutes: outcome?.minuteSamples?.reduce((sum, value) => sum + value, 0)! / (outcome?.samples.length || 1) || components.expectedMinutes,
     appearancePoints: components.appearance, goalPoints: components.goals, assistPoints: components.assists,
     cleanSheetPoints: components.cleanSheet, goalsConcededPoints: components.goalsConceded,
     savePoints: components.saves, penaltyPoints: components.penalties, defensiveContributionPoints: components.defensiveContribution,
     bonusPoints: components.bonus, cardPoints: components.cards, meanPoints: mean,
-    standardDeviation: outcome.standardDeviation, p10Points: outcome.p10, p50Points: outcome.p50, p90Points: outcome.p90,
+    standardDeviation: outcome?.standardDeviation ?? 0, p10Points: outcome?.p10 ?? mean, p50Points: outcome?.p50 ?? mean, p90Points: outcome?.p90 ?? mean,
     ...states, minutesConfidence: breakdown.minutesConfidence, strengthMethod: components.strengthMethod,
     roleSource: {
       derivedSignalIds: role.derivedFromSignalIds,
@@ -363,7 +413,13 @@ export async function createForecastRun(db: Database, options: CreateForecastRun
   const createdAt = iso(options.createdAt)
   const maxGameweeks = options.maxGameweeks ?? DEFAULT_MAX_GAMEWEEKS
   if (!Number.isInteger(maxGameweeks) || maxGameweeks <= 0) throw new Error('maxGameweeks must be a positive integer')
-  const config = { priorVersion: MODEL_VERSION, priorMinutes: 540, bonusPrior: 'bps-2026-27-v1', marketCleanSheetWeight: MARKET_CLEAN_SHEET_WEIGHT, simulationCount: SIMULATION_COUNT, seedVersion: SIMULATION_SEED_VERSION, ...options.config }
+  const config = {
+    priorVersion: MODEL_VERSION,
+    priorMinutes: 540,
+    rolePrior: { historicalStartWeight: .78, historicalMinuteWeight: .22, outfieldRotationCameoProbability: .35, outfieldReserveCameoProbability: .12, goalkeeperCurrentStarterFloor: .97 },
+    bonusPrior: 'bps-2026-27-v1', marketCleanSheetWeight: MARKET_CLEAN_SHEET_WEIGHT,
+    simulationCount: SIMULATION_COUNT, seedVersion: SIMULATION_SEED_VERSION, ...options.config,
+  }
   let catalog: ProjectionInputCatalog
   let target: Awaited<ReturnType<typeof targetGameweek>>
   let officialFeedRunId: string | null

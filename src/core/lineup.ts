@@ -13,6 +13,10 @@ export type StoredForecast = {
   p90Points: number
   startProbability: number
   noShowProbability: number
+  /** Percentile ensemble used only for elite candidate search/order. */
+  selectionScore?: number
+  expectedPointsWithoutBonus?: number
+  pointsPerGame?: number
   samples?: readonly number[]
   minuteSamples?: readonly number[]
 }
@@ -37,6 +41,32 @@ const combinations = <T>(values: T[], count: number): T[][] => {
   return values.flatMap((value, index) => combinations(values.slice(index + 1), count - 1).map(rest => [value, ...rest]))
 }
 const sum = (rows: StoredForecast[], key: keyof Pick<StoredForecast, 'meanPoints' | 'standardDeviation' | 'p10Points' | 'p50Points' | 'p90Points'>) => rows.reduce((total, row) => total + Number(row[key] || 0), 0)
+
+function captainPairBonus(captain: StoredForecast, vice: StoredForecast | null) {
+  if (vice && captain.samples?.length && captain.minuteSamples?.length === captain.samples.length && vice.samples?.length === captain.samples.length && vice.minuteSamples?.length === captain.samples.length) {
+    return captain.samples.reduce((total, points, index) => total + ((captain.minuteSamples![index] ?? 0) > 0
+      ? points
+      : (vice.minuteSamples![index] ?? 0) > 0 ? (vice.samples![index] ?? 0) : 0), 0) / captain.samples.length
+  }
+  // meanPoints is already unconditional and therefore already contains the
+  // player's own no-show mass. Only the vice fallback needs to be added.
+  return captain.meanPoints + captain.noShowProbability * (vice?.meanPoints || 0)
+}
+
+function selectCaptainPair(starters: StoredForecast[]) {
+  let best: { captain: StoredForecast; vice: StoredForecast | null; bonus: number } | null = null
+  for (const captain of starters) {
+    const viceOptions = starters.filter(row => row.playerId !== captain.playerId)
+    for (const vice of viceOptions.length ? viceOptions : [null]) {
+      const bonus = captainPairBonus(captain, vice)
+      const key = `${captain.playerId}:${vice?.playerId || ''}`
+      const bestKey = best ? `${best.captain.playerId}:${best.vice?.playerId || ''}` : ''
+      const viceMean = vice?.meanPoints || 0, bestViceMean = best?.vice?.meanPoints || 0
+      if (!best || bonus > best.bonus || bonus === best.bonus && (viceMean > bestViceMean || viceMean === bestViceMean && key.localeCompare(bestKey) < 0)) best = { captain, vice, bonus }
+    }
+  }
+  return best
+}
 
 /** Selects a legal FPL XI from the stored, gameweek-aggregated forecasts. */
 export function selectLineup(rows: StoredForecast[]): Lineup {
@@ -86,8 +116,8 @@ export function selectLineup(rows: StoredForecast[]): Lineup {
   const starters = best || []
   const starterIds = new Set(starters.map(row => row.playerId))
   const bench = distinctRows.filter(row => !starterIds.has(row.playerId)).sort((a, b) => b.meanPoints - a.meanPoints || a.playerId.localeCompare(b.playerId))
-  const captainCandidates = [...starters].sort((a, b) => (b.meanPoints * (1 - b.noShowProbability)) - (a.meanPoints * (1 - a.noShowProbability)) || a.playerId.localeCompare(b.playerId))
-  const captain = captainCandidates[0] || null, vice = captainCandidates.find(row => row.playerId !== captain?.playerId) || null
+  const captainPair = selectCaptainPair(starters)
+  const captain = captainPair?.captain || null, vice = captainPair?.vice || null
 
   const allStartersHaveSamples = starters.length > 0 && starters.every(row => row.samples && row.samples.length > 0)
   if (allStartersHaveSamples) {
@@ -178,7 +208,7 @@ export function selectLineup(rows: StoredForecast[]): Lineup {
   // Expected automatic substitutions are represented conservatively: the first
   // legal bench option covers a starter's no-show probability.
   const cover = starters.reduce((total, starter) => total + starter.noShowProbability * (bench[0]?.meanPoints || 0) / Math.max(1, starters.length), 0)
-  const captainBonus = captain ? captain.meanPoints * (1 - captain.noShowProbability) + (vice?.meanPoints || 0) * captain.noShowProbability * (1 - (vice?.noShowProbability || 0)) : 0
+  const captainBonus = captainPair?.bonus || 0
   const expectedPoints = sum(starters, 'meanPoints') + captainBonus + cover
   const standardDeviation = Math.sqrt(starters.reduce((total, row) => total + row.standardDeviation ** 2, 0))
   const p10Points = sum(starters, 'p10Points')

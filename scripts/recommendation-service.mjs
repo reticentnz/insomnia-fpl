@@ -4,14 +4,22 @@ import { applyOneStepLookahead, boundedTransferSearch } from '../src/core/optimi
 import { evaluateChipCounterfactual } from '../src/core/chips.ts'
 import { assessPlanPriceTiming } from '../src/price-timing.ts'
 import { classifyRecommendation } from '../src/recommendation-policy.ts'
+import { DECISION_RANKING_VERSION, decisionRankingScores } from '../src/core/decision-ranking.ts'
 
 import { combineSampleStreams, simulateFromStoredForecast, summarizeSampleDistribution } from '../src/core/uncertainty.ts'
 
 const parse = value => { try { return JSON.parse(value || '{}') } catch { return {} } }
 const asNumber = value => value == null ? null : Number(value)
-const RECOMMENDATION_ENGINE_VERSION = 'recommendation-v4-robust-primary-policy'
+const RECOMMENDATION_ENGINE_VERSION = 'recommendation-v6-elite-selection-shortlist'
 export const recommendationInputHash = forecastInputHash => createHash('sha256').update(`${forecastInputHash}:${RECOMMENDATION_ENGINE_VERSION}`).digest('hex')
 const uniquePlayers = rows => [...new Map(rows.map(row => [String(row.playerId), row])).values()]
+const attachSelectionScores = rows => {
+  const scores = new Map()
+  const byGameweek = new Map()
+  for (const row of rows) byGameweek.set(row.gameweekId, [...(byGameweek.get(row.gameweekId) || []), row])
+  for (const group of byGameweek.values()) for (const [playerId, score] of decisionRankingScores(group.map(row => ({ playerId: row.playerId, expectedPoints: row.meanPoints, expectedPointsWithoutBonus: row.expectedPointsWithoutBonus, pointsPerGame: row.pointsPerGame })))) scores.set(`${group[0].gameweekId}:${playerId}`, score)
+  return rows.map(row => ({ ...row, selectionScore: scores.get(`${row.gameweekId}:${row.playerId}`), selectionScoreVersion: DECISION_RANKING_VERSION }))
+}
 const sensitivityFromCalibrations = (roleCalibrations, sampleCalibrations) => {
   const roleLatestMatchSensitive = roleCalibrations.some(calibration => calibration?.sensitivity === 'LATEST_MATCH_SENSITIVE')
   const earlySeasonSensitive = [...roleCalibrations, ...sampleCalibrations].some(calibration => calibration?.earlySeason === true)
@@ -57,7 +65,7 @@ export async function forecastPlayers(db, forecastRunId, horizon, { aggregate = 
       forecast."expected_minutes", forecast."goal_points", forecast."assist_points", forecast."clean_sheet_points",
       forecast."goals_conceded_points", forecast."save_points", forecast."penalty_points", forecast."defensive_contribution_points",
       forecast."bonus_points", forecast."card_points", forecast."role_source_json", run."model_version",
-      player."fpl_id", player_observation."position", player_observation."team_id", player_observation."active", player_observation."price_tenths",
+      player."fpl_id", player_observation."position", player_observation."team_id", player_observation."active", player_observation."price_tenths", player_observation."points_per_game",
       json_extract(player_observation."raw_payload_json", '$.transfers_in_event') AS "transfers_in_event",
       json_extract(player_observation."raw_payload_json", '$.transfers_out_event') AS "transfers_out_event",
       fixture_observation."gameweek_id", gameweek."fpl_id" AS gameweek_fpl_id
@@ -103,6 +111,8 @@ export async function forecastPlayers(db, forecastRunId, horizon, { aggregate = 
         startProbabilities: [],
         noShowProbabilities: [],
         meanPoints: 0,
+        expectedPointsWithoutBonus: 0,
+        pointsPerGame: asNumber(row.points_per_game),
         variance: 0,
         streams: [],
         minuteStreams: [],
@@ -113,6 +123,7 @@ export async function forecastPlayers(db, forecastRunId, horizon, { aggregate = 
       prev.startProbabilities.push(Number(row.start_probability))
       prev.noShowProbabilities.push(Number(row.no_show_probability))
       prev.meanPoints += Number(row.mean_points)
+      prev.expectedPointsWithoutBonus += Number(row.mean_points) - Number(row.bonus_points || 0)
       prev.variance += Number(row.standard_deviation) ** 2
       if (row._sim) {
         prev.streams.push(row._sim.samples)
@@ -122,7 +133,7 @@ export async function forecastPlayers(db, forecastRunId, horizon, { aggregate = 
       if (row._sampleCalibration) prev.sampleCalibrations.push(row._sampleCalibration)
       byPlayerGw.set(key, prev)
     }
-    return [...byPlayerGw.values()].map(item => {
+    return attachSelectionScores([...byPlayerGw.values()].map(item => {
       const combinedSamples = item.samplesAvailable ? combineSampleStreams(item.streams) : undefined
       const combinedMinutes = item.samplesAvailable && item.minuteStreams.length ? combineSampleStreams(item.minuteStreams) : undefined
       const standardDeviation = Math.sqrt(item.variance)
@@ -144,6 +155,8 @@ export async function forecastPlayers(db, forecastRunId, horizon, { aggregate = 
         transfersOut: item.transfersOut,
         transferWindow: item.transferWindow,
         meanPoints: summary.mean,
+        expectedPointsWithoutBonus: item.expectedPointsWithoutBonus,
+        pointsPerGame: item.pointsPerGame,
         standardDeviation: summary.standardDeviation,
         p10Points: summary.p10,
         p50Points: summary.p50,
@@ -156,7 +169,7 @@ export async function forecastPlayers(db, forecastRunId, horizon, { aggregate = 
         sampleCalibration: item.sampleCalibrations[0] || null,
         ...sensitivity,
       }
-    })
+    }))
   }
 
   const byPlayer = new Map()
@@ -177,6 +190,8 @@ export async function forecastPlayers(db, forecastRunId, horizon, { aggregate = 
       startProbabilities: [],
         noShowProbabilities: [],
       meanPoints: 0,
+      expectedPointsWithoutBonus: 0,
+      pointsPerGame: asNumber(row.points_per_game),
       variance: 0,
       streams: [],
       minuteStreams: [],
@@ -187,6 +202,7 @@ export async function forecastPlayers(db, forecastRunId, horizon, { aggregate = 
     prev.startProbabilities.push(Number(row.start_probability))
     prev.noShowProbabilities.push(Number(row.no_show_probability))
     prev.meanPoints += Number(row.mean_points)
+    prev.expectedPointsWithoutBonus += Number(row.mean_points) - Number(row.bonus_points || 0)
     prev.variance += Number(row.standard_deviation) ** 2
     if (row._sim) {
       prev.streams.push(row._sim.samples)
@@ -196,7 +212,7 @@ export async function forecastPlayers(db, forecastRunId, horizon, { aggregate = 
     if (row._sampleCalibration) prev.sampleCalibrations.push(row._sampleCalibration)
     byPlayer.set(id, prev)
   }
-  return [...byPlayer.values()].map(item => {
+  return attachSelectionScores([...byPlayer.values()].map(item => {
     const combinedSamples = item.samplesAvailable ? combineSampleStreams(item.streams) : undefined
     const combinedMinutes = item.samplesAvailable && item.minuteStreams.length ? combineSampleStreams(item.minuteStreams) : undefined
     const standardDeviation = Math.sqrt(item.variance)
@@ -218,6 +234,8 @@ export async function forecastPlayers(db, forecastRunId, horizon, { aggregate = 
       transfersOut: item.transfersOut,
       transferWindow: item.transferWindow,
       meanPoints: summary.mean,
+      expectedPointsWithoutBonus: item.expectedPointsWithoutBonus,
+      pointsPerGame: item.pointsPerGame,
       standardDeviation: summary.standardDeviation,
       p10Points: summary.p10,
       p50Points: summary.p50,
@@ -230,7 +248,7 @@ export async function forecastPlayers(db, forecastRunId, horizon, { aggregate = 
       sampleCalibration: item.sampleCalibrations[0] || null,
       ...sensitivity,
     }
-  })
+  }))
 }
 
 function recommendationSetIdentityQuery(requireVerified = false) {
@@ -438,7 +456,7 @@ export async function createRecommendationSet(db, { planId, forecastRunId, horiz
           recommendation: { action: action === 'TRANSFER' ? 'TRANSFER' : 'ROLL', actionable: plan.freeTransfersConfirmed && plan.exactSellingPrices && draft.affordabilityStatus === 'EXACT', netExpectedGain: draft.netExpectedGain, probabilityBeatsRoll: draft.probabilityBeatsRoll, roleLatestMatchSensitive: sensitivity?.roleLatestMatchSensitive === true, latestMatchSensitive: sensitivity?.latestMatchSensitive === true, latestMatchSensitivity: sensitivity?.latestMatchSensitivity || 'LOW' },
         })
         : null
-      await db.query(`INSERT INTO "RecommendationCandidate" ("id","recommendation_set_id","rank","action","moves_json","raw_gain","hit_cost","uncertainty_penalty","net_expected_gain","probability_beats_roll","bank_after_tenths","affordability_status","expected_team_points","p10_points","p50_points","p90_points","league_differential","saved_transfer_value","lookahead_available","next_week_free_transfers","next_week_best_net_gain") VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21)`, [candidateId, id, index + 1, action, canonicalJson({ moves: draft.moves.map(move => ({ outId: String(move.outId), inId: String(move.incoming.id) })), chip: draft.chip || null, reason: draft.chipReason || null, squadIds: draft.chipSquadIds || null, sensitivity, classification, priceTiming }), draft.rawGain, draft.hitCost, draft.uncertaintyPenalty, draft.netExpectedGain, draft.probabilityBeatsRoll, draft.bankAfterTenths, draft.affordabilityStatus, draft.expectedTeamPoints, draft.p10Points, draft.p50Points, draft.p90Points, draft.leagueDifferential == null ? null : Number(draft.leagueDifferential), draft.savedTransferValue ?? 0, draft.lookaheadAvailable ? 1 : 0, draft.nextWeekFreeTransfers ?? null, draft.nextWeekBestNetGain ?? null])
+      await db.query(`INSERT INTO "RecommendationCandidate" ("id","recommendation_set_id","rank","action","moves_json","raw_gain","hit_cost","uncertainty_penalty","net_expected_gain","probability_beats_roll","bank_after_tenths","affordability_status","expected_team_points","p10_points","p50_points","p90_points","league_differential","saved_transfer_value","lookahead_available","next_week_free_transfers","next_week_best_net_gain") VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21)`, [candidateId, id, index + 1, action, canonicalJson({ moves: draft.moves.map(move => ({ outId: String(move.outId), inId: String(move.incoming.id) })), chip: draft.chip || null, reason: draft.chipReason || null, squadIds: draft.chipSquadIds || null, selectionScoreVersion: DECISION_RANKING_VERSION, selectionGain: draft.selectionGain ?? null, sensitivity, classification, priceTiming }), draft.rawGain, draft.hitCost, draft.uncertaintyPenalty, draft.netExpectedGain, draft.probabilityBeatsRoll, draft.bankAfterTenths, draft.affordabilityStatus, draft.expectedTeamPoints, draft.p10Points, draft.p50Points, draft.p90Points, draft.leagueDifferential == null ? null : Number(draft.leagueDifferential), draft.savedTransferValue ?? 0, draft.lookaheadAvailable ? 1 : 0, draft.nextWeekFreeTransfers ?? null, draft.nextWeekBestNetGain ?? null])
       persisted.push({ id: candidateId, item, ...draft, action, rank: index + 1, apiMoves: draft.moves.map(move => ({ outId: plan.squad.find(player => String(player.id) === String(move.outId))?.fplId, inId: move.incoming.fplId })) })
     }
     const selected = persisted.find(row => row.item === primary) || persisted[0]
@@ -529,6 +547,8 @@ export async function getRecommendationSet(db, id) {
       p50Points: asNumber(row.p50_points),
       p90Points: asNumber(row.p90_points),
       leagueDifferential: asNumber(row.league_differential),
+      selectionGain: asNumber(detail.selectionGain),
+      selectionScoreVersion: typeof detail.selectionScoreVersion === 'string' ? detail.selectionScoreVersion : undefined,
       chip: detail.chip || undefined,
       chipReason: detail.reason || undefined,
       chipSquadIds: detail.squadIds || undefined,

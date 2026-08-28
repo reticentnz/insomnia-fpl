@@ -70,17 +70,17 @@ describe('recommendation forecast metadata', () => {
       goals_conceded_points: 0, save_points: 0, penalty_points: 0, defensive_contribution_points: 0,
       bonus_points: 1, card_points: 0, role_source_json: storedSimulationInput('run-1:player-1:fixture-1', 'MID', .9, .1, 82),
       model_version: 'role-aware-v2.6-early-sample', fpl_id: 10, position: 'MID', team_id: 'team-1', active: 1,
-      price_tenths: 75, transfers_in_event: 54_321, transfers_out_event: 12_345, gameweek_id: 'gw-1', gameweek_fpl_id: 1,
+      price_tenths: 75, points_per_game: 6.2, transfers_in_event: 54_321, transfers_out_event: 12_345, gameweek_id: 'gw-1', gameweek_fpl_id: 1,
     }] } } }
 
     const [player] = await forecastPlayers(db, 'run-1', 1, { aggregate: false })
-    expect(player).toMatchObject({ currentPriceTenths: 75, transfersIn: 54_321, transfersOut: 12_345, transferWindow: 'EVENT' })
+    expect(player).toMatchObject({ currentPriceTenths: 75, transfersIn: 54_321, transfersOut: 12_345, transferWindow: 'EVENT', expectedPointsWithoutBonus: 4, pointsPerGame: 6.2, selectionScoreVersion: 'elite-selection-rank-v1' })
   })
 })
 
 describe('stored recommendation retrieval', () => {
   const storedSet = { id: 'set-1', plan_id: 'plan-1', forecast_run_id: 'run-1', horizon: 3, max_transfers: 2, chip: null, uncertainty_penalty_rate: .15, created_at: '2026-08-11T00:00:00Z', status: 'SUCCEEDED', primary_candidate_id: 'candidate-1', input_hash: recommendationInputHash('forecast-input') }
-  const storedCandidate = { id: 'candidate-1', rank: 1, action: 'TRANSFER', moves_json: JSON.stringify({ moves: [{ outId: 'player-out', inId: 'player-in' }], sensitivity: { earlySeasonSensitive: true, roleLatestMatchSensitive: true, latestMatchSensitive: true, latestMatchSensitivity: 'HIGH', sensitivityFlags: ['EARLY_SEASON', 'LATEST_MATCH_SENSITIVE', 'RATE_SAMPLE_LATEST_MATCH_SENSITIVE'] }, priceTiming: { verdict: 'WAIT', robustness: 'SENSITIVE', incomingPressure: { description: 'High upward price pressure; this is not a price-rise prediction.' }, outgoingPressure: { description: 'Moderate downward price pressure; this is not a price-fall prediction.' }, adverseScenarios: [{ adverseSwingTenths: 1, status: 'UNAFFORDABLE' }], reasons: ['Price pressure cannot create urgency because this recommendation is not independently robust.'] } }), raw_gain: 6, hit_cost: 0, uncertainty_penalty: 1, net_expected_gain: 5, probability_beats_roll: .7, bank_after_tenths: 3, affordability_status: 'EXACT', expected_team_points: 100, p10_points: 85, p50_points: 100, p90_points: 115 }
+  const storedCandidate = { id: 'candidate-1', rank: 1, action: 'TRANSFER', moves_json: JSON.stringify({ moves: [{ outId: 'player-out', inId: 'player-in' }], selectionGain: .4, selectionScoreVersion: 'elite-selection-rank-v1', sensitivity: { earlySeasonSensitive: true, roleLatestMatchSensitive: true, latestMatchSensitive: true, latestMatchSensitivity: 'HIGH', sensitivityFlags: ['EARLY_SEASON', 'LATEST_MATCH_SENSITIVE', 'RATE_SAMPLE_LATEST_MATCH_SENSITIVE'] }, priceTiming: { verdict: 'WAIT', robustness: 'SENSITIVE', incomingPressure: { description: 'High upward price pressure; this is not a price-rise prediction.' }, outgoingPressure: { description: 'Moderate downward price pressure; this is not a price-fall prediction.' }, adverseScenarios: [{ adverseSwingTenths: 1, status: 'UNAFFORDABLE' }], reasons: ['Price pressure cannot create urgency because this recommendation is not independently robust.'] } }), raw_gain: 6, hit_cost: 0, uncertainty_penalty: 1, net_expected_gain: 5, probability_beats_roll: .7, bank_after_tenths: 3, affordability_status: 'EXACT', expected_team_points: 100, p10_points: 85, p50_points: 100, p90_points: 115 }
 
   it('hydrates the stable public shape and FPL identifiers from stored rows', async () => {
     const db = { async query(sql: string) {
@@ -91,7 +91,7 @@ describe('stored recommendation retrieval', () => {
     } }
     const result = await getRecommendationSet(db, 'set-1')
     expect(result?.planId).toBe('plan-1')
-    expect(result?.candidates[0]).toMatchObject({ netExpectedGain: 5, apiMoves: [{ outId: 10, inId: 20 }], savedTransferValue: 0, lookaheadAvailable: false, nextWeekFreeTransfers: null, nextWeekBestNetGain: null, earlySeasonSensitive: true, roleLatestMatchSensitive: true, latestMatchSensitivity: 'HIGH', sensitivityFlags: ['EARLY_SEASON', 'LATEST_MATCH_SENSITIVE', 'RATE_SAMPLE_LATEST_MATCH_SENSITIVE'], timingAdvice: 'WAIT', priceTiming: { verdict: 'WAIT', robustness: 'SENSITIVE', adverseScenarios: [{ adverseSwingTenths: 1, status: 'UNAFFORDABLE' }] } })
+    expect(result?.candidates[0]).toMatchObject({ netExpectedGain: 5, selectionGain: .4, selectionScoreVersion: 'elite-selection-rank-v1', apiMoves: [{ outId: 10, inId: 20 }], savedTransferValue: 0, lookaheadAvailable: false, nextWeekFreeTransfers: null, nextWeekBestNetGain: null, earlySeasonSensitive: true, roleLatestMatchSensitive: true, latestMatchSensitivity: 'HIGH', sensitivityFlags: ['EARLY_SEASON', 'LATEST_MATCH_SENSITIVE', 'RATE_SAMPLE_LATEST_MATCH_SENSITIVE'], timingAdvice: 'WAIT', priceTiming: { verdict: 'WAIT', robustness: 'SENSITIVE', adverseScenarios: [{ adverseSwingTenths: 1, status: 'UNAFFORDABLE' }] } })
   })
 
   it('hydrates recorded decision state for candidates from DecisionRecord', async () => {
@@ -489,4 +489,3 @@ describe('recommendation candidate classification and primary selection', () => 
     expect(oldVersionHash).not.toBe('forecast-input')
   })
 })
-

@@ -65,23 +65,45 @@ describe('selectLineup formation selection & constraints', () => {
 })
 
 describe('minutes-based captain doubling & auto-substitutions', () => {
+  it('selects the captain and vice pair with the greatest expected fallback bonus', () => {
+    const squad = fullSquad().map(player => player.playerId === 'fwd-1'
+      ? { ...player, meanPoints: 7, noShowProbability: .5 }
+      : player.playerId === 'mid-1'
+        ? { ...player, meanPoints: 8, noShowProbability: 0 }
+        : player)
+    const lineup = selectLineup(squad)
+    expect(lineup.captainId).toBe('fwd-1')
+    expect(lineup.viceCaptainId).toBe('mid-1')
+  })
+
+  it('uses minute samples when selecting a captain and vice pair', () => {
+    const squad = fullSquad().map(player => {
+      if (player.playerId === 'fwd-1') return { ...player, meanPoints: 7, noShowProbability: .5, samples: [0, 14], minuteSamples: [0, 90] }
+      if (player.playerId === 'mid-1') return { ...player, meanPoints: 8, noShowProbability: 0, samples: [8, 8], minuteSamples: [90, 90] }
+      return { ...player, samples: [player.meanPoints, player.meanPoints], minuteSamples: [90, 90] }
+    })
+    const lineup = selectLineup(squad)
+    expect(lineup.captainId).toBe('fwd-1')
+    expect(lineup.viceCaptainId).toBe('mid-1')
+  })
+
   it('retains captain doubling when captain plays and scores 0 or negative points', () => {
     const squad = fullSquad().map((p) => {
       if (p.playerId === 'fwd-1') {
         return { ...p, meanPoints: 10, samples: [0, 0], minuteSamples: [90, 90] }
       }
       if (p.playerId === 'mid-1') {
-        return { ...p, meanPoints: 8, samples: [10, 10], minuteSamples: [90, 90] }
+        return { ...p, meanPoints: 8, samples: [-1, -1], minuteSamples: [90, 90] }
       }
-      return { ...p, samples: [4, 4], minuteSamples: [90, 90] }
+      return { ...p, samples: [-1, -1], minuteSamples: [90, 90] }
     })
 
     const lineup = selectLineup(squad)
     expect(lineup.captainId).toBe('fwd-1')
     expect(lineup.samples).toBeDefined()
-    // Captain doubled is 0 + 0 = 0 (not vice doubled)
-    // Starters = 9 other starters * 4 (36) + mid-1 (10) + fwd-1 (0) + captain bonus (0) = 46
-    expect(lineup.samples![0]).toBe(46)
+    // Captain doubled is 0 + 0 = 0 (not vice doubled). The ten other
+    // starters each score -1 in this deliberately adversarial draw.
+    expect(lineup.samples![0]).toBe(-10)
   })
 
   it('triggers vice-captain doubling when captain records 0 minutes (no-show)', () => {

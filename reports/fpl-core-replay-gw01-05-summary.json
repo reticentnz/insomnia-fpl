@@ -1,0 +1,2755 @@
+{
+  "schemaVersion": 1,
+  "scope": "archive-compatible core-model walk-forward replay",
+  "season": "2025-2026",
+  "modelVersion": "role-aware-v3.3-calibrated-appearance-mixture",
+  "generatedAt": "2026-08-28T19:19:04.909Z",
+  "gameweeks": [
+    1,
+    2,
+    3,
+    4,
+    5
+  ],
+  "simulate": true,
+  "sourceRepository": "https://github.com/olbauday/FPL-Core-Insights",
+  "limitations": [
+    "Input files are pinned to the latest repository commit strictly before each deadline; target files contribute only realized points, minutes, bonus, goals, assists, and clean-sheet outcomes.",
+    "Market odds, point-in-time underlying feeds, and creator/verified role signals are unavailable, so this is not an exact production forecast replay.",
+    "The current model contains explicit 2026/27 bonus assumptions; withoutBonus metrics isolate part of that cross-season rule mismatch.",
+    "Formation-global XI metrics enforce formation only, not budget, club limits, a 15-player squad, autosubs, or transfers.",
+    "For double gameweeks, fixture quantiles are summed; analytical expected points remain correctly aggregated."
+  ],
+  "pooled": {
+    "model": {
+      "position": "ALL",
+      "horizon": 1,
+      "confidenceBand": "ALL",
+      "strengthMethod": "ALL",
+      "sampleSize": 3571,
+      "mae": 1.12259,
+      "rmse": 2.058114,
+      "bias": -0.097207,
+      "intervalCoverage": 0.91543,
+      "rankCorrelation": 0.678765
+    },
+    "appearedPlayers": {
+      "position": "ALL",
+      "horizon": 1,
+      "confidenceBand": "ALL",
+      "strengthMethod": "ALL",
+      "sampleSize": 1521,
+      "mae": 2.064906,
+      "rmse": 3.036461,
+      "bias": -0.798933,
+      "intervalCoverage": 0.810651,
+      "rankCorrelation": 0.292234
+    },
+    "withoutBonus": {
+      "position": "ALL",
+      "horizon": 1,
+      "confidenceBand": "ALL",
+      "strengthMethod": "ALL",
+      "sampleSize": 3571,
+      "mae": 1.0092,
+      "rmse": 1.779675,
+      "bias": -0.107762,
+      "intervalCoverage": 0,
+      "rankCorrelation": 0.676976
+    },
+    "baselines": [
+      {
+        "name": "FPL_EP_NEXT",
+        "sampleSize": 3571,
+        "mae": 1.315094,
+        "rmse": 2.249901,
+        "bias": 0.0704,
+        "rankCorrelation": 0.606883
+      },
+      {
+        "name": "FPL_FORM",
+        "sampleSize": 3571,
+        "mae": 1.215262,
+        "rmse": 2.492007,
+        "bias": -0.223831,
+        "rankCorrelation": 0.580594
+      },
+      {
+        "name": "FPL_POINTS_PER_GAME",
+        "sampleSize": 3571,
+        "mae": 1.29972,
+        "rmse": 2.459907,
+        "bias": 0.160711,
+        "rankCorrelation": 0.623524
+      }
+    ],
+    "calibrationApplied": false
+  },
+  "episodes": [
+    {
+      "gameweek": 1,
+      "deadline": "2025-08-15T17:30:00+00:00",
+      "inputCommit": {
+        "sha": "2482fbd3a6365610802004b1186d57931c33b900",
+        "committedAt": "2025-08-15T17:01:14Z",
+        "url": "https://github.com/olbauday/FPL-Core-Insights/commit/2482fbd3a6365610802004b1186d57931c33b900"
+      },
+      "snapshotAgeHours": 0.48,
+      "provenance": {
+        "stats": "0601390f84ba985ac5a3dc8d338feab7d38d896edeb9a4650ae1e131338c61a3",
+        "players": "6e6cad37a3918b2fbad2c98a3a4079dc5048de02838db63036a7f851cd288422",
+        "teams": "eab90a2f9155efc6cb45456a06a9b6d0fd9ed2fb75ff757f937c8a731ae33fa2",
+        "fixtures": "c1d589b4535866a0a702d887e8eed278d4046bb5f4d28ce2128b4da1a5bc3700",
+        "outcomes": "f00e3fe71885e521ba08053ab7af4b9fa532ee70c9467fa9a9885276e37e1555",
+        "outcomeCommit": {
+          "sha": "0a199440cfdbbe96e6ea941d1bc885fe6b6a95a4",
+          "committedAt": "2026-08-28T07:01:53Z",
+          "url": "https://github.com/olbauday/FPL-Core-Insights/commit/0a199440cfdbbe96e6ea941d1bc885fe6b6a95a4"
+        }
+      },
+      "coverage": {
+        "inputPlayers": 685,
+        "fixtures": 10,
+        "missingIdentity": 0,
+        "missingTeam": 0,
+        "missingCurrentSnapshot": 0,
+        "rejectedUnreconciledSnapshot": 0,
+        "joinedPlayers": 685,
+        "appearedPlayers": 299
+      },
+      "metrics": {
+        "allPlayers": {
+          "position": "ALL",
+          "horizon": 1,
+          "confidenceBand": "ALL",
+          "strengthMethod": "ALL",
+          "sampleSize": 685,
+          "mae": 1.318365,
+          "rmse": 2.285078,
+          "bias": -0.228789,
+          "intervalCoverage": 0.884672,
+          "rankCorrelation": 0.558394
+        },
+        "appearedPlayers": {
+          "position": "ALL",
+          "horizon": 1,
+          "confidenceBand": "ALL",
+          "strengthMethod": "ALL",
+          "sampleSize": 299,
+          "mae": 2.279555,
+          "rmse": 3.316992,
+          "bias": -1.264928,
+          "intervalCoverage": 0.749164,
+          "rankCorrelation": 0.175732
+        },
+        "withoutBonus": {
+          "position": "ALL",
+          "horizon": 1,
+          "confidenceBand": "ALL",
+          "strengthMethod": "ALL",
+          "sampleSize": 685,
+          "mae": 1.202474,
+          "rmse": 2.01155,
+          "bias": -0.231122,
+          "intervalCoverage": 0,
+          "rankCorrelation": 0.556655
+        },
+        "components": {
+          "expectedMinutesMae": 31.836589,
+          "allPlayerExpectedMinutesMae": 20.845182,
+          "noShowBrier": 0.172844,
+          "predictedNoShowRate": 0.621603,
+          "observedNoShowRate": 0.563504,
+          "uncertainRoleCohort": {
+            "sampleSize": 122,
+            "pointsBias": 0.209638,
+            "minutesBias": 0.920246
+          },
+          "expectedGoalsMae": 0.123106,
+          "expectedAssistsMae": 0.103059,
+          "cleanSheetBrier": 0.352574,
+          "cleanSheetSampleSize": 195
+        },
+        "baselines": [
+          {
+            "name": "FPL_EP_NEXT",
+            "sampleSize": 685,
+            "mae": 1.507445,
+            "rmse": 2.33342,
+            "bias": 0.093431,
+            "rankCorrelation": 0.468743
+          },
+          {
+            "name": "FPL_FORM",
+            "sampleSize": 685,
+            "mae": 1.407299,
+            "rmse": 2.905319,
+            "bias": -1.40438,
+            "rankCorrelation": null
+          },
+          {
+            "name": "FPL_POINTS_PER_GAME",
+            "sampleSize": 685,
+            "mae": 1.590073,
+            "rmse": 2.549933,
+            "bias": 0.052555,
+            "rankCorrelation": 0.368504
+          }
+        ],
+        "decisions": {
+          "eligiblePlayers": 685,
+          "topK": [
+            {
+              "k": 1,
+              "eligiblePlayers": 685,
+              "recall": 0,
+              "realizedPoints": 8,
+              "oraclePoints": 17,
+              "regretPoints": 9,
+              "meanRegret": 9
+            },
+            {
+              "k": 3,
+              "eligiblePlayers": 685,
+              "recall": 0.333333,
+              "realizedPoints": 24,
+              "oraclePoints": 45,
+              "regretPoints": 21,
+              "meanRegret": 7
+            },
+            {
+              "k": 5,
+              "eligiblePlayers": 685,
+              "recall": 0.2,
+              "realizedPoints": 33,
+              "oraclePoints": 71,
+              "regretPoints": 38,
+              "meanRegret": 7.6
+            },
+            {
+              "k": 10,
+              "eligiblePlayers": 685,
+              "recall": 0.2,
+              "realizedPoints": 56,
+              "oraclePoints": 126,
+              "regretPoints": 70,
+              "meanRegret": 7
+            },
+            {
+              "k": 20,
+              "eligiblePlayers": 685,
+              "recall": 0.3,
+              "realizedPoints": 96,
+              "oraclePoints": 218,
+              "regretPoints": 122,
+              "meanRegret": 6.1
+            }
+          ],
+          "formationGlobalXI": {
+            "selectedPlayerIds": [
+              "399",
+              "402",
+              "6",
+              "256",
+              "107",
+              "373",
+              "381",
+              "235",
+              "119",
+              "18",
+              "430"
+            ],
+            "oraclePlayerIds": [
+              "1",
+              "531",
+              "7",
+              "410",
+              "82",
+              "164",
+              "427",
+              "582",
+              "430",
+              "525",
+              "597"
+            ],
+            "recall": 0.090909,
+            "realizedPoints": 54,
+            "oraclePoints": 135,
+            "regretPoints": 81,
+            "captainId": "381",
+            "viceCaptainId": "235",
+            "captainBonusRealized": 8,
+            "captainOracleBonusWithinXI": 13,
+            "captainRegretWithinXI": 5,
+            "captainTop1Hit": false,
+            "captainTop3Hit": false,
+            "captainNoShow": false,
+            "viceFallback": false,
+            "teamRegret": 90
+          }
+        },
+        "eliteRanking": {
+          "version": "elite-selection-rank-v1",
+          "eligiblePlayers": 685,
+          "topK": [
+            {
+              "k": 1,
+              "eligiblePlayers": 685,
+              "recall": 0,
+              "realizedPoints": 8,
+              "oraclePoints": 17,
+              "regretPoints": 9,
+              "meanRegret": 9
+            },
+            {
+              "k": 3,
+              "eligiblePlayers": 685,
+              "recall": 0.333333,
+              "realizedPoints": 24,
+              "oraclePoints": 45,
+              "regretPoints": 21,
+              "meanRegret": 7
+            },
+            {
+              "k": 5,
+              "eligiblePlayers": 685,
+              "recall": 0.2,
+              "realizedPoints": 26,
+              "oraclePoints": 71,
+              "regretPoints": 45,
+              "meanRegret": 9
+            },
+            {
+              "k": 10,
+              "eligiblePlayers": 685,
+              "recall": 0.1,
+              "realizedPoints": 53,
+              "oraclePoints": 126,
+              "regretPoints": 73,
+              "meanRegret": 7.3
+            },
+            {
+              "k": 20,
+              "eligiblePlayers": 685,
+              "recall": 0.3,
+              "realizedPoints": 101,
+              "oraclePoints": 218,
+              "regretPoints": 117,
+              "meanRegret": 5.85
+            }
+          ]
+        },
+        "baselineDecisions": {
+          "FPL_EP_NEXT": {
+            "eligiblePlayers": 685,
+            "topK": [
+              {
+                "k": 1,
+                "eligiblePlayers": 685,
+                "recall": 0,
+                "realizedPoints": 1,
+                "oraclePoints": 17,
+                "regretPoints": 16,
+                "meanRegret": 16
+              },
+              {
+                "k": 3,
+                "eligiblePlayers": 685,
+                "recall": 0,
+                "realizedPoints": 2,
+                "oraclePoints": 45,
+                "regretPoints": 43,
+                "meanRegret": 14.333333
+              },
+              {
+                "k": 5,
+                "eligiblePlayers": 685,
+                "recall": 0,
+                "realizedPoints": 5,
+                "oraclePoints": 71,
+                "regretPoints": 66,
+                "meanRegret": 13.2
+              },
+              {
+                "k": 10,
+                "eligiblePlayers": 685,
+                "recall": 0.1,
+                "realizedPoints": 33,
+                "oraclePoints": 126,
+                "regretPoints": 93,
+                "meanRegret": 9.3
+              },
+              {
+                "k": 20,
+                "eligiblePlayers": 685,
+                "recall": 0.2,
+                "realizedPoints": 86,
+                "oraclePoints": 218,
+                "regretPoints": 132,
+                "meanRegret": 6.6
+              }
+            ],
+            "formationGlobalXI": {
+              "selectedPlayerIds": [
+                "366",
+                "370",
+                "371",
+                "372",
+                "373",
+                "224",
+                "381",
+                "382",
+                "235",
+                "430",
+                "661"
+              ],
+              "oraclePlayerIds": [
+                "1",
+                "531",
+                "7",
+                "410",
+                "82",
+                "164",
+                "427",
+                "582",
+                "430",
+                "525",
+                "597"
+              ],
+              "recall": 0.090909,
+              "realizedPoints": 50,
+              "oraclePoints": 135,
+              "regretPoints": 85,
+              "captainId": "370",
+              "viceCaptainId": "366",
+              "captainBonusRealized": 1,
+              "captainOracleBonusWithinXI": 13,
+              "captainRegretWithinXI": 12,
+              "captainTop1Hit": false,
+              "captainTop3Hit": false,
+              "captainNoShow": false,
+              "viceFallback": false,
+              "teamRegret": 101
+            }
+          },
+          "FPL_FORM": {
+            "eligiblePlayers": 685,
+            "topK": [
+              {
+                "k": 1,
+                "eligiblePlayers": 685,
+                "recall": 0,
+                "realizedPoints": 10,
+                "oraclePoints": 17,
+                "regretPoints": 7,
+                "meanRegret": 7
+              },
+              {
+                "k": 3,
+                "eligiblePlayers": 685,
+                "recall": 0,
+                "realizedPoints": 11,
+                "oraclePoints": 45,
+                "regretPoints": 34,
+                "meanRegret": 11.333333
+              },
+              {
+                "k": 5,
+                "eligiblePlayers": 685,
+                "recall": 0,
+                "realizedPoints": 12,
+                "oraclePoints": 71,
+                "regretPoints": 59,
+                "meanRegret": 11.8
+              },
+              {
+                "k": 10,
+                "eligiblePlayers": 685,
+                "recall": 0.1,
+                "realizedPoints": 13,
+                "oraclePoints": 126,
+                "regretPoints": 113,
+                "meanRegret": 11.3
+              },
+              {
+                "k": 20,
+                "eligiblePlayers": 685,
+                "recall": 0.05,
+                "realizedPoints": 24,
+                "oraclePoints": 218,
+                "regretPoints": 194,
+                "meanRegret": 9.7
+              }
+            ],
+            "formationGlobalXI": {
+              "selectedPlayerIds": [
+                "1",
+                "10",
+                "106",
+                "107",
+                "119",
+                "120",
+                "121",
+                "122",
+                "100",
+                "135",
+                "136"
+              ],
+              "oraclePlayerIds": [
+                "1",
+                "531",
+                "7",
+                "410",
+                "82",
+                "164",
+                "427",
+                "582",
+                "430",
+                "525",
+                "597"
+              ],
+              "recall": 0.090909,
+              "realizedPoints": 22,
+              "oraclePoints": 135,
+              "regretPoints": 113,
+              "captainId": "1",
+              "viceCaptainId": "10",
+              "captainBonusRealized": 10,
+              "captainOracleBonusWithinXI": 10,
+              "captainRegretWithinXI": 0,
+              "captainTop1Hit": true,
+              "captainTop3Hit": true,
+              "captainNoShow": false,
+              "viceFallback": false,
+              "teamRegret": 120
+            }
+          },
+          "FPL_POINTS_PER_GAME": {
+            "eligiblePlayers": 685,
+            "topK": [
+              {
+                "k": 1,
+                "eligiblePlayers": 685,
+                "recall": 0,
+                "realizedPoints": 8,
+                "oraclePoints": 17,
+                "regretPoints": 9,
+                "meanRegret": 9
+              },
+              {
+                "k": 3,
+                "eligiblePlayers": 685,
+                "recall": 0,
+                "realizedPoints": 10,
+                "oraclePoints": 45,
+                "regretPoints": 35,
+                "meanRegret": 11.666667
+              },
+              {
+                "k": 5,
+                "eligiblePlayers": 685,
+                "recall": 0.2,
+                "realizedPoints": 26,
+                "oraclePoints": 71,
+                "regretPoints": 45,
+                "meanRegret": 9
+              },
+              {
+                "k": 10,
+                "eligiblePlayers": 685,
+                "recall": 0.2,
+                "realizedPoints": 46,
+                "oraclePoints": 126,
+                "regretPoints": 80,
+                "meanRegret": 8
+              },
+              {
+                "k": 20,
+                "eligiblePlayers": 685,
+                "recall": 0.1,
+                "realizedPoints": 56,
+                "oraclePoints": 218,
+                "regretPoints": 162,
+                "meanRegret": 8.1
+              }
+            ],
+            "formationGlobalXI": {
+              "selectedPlayerIds": [
+                "101",
+                "5",
+                "403",
+                "373",
+                "381",
+                "119",
+                "235",
+                "450",
+                "499",
+                "430",
+                "624"
+              ],
+              "oraclePlayerIds": [
+                "1",
+                "531",
+                "7",
+                "410",
+                "82",
+                "164",
+                "427",
+                "582",
+                "430",
+                "525",
+                "597"
+              ],
+              "recall": 0.090909,
+              "realizedPoints": 40,
+              "oraclePoints": 135,
+              "regretPoints": 95,
+              "captainId": "499",
+              "viceCaptainId": "381",
+              "captainBonusRealized": 8,
+              "captainOracleBonusWithinXI": 13,
+              "captainRegretWithinXI": 5,
+              "captainTop1Hit": false,
+              "captainTop3Hit": false,
+              "captainNoShow": true,
+              "viceFallback": true,
+              "teamRegret": 104
+            }
+          }
+        }
+      }
+    },
+    {
+      "gameweek": 2,
+      "deadline": "2025-08-22T17:30:00+00:00",
+      "inputCommit": {
+        "sha": "40f5b8ecfcffb4936c3dcf3557e9745e00216a16",
+        "committedAt": "2025-08-22T17:03:37Z",
+        "url": "https://github.com/olbauday/FPL-Core-Insights/commit/40f5b8ecfcffb4936c3dcf3557e9745e00216a16"
+      },
+      "snapshotAgeHours": 0.44,
+      "provenance": {
+        "stats": "2e2b983ee240eba3fba8e91f8eb86bf3aa5cc8dd41cca19ca90dd700c9727961",
+        "players": "4cb785275f4809df7d31eff67b9338b395cd4bbd5b61027e54670c60323ee8e0",
+        "teams": "8cdf680c7b06ae2248951c45d341c6ac1a5023872a5a8050d916543b62cb851a",
+        "fixtures": "3ac8c2934996c120783c035060a800ba8849fcc2fe88c8f9fa4fdb76404b0687",
+        "outcomes": "01e5c0ce5c7bde1c471a0dc83f009f2d514a7d4972a320e247af34a0766eaf65",
+        "outcomeCommit": {
+          "sha": "0a199440cfdbbe96e6ea941d1bc885fe6b6a95a4",
+          "committedAt": "2026-08-28T07:01:53Z",
+          "url": "https://github.com/olbauday/FPL-Core-Insights/commit/0a199440cfdbbe96e6ea941d1bc885fe6b6a95a4"
+        }
+      },
+      "coverage": {
+        "inputPlayers": 699,
+        "fixtures": 10,
+        "missingIdentity": 0,
+        "missingTeam": 0,
+        "missingCurrentSnapshot": 0,
+        "rejectedUnreconciledSnapshot": 0,
+        "joinedPlayers": 699,
+        "appearedPlayers": 311
+      },
+      "metrics": {
+        "allPlayers": {
+          "position": "ALL",
+          "horizon": 1,
+          "confidenceBand": "ALL",
+          "strengthMethod": "ALL",
+          "sampleSize": 699,
+          "mae": 1.151625,
+          "rmse": 2.199877,
+          "bias": -0.002416,
+          "intervalCoverage": 0.925608,
+          "rankCorrelation": 0.696591
+        },
+        "appearedPlayers": {
+          "position": "ALL",
+          "horizon": 1,
+          "confidenceBand": "ALL",
+          "strengthMethod": "ALL",
+          "sampleSize": 311,
+          "mae": 2.038153,
+          "rmse": 3.179156,
+          "bias": -0.555656,
+          "intervalCoverage": 0.842444,
+          "rankCorrelation": 0.400565
+        },
+        "withoutBonus": {
+          "position": "ALL",
+          "horizon": 1,
+          "confidenceBand": "ALL",
+          "strengthMethod": "ALL",
+          "sampleSize": 699,
+          "mae": 1.026264,
+          "rmse": 1.891689,
+          "bias": -0.021931,
+          "intervalCoverage": 0,
+          "rankCorrelation": 0.693847
+        },
+        "components": {
+          "expectedMinutesMae": 20.285016,
+          "allPlayerExpectedMinutesMae": 13.962074,
+          "noShowBrier": 0.122732,
+          "predictedNoShowRate": 0.595158,
+          "observedNoShowRate": 0.555079,
+          "uncertainRoleCohort": {
+            "sampleSize": 160,
+            "pointsBias": -0.449432,
+            "minutesBias": -5.182437
+          },
+          "expectedGoalsMae": 0.139088,
+          "expectedAssistsMae": 0.117368,
+          "cleanSheetBrier": 0.249431,
+          "cleanSheetSampleSize": 184
+        },
+        "baselines": [
+          {
+            "name": "FPL_EP_NEXT",
+            "sampleSize": 699,
+            "mae": 1.451359,
+            "rmse": 2.392193,
+            "bias": 0.197282,
+            "rankCorrelation": 0.542734
+          },
+          {
+            "name": "FPL_FORM",
+            "sampleSize": 699,
+            "mae": 1.314735,
+            "rmse": 2.880302,
+            "bias": 0.087268,
+            "rankCorrelation": 0.683362
+          },
+          {
+            "name": "FPL_POINTS_PER_GAME",
+            "sampleSize": 699,
+            "mae": 1.314735,
+            "rmse": 2.880302,
+            "bias": 0.087268,
+            "rankCorrelation": 0.683362
+          }
+        ],
+        "decisions": {
+          "eligiblePlayers": 699,
+          "topK": [
+            {
+              "k": 1,
+              "eligiblePlayers": 699,
+              "recall": 0,
+              "realizedPoints": 5,
+              "oraclePoints": 24,
+              "regretPoints": 19,
+              "meanRegret": 19
+            },
+            {
+              "k": 3,
+              "eligiblePlayers": 699,
+              "recall": 0,
+              "realizedPoints": 7,
+              "oraclePoints": 54,
+              "regretPoints": 47,
+              "meanRegret": 15.666667
+            },
+            {
+              "k": 5,
+              "eligiblePlayers": 699,
+              "recall": 0,
+              "realizedPoints": 15,
+              "oraclePoints": 81,
+              "regretPoints": 66,
+              "meanRegret": 13.2
+            },
+            {
+              "k": 10,
+              "eligiblePlayers": 699,
+              "recall": 0,
+              "realizedPoints": 37,
+              "oraclePoints": 141,
+              "regretPoints": 104,
+              "meanRegret": 10.4
+            },
+            {
+              "k": 20,
+              "eligiblePlayers": 699,
+              "recall": 0,
+              "realizedPoints": 58,
+              "oraclePoints": 239,
+              "regretPoints": 181,
+              "meanRegret": 9.05
+            }
+          ],
+          "formationGlobalXI": {
+            "selectedPlayerIds": [
+              "1",
+              "224",
+              "402",
+              "6",
+              "381",
+              "235",
+              "82",
+              "119",
+              "16",
+              "430",
+              "525"
+            ],
+            "oraclePlayerIds": [
+              "287",
+              "8",
+              "7",
+              "110",
+              "205",
+              "200",
+              "83",
+              "419",
+              "673",
+              "249",
+              "666"
+            ],
+            "recall": 0,
+            "realizedPoints": 41,
+            "oraclePoints": 151,
+            "regretPoints": 110,
+            "captainId": "381",
+            "viceCaptainId": "430",
+            "captainBonusRealized": 5,
+            "captainOracleBonusWithinXI": 6,
+            "captainRegretWithinXI": 1,
+            "captainTop1Hit": false,
+            "captainTop3Hit": false,
+            "captainNoShow": false,
+            "viceFallback": false,
+            "teamRegret": 129
+          }
+        },
+        "eliteRanking": {
+          "version": "elite-selection-rank-v1",
+          "eligiblePlayers": 699,
+          "topK": [
+            {
+              "k": 1,
+              "eligiblePlayers": 699,
+              "recall": 0,
+              "realizedPoints": 2,
+              "oraclePoints": 24,
+              "regretPoints": 22,
+              "meanRegret": 22
+            },
+            {
+              "k": 3,
+              "eligiblePlayers": 699,
+              "recall": 0,
+              "realizedPoints": 13,
+              "oraclePoints": 54,
+              "regretPoints": 41,
+              "meanRegret": 13.666667
+            },
+            {
+              "k": 5,
+              "eligiblePlayers": 699,
+              "recall": 0,
+              "realizedPoints": 21,
+              "oraclePoints": 81,
+              "regretPoints": 60,
+              "meanRegret": 12
+            },
+            {
+              "k": 10,
+              "eligiblePlayers": 699,
+              "recall": 0,
+              "realizedPoints": 36,
+              "oraclePoints": 141,
+              "regretPoints": 105,
+              "meanRegret": 10.5
+            },
+            {
+              "k": 20,
+              "eligiblePlayers": 699,
+              "recall": 0.15,
+              "realizedPoints": 85,
+              "oraclePoints": 239,
+              "regretPoints": 154,
+              "meanRegret": 7.7
+            }
+          ]
+        },
+        "baselineDecisions": {
+          "FPL_EP_NEXT": {
+            "eligiblePlayers": 699,
+            "topK": [
+              {
+                "k": 1,
+                "eligiblePlayers": 699,
+                "recall": 0,
+                "realizedPoints": 6,
+                "oraclePoints": 24,
+                "regretPoints": 18,
+                "meanRegret": 18
+              },
+              {
+                "k": 3,
+                "eligiblePlayers": 699,
+                "recall": 0,
+                "realizedPoints": 18,
+                "oraclePoints": 54,
+                "regretPoints": 36,
+                "meanRegret": 12
+              },
+              {
+                "k": 5,
+                "eligiblePlayers": 699,
+                "recall": 0,
+                "realizedPoints": 24,
+                "oraclePoints": 81,
+                "regretPoints": 57,
+                "meanRegret": 11.4
+              },
+              {
+                "k": 10,
+                "eligiblePlayers": 699,
+                "recall": 0,
+                "realizedPoints": 34,
+                "oraclePoints": 141,
+                "regretPoints": 107,
+                "meanRegret": 10.7
+              },
+              {
+                "k": 20,
+                "eligiblePlayers": 699,
+                "recall": 0.15,
+                "realizedPoints": 97,
+                "oraclePoints": 239,
+                "regretPoints": 142,
+                "meanRegret": 7.1
+              }
+            ],
+            "formationGlobalXI": {
+              "selectedPlayerIds": [
+                "1",
+                "5",
+                "6",
+                "224",
+                "371",
+                "372",
+                "381",
+                "16",
+                "17",
+                "430",
+                "666"
+              ],
+              "oraclePlayerIds": [
+                "287",
+                "8",
+                "7",
+                "110",
+                "205",
+                "200",
+                "83",
+                "419",
+                "673",
+                "249",
+                "666"
+              ],
+              "recall": 0.090909,
+              "realizedPoints": 50,
+              "oraclePoints": 151,
+              "regretPoints": 101,
+              "captainId": "372",
+              "viceCaptainId": "1",
+              "captainBonusRealized": 6,
+              "captainOracleBonusWithinXI": 12,
+              "captainRegretWithinXI": 6,
+              "captainTop1Hit": false,
+              "captainTop3Hit": false,
+              "captainNoShow": true,
+              "viceFallback": true,
+              "teamRegret": 119
+            }
+          },
+          "FPL_FORM": {
+            "eligiblePlayers": 699,
+            "topK": [
+              {
+                "k": 1,
+                "eligiblePlayers": 699,
+                "recall": 0,
+                "realizedPoints": 1,
+                "oraclePoints": 24,
+                "regretPoints": 23,
+                "meanRegret": 23
+              },
+              {
+                "k": 3,
+                "eligiblePlayers": 699,
+                "recall": 0,
+                "realizedPoints": 9,
+                "oraclePoints": 54,
+                "regretPoints": 45,
+                "meanRegret": 15
+              },
+              {
+                "k": 5,
+                "eligiblePlayers": 699,
+                "recall": 0,
+                "realizedPoints": 15,
+                "oraclePoints": 81,
+                "regretPoints": 66,
+                "meanRegret": 13.2
+              },
+              {
+                "k": 10,
+                "eligiblePlayers": 699,
+                "recall": 0.1,
+                "realizedPoints": 46,
+                "oraclePoints": 141,
+                "regretPoints": 95,
+                "meanRegret": 9.5
+              },
+              {
+                "k": 20,
+                "eligiblePlayers": 699,
+                "recall": 0.15,
+                "realizedPoints": 71,
+                "oraclePoints": 239,
+                "regretPoints": 168,
+                "meanRegret": 8.4
+              }
+            ],
+            "formationGlobalXI": {
+              "selectedPlayerIds": [
+                "1",
+                "531",
+                "7",
+                "410",
+                "82",
+                "164",
+                "427",
+                "582",
+                "430",
+                "525",
+                "597"
+              ],
+              "oraclePlayerIds": [
+                "287",
+                "8",
+                "7",
+                "110",
+                "205",
+                "200",
+                "83",
+                "419",
+                "673",
+                "249",
+                "666"
+              ],
+              "recall": 0.090909,
+              "realizedPoints": 42,
+              "oraclePoints": 151,
+              "regretPoints": 109,
+              "captainId": "531",
+              "viceCaptainId": "82",
+              "captainBonusRealized": 1,
+              "captainOracleBonusWithinXI": 13,
+              "captainRegretWithinXI": 12,
+              "captainTop1Hit": false,
+              "captainTop3Hit": false,
+              "captainNoShow": false,
+              "viceFallback": false,
+              "teamRegret": 132
+            }
+          },
+          "FPL_POINTS_PER_GAME": {
+            "eligiblePlayers": 699,
+            "topK": [
+              {
+                "k": 1,
+                "eligiblePlayers": 699,
+                "recall": 0,
+                "realizedPoints": 1,
+                "oraclePoints": 24,
+                "regretPoints": 23,
+                "meanRegret": 23
+              },
+              {
+                "k": 3,
+                "eligiblePlayers": 699,
+                "recall": 0,
+                "realizedPoints": 9,
+                "oraclePoints": 54,
+                "regretPoints": 45,
+                "meanRegret": 15
+              },
+              {
+                "k": 5,
+                "eligiblePlayers": 699,
+                "recall": 0,
+                "realizedPoints": 15,
+                "oraclePoints": 81,
+                "regretPoints": 66,
+                "meanRegret": 13.2
+              },
+              {
+                "k": 10,
+                "eligiblePlayers": 699,
+                "recall": 0.1,
+                "realizedPoints": 46,
+                "oraclePoints": 141,
+                "regretPoints": 95,
+                "meanRegret": 9.5
+              },
+              {
+                "k": 20,
+                "eligiblePlayers": 699,
+                "recall": 0.15,
+                "realizedPoints": 71,
+                "oraclePoints": 239,
+                "regretPoints": 168,
+                "meanRegret": 8.4
+              }
+            ],
+            "formationGlobalXI": {
+              "selectedPlayerIds": [
+                "1",
+                "531",
+                "7",
+                "410",
+                "82",
+                "164",
+                "427",
+                "582",
+                "430",
+                "525",
+                "597"
+              ],
+              "oraclePlayerIds": [
+                "287",
+                "8",
+                "7",
+                "110",
+                "205",
+                "200",
+                "83",
+                "419",
+                "673",
+                "249",
+                "666"
+              ],
+              "recall": 0.090909,
+              "realizedPoints": 42,
+              "oraclePoints": 151,
+              "regretPoints": 109,
+              "captainId": "531",
+              "viceCaptainId": "82",
+              "captainBonusRealized": 1,
+              "captainOracleBonusWithinXI": 13,
+              "captainRegretWithinXI": 12,
+              "captainTop1Hit": false,
+              "captainTop3Hit": false,
+              "captainNoShow": false,
+              "viceFallback": false,
+              "teamRegret": 132
+            }
+          }
+        }
+      }
+    },
+    {
+      "gameweek": 3,
+      "deadline": "2025-08-30T10:00:00+00:00",
+      "inputCommit": {
+        "sha": "88f5d2ddd404498208eba713d8bc36206456e024",
+        "committedAt": "2025-08-30T08:24:39Z",
+        "url": "https://github.com/olbauday/FPL-Core-Insights/commit/88f5d2ddd404498208eba713d8bc36206456e024"
+      },
+      "snapshotAgeHours": 1.59,
+      "provenance": {
+        "stats": "a8440228246fa5d4b7bd21bbce6d238326b71ceeff6b1ebd17aa590930d07846",
+        "players": "1c479414a246747fd2a9afbf8d938384a6ca48496852b28223f5507865128c25",
+        "teams": "157a6e28fef0357cc8313817b42e790df78beb789c678eecf411bcaea14ac268",
+        "fixtures": "f3f4fce1dbffe91f9c6d29b307d9a31de24069343c2c508cde0539b46d57a9d4",
+        "outcomes": "701105bebdad1ef78b83fdba5e94910aa3ab2a16c9cac183d679a82a91d9cd7d",
+        "outcomeCommit": {
+          "sha": "0a199440cfdbbe96e6ea941d1bc885fe6b6a95a4",
+          "committedAt": "2026-08-28T07:01:53Z",
+          "url": "https://github.com/olbauday/FPL-Core-Insights/commit/0a199440cfdbbe96e6ea941d1bc885fe6b6a95a4"
+        }
+      },
+      "coverage": {
+        "inputPlayers": 709,
+        "fixtures": 10,
+        "missingIdentity": 0,
+        "missingTeam": 0,
+        "missingCurrentSnapshot": 0,
+        "rejectedUnreconciledSnapshot": 0,
+        "joinedPlayers": 709,
+        "appearedPlayers": 301
+      },
+      "metrics": {
+        "allPlayers": {
+          "position": "ALL",
+          "horizon": 1,
+          "confidenceBand": "ALL",
+          "strengthMethod": "ALL",
+          "sampleSize": 709,
+          "mae": 1.110152,
+          "rmse": 1.976627,
+          "bias": -0.08646,
+          "intervalCoverage": 0.925247,
+          "rankCorrelation": 0.721136
+        },
+        "appearedPlayers": {
+          "position": "ALL",
+          "horizon": 1,
+          "confidenceBand": "ALL",
+          "strengthMethod": "ALL",
+          "sampleSize": 301,
+          "mae": 2.094873,
+          "rmse": 2.940576,
+          "bias": -0.723724,
+          "intervalCoverage": 0.827243,
+          "rankCorrelation": 0.272791
+        },
+        "withoutBonus": {
+          "position": "ALL",
+          "horizon": 1,
+          "confidenceBand": "ALL",
+          "strengthMethod": "ALL",
+          "sampleSize": 709,
+          "mae": 0.995486,
+          "rmse": 1.707529,
+          "bias": -0.098362,
+          "intervalCoverage": 0,
+          "rankCorrelation": 0.719132
+        },
+        "components": {
+          "expectedMinutesMae": 22.34,
+          "allPlayerExpectedMinutesMae": 14.134922,
+          "noShowBrier": 0.115289,
+          "predictedNoShowRate": 0.607225,
+          "observedNoShowRate": 0.575458,
+          "uncertainRoleCohort": {
+            "sampleSize": 138,
+            "pointsBias": -0.023379,
+            "minutesBias": -3.440362
+          },
+          "expectedGoalsMae": 0.125286,
+          "expectedAssistsMae": 0.123789,
+          "cleanSheetBrier": 0.256069,
+          "cleanSheetSampleSize": 189
+        },
+        "baselines": [
+          {
+            "name": "FPL_EP_NEXT",
+            "sampleSize": 709,
+            "mae": 1.31354,
+            "rmse": 2.341347,
+            "bias": -0.013963,
+            "rankCorrelation": 0.673878
+          },
+          {
+            "name": "FPL_FORM",
+            "sampleSize": 709,
+            "mae": 1.204513,
+            "rmse": 2.355709,
+            "bias": 0.011283,
+            "rankCorrelation": 0.737006
+          },
+          {
+            "name": "FPL_POINTS_PER_GAME",
+            "sampleSize": 709,
+            "mae": 1.262341,
+            "rmse": 2.451936,
+            "bias": 0.117066,
+            "rankCorrelation": 0.72266
+          }
+        ],
+        "decisions": {
+          "eligiblePlayers": 709,
+          "topK": [
+            {
+              "k": 1,
+              "eligiblePlayers": 709,
+              "recall": 0,
+              "realizedPoints": 1,
+              "oraclePoints": 15,
+              "regretPoints": 14,
+              "meanRegret": 14
+            },
+            {
+              "k": 3,
+              "eligiblePlayers": 709,
+              "recall": 0,
+              "realizedPoints": 13,
+              "oraclePoints": 42,
+              "regretPoints": 29,
+              "meanRegret": 9.666667
+            },
+            {
+              "k": 5,
+              "eligiblePlayers": 709,
+              "recall": 0,
+              "realizedPoints": 17,
+              "oraclePoints": 67,
+              "regretPoints": 50,
+              "meanRegret": 10
+            },
+            {
+              "k": 10,
+              "eligiblePlayers": 709,
+              "recall": 0.1,
+              "realizedPoints": 35,
+              "oraclePoints": 121,
+              "regretPoints": 86,
+              "meanRegret": 8.6
+            },
+            {
+              "k": 20,
+              "eligiblePlayers": 709,
+              "recall": 0.15,
+              "realizedPoints": 90,
+              "oraclePoints": 212,
+              "regretPoints": 122,
+              "meanRegret": 6.1
+            }
+          ],
+          "formationGlobalXI": {
+            "selectedPlayerIds": [
+              "287",
+              "402",
+              "477",
+              "224",
+              "107",
+              "381",
+              "82",
+              "119",
+              "450",
+              "430",
+              "525"
+            ],
+            "oraclePlayerIds": [
+              "366",
+              "260",
+              "72",
+              "226",
+              "257",
+              "387",
+              "237",
+              "242",
+              "547",
+              "119",
+              "249"
+            ],
+            "recall": 0.090909,
+            "realizedPoints": 46,
+            "oraclePoints": 128,
+            "regretPoints": 82,
+            "captainId": "430",
+            "viceCaptainId": "287",
+            "captainBonusRealized": 9,
+            "captainOracleBonusWithinXI": 10,
+            "captainRegretWithinXI": 1,
+            "captainTop1Hit": false,
+            "captainTop3Hit": true,
+            "captainNoShow": false,
+            "viceFallback": false,
+            "teamRegret": 88
+          }
+        },
+        "eliteRanking": {
+          "version": "elite-selection-rank-v1",
+          "eligiblePlayers": 709,
+          "topK": [
+            {
+              "k": 1,
+              "eligiblePlayers": 709,
+              "recall": 0,
+              "realizedPoints": 1,
+              "oraclePoints": 15,
+              "regretPoints": 14,
+              "meanRegret": 14
+            },
+            {
+              "k": 3,
+              "eligiblePlayers": 709,
+              "recall": 0,
+              "realizedPoints": 12,
+              "oraclePoints": 42,
+              "regretPoints": 30,
+              "meanRegret": 10
+            },
+            {
+              "k": 5,
+              "eligiblePlayers": 709,
+              "recall": 0,
+              "realizedPoints": 20,
+              "oraclePoints": 67,
+              "regretPoints": 47,
+              "meanRegret": 9.4
+            },
+            {
+              "k": 10,
+              "eligiblePlayers": 709,
+              "recall": 0,
+              "realizedPoints": 36,
+              "oraclePoints": 121,
+              "regretPoints": 85,
+              "meanRegret": 8.5
+            },
+            {
+              "k": 20,
+              "eligiblePlayers": 709,
+              "recall": 0.2,
+              "realizedPoints": 101,
+              "oraclePoints": 212,
+              "regretPoints": 111,
+              "meanRegret": 5.55
+            }
+          ]
+        },
+        "baselineDecisions": {
+          "FPL_EP_NEXT": {
+            "eligiblePlayers": 709,
+            "topK": [
+              {
+                "k": 1,
+                "eligiblePlayers": 709,
+                "recall": 0,
+                "realizedPoints": 2,
+                "oraclePoints": 15,
+                "regretPoints": 13,
+                "meanRegret": 13
+              },
+              {
+                "k": 3,
+                "eligiblePlayers": 709,
+                "recall": 0,
+                "realizedPoints": 6,
+                "oraclePoints": 42,
+                "regretPoints": 36,
+                "meanRegret": 12
+              },
+              {
+                "k": 5,
+                "eligiblePlayers": 709,
+                "recall": 0,
+                "realizedPoints": 17,
+                "oraclePoints": 67,
+                "regretPoints": 50,
+                "meanRegret": 10
+              },
+              {
+                "k": 10,
+                "eligiblePlayers": 709,
+                "recall": 0,
+                "realizedPoints": 27,
+                "oraclePoints": 121,
+                "regretPoints": 94,
+                "meanRegret": 9.4
+              },
+              {
+                "k": 20,
+                "eligiblePlayers": 709,
+                "recall": 0.15,
+                "realizedPoints": 76,
+                "oraclePoints": 212,
+                "regretPoints": 136,
+                "meanRegret": 6.8
+              }
+            ],
+            "formationGlobalXI": {
+              "selectedPlayerIds": [
+                "565",
+                "7",
+                "8",
+                "226",
+                "82",
+                "384",
+                "205",
+                "580",
+                "661",
+                "249",
+                "597"
+              ],
+              "oraclePlayerIds": [
+                "366",
+                "260",
+                "72",
+                "226",
+                "257",
+                "387",
+                "237",
+                "242",
+                "547",
+                "119",
+                "249"
+              ],
+              "recall": 0.181818,
+              "realizedPoints": 41,
+              "oraclePoints": 128,
+              "regretPoints": 87,
+              "captainId": "7",
+              "viceCaptainId": "8",
+              "captainBonusRealized": 2,
+              "captainOracleBonusWithinXI": 13,
+              "captainRegretWithinXI": 11,
+              "captainTop1Hit": false,
+              "captainTop3Hit": false,
+              "captainNoShow": false,
+              "viceFallback": false,
+              "teamRegret": 100
+            }
+          },
+          "FPL_FORM": {
+            "eligiblePlayers": 709,
+            "topK": [
+              {
+                "k": 1,
+                "eligiblePlayers": 709,
+                "recall": 0,
+                "realizedPoints": 2,
+                "oraclePoints": 15,
+                "regretPoints": 13,
+                "meanRegret": 13
+              },
+              {
+                "k": 3,
+                "eligiblePlayers": 709,
+                "recall": 0,
+                "realizedPoints": 6,
+                "oraclePoints": 42,
+                "regretPoints": 36,
+                "meanRegret": 12
+              },
+              {
+                "k": 5,
+                "eligiblePlayers": 709,
+                "recall": 0,
+                "realizedPoints": 10,
+                "oraclePoints": 67,
+                "regretPoints": 57,
+                "meanRegret": 11.4
+              },
+              {
+                "k": 10,
+                "eligiblePlayers": 709,
+                "recall": 0,
+                "realizedPoints": 26,
+                "oraclePoints": 121,
+                "regretPoints": 95,
+                "meanRegret": 9.5
+              },
+              {
+                "k": 20,
+                "eligiblePlayers": 709,
+                "recall": 0.15,
+                "realizedPoints": 66,
+                "oraclePoints": 212,
+                "regretPoints": 146,
+                "meanRegret": 7.3
+              }
+            ],
+            "formationGlobalXI": {
+              "selectedPlayerIds": [
+                "565",
+                "7",
+                "8",
+                "531",
+                "82",
+                "205",
+                "384",
+                "580",
+                "661",
+                "249",
+                "597"
+              ],
+              "oraclePlayerIds": [
+                "366",
+                "260",
+                "72",
+                "226",
+                "257",
+                "387",
+                "237",
+                "242",
+                "547",
+                "119",
+                "249"
+              ],
+              "recall": 0.090909,
+              "realizedPoints": 28,
+              "oraclePoints": 128,
+              "regretPoints": 100,
+              "captainId": "531",
+              "viceCaptainId": "7",
+              "captainBonusRealized": 2,
+              "captainOracleBonusWithinXI": 9,
+              "captainRegretWithinXI": 7,
+              "captainTop1Hit": false,
+              "captainTop3Hit": false,
+              "captainNoShow": true,
+              "viceFallback": true,
+              "teamRegret": 113
+            }
+          },
+          "FPL_POINTS_PER_GAME": {
+            "eligiblePlayers": 709,
+            "topK": [
+              {
+                "k": 1,
+                "eligiblePlayers": 709,
+                "recall": 0,
+                "realizedPoints": 2,
+                "oraclePoints": 15,
+                "regretPoints": 13,
+                "meanRegret": 13
+              },
+              {
+                "k": 3,
+                "eligiblePlayers": 709,
+                "recall": 0,
+                "realizedPoints": 6,
+                "oraclePoints": 42,
+                "regretPoints": 36,
+                "meanRegret": 12
+              },
+              {
+                "k": 5,
+                "eligiblePlayers": 709,
+                "recall": 0,
+                "realizedPoints": 10,
+                "oraclePoints": 67,
+                "regretPoints": 57,
+                "meanRegret": 11.4
+              },
+              {
+                "k": 10,
+                "eligiblePlayers": 709,
+                "recall": 0,
+                "realizedPoints": 24,
+                "oraclePoints": 121,
+                "regretPoints": 97,
+                "meanRegret": 9.7
+              },
+              {
+                "k": 20,
+                "eligiblePlayers": 709,
+                "recall": 0.1,
+                "realizedPoints": 52,
+                "oraclePoints": 212,
+                "regretPoints": 160,
+                "meanRegret": 8
+              }
+            ],
+            "formationGlobalXI": {
+              "selectedPlayerIds": [
+                "565",
+                "7",
+                "8",
+                "233",
+                "531",
+                "83",
+                "82",
+                "205",
+                "661",
+                "249",
+                "597"
+              ],
+              "oraclePlayerIds": [
+                "366",
+                "260",
+                "72",
+                "226",
+                "257",
+                "387",
+                "237",
+                "242",
+                "547",
+                "119",
+                "249"
+              ],
+              "recall": 0.090909,
+              "realizedPoints": 26,
+              "oraclePoints": 128,
+              "regretPoints": 102,
+              "captainId": "531",
+              "viceCaptainId": "7",
+              "captainBonusRealized": 2,
+              "captainOracleBonusWithinXI": 9,
+              "captainRegretWithinXI": 7,
+              "captainTop1Hit": false,
+              "captainTop3Hit": false,
+              "captainNoShow": true,
+              "viceFallback": true,
+              "teamRegret": 115
+            }
+          }
+        }
+      }
+    },
+    {
+      "gameweek": 4,
+      "deadline": "2025-09-13T10:00:00+00:00",
+      "inputCommit": {
+        "sha": "62bad7df4eecf136b8c6b2c72e8d005de4cc69f5",
+        "committedAt": "2025-09-13T08:24:44Z",
+        "url": "https://github.com/olbauday/FPL-Core-Insights/commit/62bad7df4eecf136b8c6b2c72e8d005de4cc69f5"
+      },
+      "snapshotAgeHours": 1.59,
+      "provenance": {
+        "stats": "e36bd35726a326067cfb4489e5d85b729a8dae6eb0e1e28af2dde341b05d0542",
+        "players": "9b6c04ef9bbebb5c7e5977aeab7808dbcfcb14a03557a329425c89a21306a285",
+        "teams": "a0d3b24309f443f54fda86e102799c8104c6cb15af5b74e36d2d78160ad66771",
+        "fixtures": "7c5b75edb3eaa0c5fb3f270fded747f5da83a6dd8c2780856141182a4959eb30",
+        "outcomes": "9823d2a044d744df4a61b812d93ba376ac573abbe85fea1738e605cd12d2f0b1",
+        "outcomeCommit": {
+          "sha": "0a199440cfdbbe96e6ea941d1bc885fe6b6a95a4",
+          "committedAt": "2026-08-28T07:01:53Z",
+          "url": "https://github.com/olbauday/FPL-Core-Insights/commit/0a199440cfdbbe96e6ea941d1bc885fe6b6a95a4"
+        }
+      },
+      "coverage": {
+        "inputPlayers": 738,
+        "fixtures": 10,
+        "missingIdentity": 0,
+        "missingTeam": 0,
+        "missingCurrentSnapshot": 0,
+        "rejectedUnreconciledSnapshot": 0,
+        "joinedPlayers": 738,
+        "appearedPlayers": 305
+      },
+      "metrics": {
+        "allPlayers": {
+          "position": "ALL",
+          "horizon": 1,
+          "confidenceBand": "ALL",
+          "strengthMethod": "ALL",
+          "sampleSize": 738,
+          "mae": 1.069292,
+          "rmse": 1.965479,
+          "bias": -0.184029,
+          "intervalCoverage": 0.914634,
+          "rankCorrelation": 0.690869
+        },
+        "appearedPlayers": {
+          "position": "ALL",
+          "horizon": 1,
+          "confidenceBand": "ALL",
+          "strengthMethod": "ALL",
+          "sampleSize": 305,
+          "mae": 2.04106,
+          "rmse": 2.932147,
+          "bias": -0.991567,
+          "intervalCoverage": 0.803279,
+          "rankCorrelation": 0.356887
+        },
+        "withoutBonus": {
+          "position": "ALL",
+          "horizon": 1,
+          "confidenceBand": "ALL",
+          "strengthMethod": "ALL",
+          "sampleSize": 738,
+          "mae": 0.968467,
+          "rmse": 1.714363,
+          "bias": -0.194314,
+          "intervalCoverage": 0,
+          "rankCorrelation": 0.690839
+        },
+        "components": {
+          "expectedMinutesMae": 25.234623,
+          "allPlayerExpectedMinutesMae": 15.032371,
+          "noShowBrier": 0.134589,
+          "predictedNoShowRate": 0.629667,
+          "observedNoShowRate": 0.586721,
+          "uncertainRoleCohort": {
+            "sampleSize": 126,
+            "pointsBias": -0.247408,
+            "minutesBias": -0.063333
+          },
+          "expectedGoalsMae": 0.108654,
+          "expectedAssistsMae": 0.095161,
+          "cleanSheetBrier": 0.351768,
+          "cleanSheetSampleSize": 189
+        },
+        "baselines": [
+          {
+            "name": "FPL_EP_NEXT",
+            "sampleSize": 738,
+            "mae": 1.189702,
+            "rmse": 2.075538,
+            "bias": -0.065041,
+            "rankCorrelation": 0.657037
+          },
+          {
+            "name": "FPL_FORM",
+            "sampleSize": 738,
+            "mae": 1.128591,
+            "rmse": 2.13394,
+            "bias": -0.047561,
+            "rankCorrelation": 0.681337
+          },
+          {
+            "name": "FPL_POINTS_PER_GAME",
+            "sampleSize": 738,
+            "mae": 1.204743,
+            "rmse": 2.226811,
+            "bias": 0.115312,
+            "rankCorrelation": 0.670075
+          }
+        ],
+        "decisions": {
+          "eligiblePlayers": 738,
+          "topK": [
+            {
+              "k": 1,
+              "eligiblePlayers": 738,
+              "recall": 0,
+              "realizedPoints": 13,
+              "oraclePoints": 16,
+              "regretPoints": 3,
+              "meanRegret": 3
+            },
+            {
+              "k": 3,
+              "eligiblePlayers": 738,
+              "recall": 0.333333,
+              "realizedPoints": 32,
+              "oraclePoints": 43,
+              "regretPoints": 11,
+              "meanRegret": 3.666667
+            },
+            {
+              "k": 5,
+              "eligiblePlayers": 738,
+              "recall": 0.2,
+              "realizedPoints": 44,
+              "oraclePoints": 68,
+              "regretPoints": 24,
+              "meanRegret": 4.8
+            },
+            {
+              "k": 10,
+              "eligiblePlayers": 738,
+              "recall": 0.2,
+              "realizedPoints": 68,
+              "oraclePoints": 123,
+              "regretPoints": 55,
+              "meanRegret": 5.5
+            },
+            {
+              "k": 20,
+              "eligiblePlayers": 738,
+              "recall": 0.2,
+              "realizedPoints": 113,
+              "oraclePoints": 215,
+              "regretPoints": 102,
+              "meanRegret": 5.1
+            }
+          ],
+          "formationGlobalXI": {
+            "selectedPlayerIds": [
+              "670",
+              "373",
+              "7",
+              "224",
+              "381",
+              "384",
+              "119",
+              "237",
+              "430",
+              "249",
+              "661"
+            ],
+            "oraclePlayerIds": [
+              "670",
+              "575",
+              "569",
+              "317",
+              "694",
+              "26",
+              "82",
+              "241",
+              "414",
+              "586",
+              "430"
+            ],
+            "recall": 0.181818,
+            "realizedPoints": 64,
+            "oraclePoints": 133,
+            "regretPoints": 69,
+            "captainId": "430",
+            "viceCaptainId": "381",
+            "captainBonusRealized": 13,
+            "captainOracleBonusWithinXI": 13,
+            "captainRegretWithinXI": 0,
+            "captainTop1Hit": true,
+            "captainTop3Hit": true,
+            "captainNoShow": false,
+            "viceFallback": false,
+            "teamRegret": 72
+          }
+        },
+        "eliteRanking": {
+          "version": "elite-selection-rank-v1",
+          "eligiblePlayers": 738,
+          "topK": [
+            {
+              "k": 1,
+              "eligiblePlayers": 738,
+              "recall": 0,
+              "realizedPoints": 13,
+              "oraclePoints": 16,
+              "regretPoints": 3,
+              "meanRegret": 3
+            },
+            {
+              "k": 3,
+              "eligiblePlayers": 738,
+              "recall": 0.333333,
+              "realizedPoints": 32,
+              "oraclePoints": 43,
+              "regretPoints": 11,
+              "meanRegret": 3.666667
+            },
+            {
+              "k": 5,
+              "eligiblePlayers": 738,
+              "recall": 0.2,
+              "realizedPoints": 42,
+              "oraclePoints": 68,
+              "regretPoints": 26,
+              "meanRegret": 5.2
+            },
+            {
+              "k": 10,
+              "eligiblePlayers": 738,
+              "recall": 0.3,
+              "realizedPoints": 79,
+              "oraclePoints": 123,
+              "regretPoints": 44,
+              "meanRegret": 4.4
+            },
+            {
+              "k": 20,
+              "eligiblePlayers": 738,
+              "recall": 0.2,
+              "realizedPoints": 121,
+              "oraclePoints": 215,
+              "regretPoints": 94,
+              "meanRegret": 4.7
+            }
+          ]
+        },
+        "baselineDecisions": {
+          "FPL_EP_NEXT": {
+            "eligiblePlayers": 738,
+            "topK": [
+              {
+                "k": 1,
+                "eligiblePlayers": 738,
+                "recall": 0,
+                "realizedPoints": 5,
+                "oraclePoints": 16,
+                "regretPoints": 11,
+                "meanRegret": 11
+              },
+              {
+                "k": 3,
+                "eligiblePlayers": 738,
+                "recall": 0,
+                "realizedPoints": 15,
+                "oraclePoints": 43,
+                "regretPoints": 28,
+                "meanRegret": 9.333333
+              },
+              {
+                "k": 5,
+                "eligiblePlayers": 738,
+                "recall": 0,
+                "realizedPoints": 27,
+                "oraclePoints": 68,
+                "regretPoints": 41,
+                "meanRegret": 8.2
+              },
+              {
+                "k": 10,
+                "eligiblePlayers": 738,
+                "recall": 0.1,
+                "realizedPoints": 54,
+                "oraclePoints": 123,
+                "regretPoints": 69,
+                "meanRegret": 6.9
+              },
+              {
+                "k": 20,
+                "eligiblePlayers": 738,
+                "recall": 0.15,
+                "realizedPoints": 109,
+                "oraclePoints": 215,
+                "regretPoints": 106,
+                "meanRegret": 5.3
+              }
+            ],
+            "formationGlobalXI": {
+              "selectedPlayerIds": [
+                "565",
+                "7",
+                "226",
+                "8",
+                "72",
+                "260",
+                "237",
+                "384",
+                "249",
+                "661",
+                "430"
+              ],
+              "oraclePlayerIds": [
+                "670",
+                "575",
+                "569",
+                "317",
+                "694",
+                "26",
+                "82",
+                "241",
+                "414",
+                "586",
+                "430"
+              ],
+              "recall": 0.090909,
+              "realizedPoints": 62,
+              "oraclePoints": 133,
+              "regretPoints": 71,
+              "captainId": "8",
+              "viceCaptainId": "7",
+              "captainBonusRealized": 8,
+              "captainOracleBonusWithinXI": 13,
+              "captainRegretWithinXI": 5,
+              "captainTop1Hit": false,
+              "captainTop3Hit": true,
+              "captainNoShow": false,
+              "viceFallback": false,
+              "teamRegret": 79
+            }
+          },
+          "FPL_FORM": {
+            "eligiblePlayers": 738,
+            "topK": [
+              {
+                "k": 1,
+                "eligiblePlayers": 738,
+                "recall": 0,
+                "realizedPoints": 5,
+                "oraclePoints": 16,
+                "regretPoints": 11,
+                "meanRegret": 11
+              },
+              {
+                "k": 3,
+                "eligiblePlayers": 738,
+                "recall": 0,
+                "realizedPoints": 15,
+                "oraclePoints": 43,
+                "regretPoints": 28,
+                "meanRegret": 9.333333
+              },
+              {
+                "k": 5,
+                "eligiblePlayers": 738,
+                "recall": 0,
+                "realizedPoints": 27,
+                "oraclePoints": 68,
+                "regretPoints": 41,
+                "meanRegret": 8.2
+              },
+              {
+                "k": 10,
+                "eligiblePlayers": 738,
+                "recall": 0.2,
+                "realizedPoints": 68,
+                "oraclePoints": 123,
+                "regretPoints": 55,
+                "meanRegret": 5.5
+              },
+              {
+                "k": 20,
+                "eligiblePlayers": 738,
+                "recall": 0.1,
+                "realizedPoints": 103,
+                "oraclePoints": 215,
+                "regretPoints": 112,
+                "meanRegret": 5.6
+              }
+            ],
+            "formationGlobalXI": {
+              "selectedPlayerIds": [
+                "565",
+                "7",
+                "226",
+                "8",
+                "72",
+                "260",
+                "237",
+                "82",
+                "249",
+                "430",
+                "661"
+              ],
+              "oraclePlayerIds": [
+                "670",
+                "575",
+                "569",
+                "317",
+                "694",
+                "26",
+                "82",
+                "241",
+                "414",
+                "586",
+                "430"
+              ],
+              "recall": 0.181818,
+              "realizedPoints": 72,
+              "oraclePoints": 133,
+              "regretPoints": 61,
+              "captainId": "8",
+              "viceCaptainId": "7",
+              "captainBonusRealized": 8,
+              "captainOracleBonusWithinXI": 13,
+              "captainRegretWithinXI": 5,
+              "captainTop1Hit": false,
+              "captainTop3Hit": true,
+              "captainNoShow": false,
+              "viceFallback": false,
+              "teamRegret": 69
+            }
+          },
+          "FPL_POINTS_PER_GAME": {
+            "eligiblePlayers": 738,
+            "topK": [
+              {
+                "k": 1,
+                "eligiblePlayers": 738,
+                "recall": 0,
+                "realizedPoints": 5,
+                "oraclePoints": 16,
+                "regretPoints": 11,
+                "meanRegret": 11
+              },
+              {
+                "k": 3,
+                "eligiblePlayers": 738,
+                "recall": 0,
+                "realizedPoints": 8,
+                "oraclePoints": 43,
+                "regretPoints": 35,
+                "meanRegret": 11.666667
+              },
+              {
+                "k": 5,
+                "eligiblePlayers": 738,
+                "recall": 0,
+                "realizedPoints": 15,
+                "oraclePoints": 68,
+                "regretPoints": 53,
+                "meanRegret": 10.6
+              },
+              {
+                "k": 10,
+                "eligiblePlayers": 738,
+                "recall": 0.1,
+                "realizedPoints": 44,
+                "oraclePoints": 123,
+                "regretPoints": 79,
+                "meanRegret": 7.9
+              },
+              {
+                "k": 20,
+                "eligiblePlayers": 738,
+                "recall": 0.1,
+                "realizedPoints": 89,
+                "oraclePoints": 215,
+                "regretPoints": 126,
+                "meanRegret": 6.3
+              }
+            ],
+            "formationGlobalXI": {
+              "selectedPlayerIds": [
+                "565",
+                "7",
+                "226",
+                "233",
+                "531",
+                "8",
+                "237",
+                "82",
+                "83",
+                "249",
+                "430"
+              ],
+              "oraclePlayerIds": [
+                "670",
+                "575",
+                "569",
+                "317",
+                "694",
+                "26",
+                "82",
+                "241",
+                "414",
+                "586",
+                "430"
+              ],
+              "recall": 0.181818,
+              "realizedPoints": 62,
+              "oraclePoints": 133,
+              "regretPoints": 71,
+              "captainId": "531",
+              "viceCaptainId": "7",
+              "captainBonusRealized": 5,
+              "captainOracleBonusWithinXI": 13,
+              "captainRegretWithinXI": 8,
+              "captainTop1Hit": false,
+              "captainTop3Hit": false,
+              "captainNoShow": true,
+              "viceFallback": true,
+              "teamRegret": 82
+            }
+          }
+        }
+      }
+    },
+    {
+      "gameweek": 5,
+      "deadline": "2025-09-20T10:00:00+00:00",
+      "inputCommit": {
+        "sha": "7473ea9336e1d2a831213cf98d07ee51f3001f98",
+        "committedAt": "2025-09-20T08:24:55Z",
+        "url": "https://github.com/olbauday/FPL-Core-Insights/commit/7473ea9336e1d2a831213cf98d07ee51f3001f98"
+      },
+      "snapshotAgeHours": 1.58,
+      "provenance": {
+        "stats": "092bb2b54d679a39e8c81679761a2217d12c093eb17e307b1ab24faf5e08c5dd",
+        "players": "348c25a9a65e82033196992747a756357d323fc7d1112b9e22a38cb2eabb2244",
+        "teams": "eaf88fe57ef5910e6ca5936157a3e5e132588e284054845bf706ed2daec9afa1",
+        "fixtures": "ae3e6fca4ea8fec12ff50eaf0b115ae954589b0332237e9b4082c8dc4f2791e7",
+        "outcomes": "da331f867ec7324e6dfb8659414879814f94c37d22d35f4fd06959c447fd2c3c",
+        "outcomeCommit": {
+          "sha": "0a199440cfdbbe96e6ea941d1bc885fe6b6a95a4",
+          "committedAt": "2026-08-28T07:01:53Z",
+          "url": "https://github.com/olbauday/FPL-Core-Insights/commit/0a199440cfdbbe96e6ea941d1bc885fe6b6a95a4"
+        }
+      },
+      "coverage": {
+        "inputPlayers": 740,
+        "fixtures": 10,
+        "missingIdentity": 0,
+        "missingTeam": 0,
+        "missingCurrentSnapshot": 0,
+        "rejectedUnreconciledSnapshot": 0,
+        "joinedPlayers": 740,
+        "appearedPlayers": 305
+      },
+      "metrics": {
+        "allPlayers": {
+          "position": "ALL",
+          "horizon": 1,
+          "confidenceBand": "ALL",
+          "strengthMethod": "ALL",
+          "sampleSize": 740,
+          "mae": 0.979016,
+          "rmse": 1.854695,
+          "bias": 0.011346,
+          "intervalCoverage": 0.925676,
+          "rankCorrelation": 0.716157
+        },
+        "appearedPlayers": {
+          "position": "ALL",
+          "horizon": 1,
+          "confidenceBand": "ALL",
+          "strengthMethod": "ALL",
+          "sampleSize": 305,
+          "mae": 1.876032,
+          "rmse": 2.785079,
+          "bias": -0.471759,
+          "intervalCoverage": 0.829508,
+          "rankCorrelation": 0.29291
+        },
+        "withoutBonus": {
+          "position": "ALL",
+          "horizon": 1,
+          "confidenceBand": "ALL",
+          "strengthMethod": "ALL",
+          "sampleSize": 740,
+          "mae": 0.867929,
+          "rmse": 1.560018,
+          "bias": 0.002662,
+          "intervalCoverage": 0,
+          "rankCorrelation": 0.71447
+        },
+        "components": {
+          "expectedMinutesMae": 24.289279,
+          "allPlayerExpectedMinutesMae": 14.202446,
+          "noShowBrier": 0.11695,
+          "predictedNoShowRate": 0.625659,
+          "observedNoShowRate": 0.587838,
+          "uncertainRoleCohort": {
+            "sampleSize": 117,
+            "pointsBias": -0.02915,
+            "minutesBias": 1.761368
+          },
+          "expectedGoalsMae": 0.129135,
+          "expectedAssistsMae": 0.117814,
+          "cleanSheetBrier": 0.139731,
+          "cleanSheetSampleSize": 184
+        },
+        "baselines": [
+          {
+            "name": "FPL_EP_NEXT",
+            "sampleSize": 740,
+            "mae": 1.134865,
+            "rmse": 2.10563,
+            "bias": 0.145135,
+            "rankCorrelation": 0.686419
+          },
+          {
+            "name": "FPL_FORM",
+            "sampleSize": 740,
+            "mae": 1.04027,
+            "rmse": 2.111788,
+            "bias": 0.174054,
+            "rankCorrelation": 0.741015
+          },
+          {
+            "name": "FPL_POINTS_PER_GAME",
+            "sampleSize": 740,
+            "mae": 1.147297,
+            "rmse": 2.154078,
+            "bias": 0.417297,
+            "rankCorrelation": 0.712055
+          }
+        ],
+        "decisions": {
+          "eligiblePlayers": 740,
+          "topK": [
+            {
+              "k": 1,
+              "eligiblePlayers": 740,
+              "recall": 0,
+              "realizedPoints": 9,
+              "oraclePoints": 15,
+              "regretPoints": 6,
+              "meanRegret": 6
+            },
+            {
+              "k": 3,
+              "eligiblePlayers": 740,
+              "recall": 0,
+              "realizedPoints": 16,
+              "oraclePoints": 43,
+              "regretPoints": 27,
+              "meanRegret": 9
+            },
+            {
+              "k": 5,
+              "eligiblePlayers": 740,
+              "recall": 0,
+              "realizedPoints": 22,
+              "oraclePoints": 65,
+              "regretPoints": 43,
+              "meanRegret": 8.6
+            },
+            {
+              "k": 10,
+              "eligiblePlayers": 740,
+              "recall": 0,
+              "realizedPoints": 39,
+              "oraclePoints": 115,
+              "regretPoints": 76,
+              "meanRegret": 7.6
+            },
+            {
+              "k": 20,
+              "eligiblePlayers": 740,
+              "recall": 0.05,
+              "realizedPoints": 66,
+              "oraclePoints": 205,
+              "regretPoints": 139,
+              "meanRegret": 6.95
+            }
+          ],
+          "formationGlobalXI": {
+            "selectedPlayerIds": [
+              "565",
+              "373",
+              "374",
+              "226",
+              "381",
+              "119",
+              "82",
+              "384",
+              "430",
+              "525",
+              "249"
+            ],
+            "oraclePlayerIds": [
+              "469",
+              "442",
+              "36",
+              "508",
+              "390",
+              "660",
+              "324",
+              "200",
+              "302",
+              "691",
+              "430"
+            ],
+            "recall": 0.090909,
+            "realizedPoints": 45,
+            "oraclePoints": 120,
+            "regretPoints": 75,
+            "captainId": "430",
+            "viceCaptainId": "381",
+            "captainBonusRealized": 9,
+            "captainOracleBonusWithinXI": 9,
+            "captainRegretWithinXI": 0,
+            "captainTop1Hit": true,
+            "captainTop3Hit": true,
+            "captainNoShow": false,
+            "viceFallback": false,
+            "teamRegret": 81
+          }
+        },
+        "eliteRanking": {
+          "version": "elite-selection-rank-v1",
+          "eligiblePlayers": 740,
+          "topK": [
+            {
+              "k": 1,
+              "eligiblePlayers": 740,
+              "recall": 0,
+              "realizedPoints": 9,
+              "oraclePoints": 15,
+              "regretPoints": 6,
+              "meanRegret": 6
+            },
+            {
+              "k": 3,
+              "eligiblePlayers": 740,
+              "recall": 0,
+              "realizedPoints": 15,
+              "oraclePoints": 43,
+              "regretPoints": 28,
+              "meanRegret": 9.333333
+            },
+            {
+              "k": 5,
+              "eligiblePlayers": 740,
+              "recall": 0,
+              "realizedPoints": 22,
+              "oraclePoints": 65,
+              "regretPoints": 43,
+              "meanRegret": 8.6
+            },
+            {
+              "k": 10,
+              "eligiblePlayers": 740,
+              "recall": 0,
+              "realizedPoints": 38,
+              "oraclePoints": 115,
+              "regretPoints": 77,
+              "meanRegret": 7.7
+            },
+            {
+              "k": 20,
+              "eligiblePlayers": 740,
+              "recall": 0.05,
+              "realizedPoints": 71,
+              "oraclePoints": 205,
+              "regretPoints": 134,
+              "meanRegret": 6.7
+            }
+          ]
+        },
+        "baselineDecisions": {
+          "FPL_EP_NEXT": {
+            "eligiblePlayers": 740,
+            "topK": [
+              {
+                "k": 1,
+                "eligiblePlayers": 740,
+                "recall": 0,
+                "realizedPoints": 1,
+                "oraclePoints": 15,
+                "regretPoints": 14,
+                "meanRegret": 14
+              },
+              {
+                "k": 3,
+                "eligiblePlayers": 740,
+                "recall": 0,
+                "realizedPoints": 4,
+                "oraclePoints": 43,
+                "regretPoints": 39,
+                "meanRegret": 13
+              },
+              {
+                "k": 5,
+                "eligiblePlayers": 740,
+                "recall": 0,
+                "realizedPoints": 16,
+                "oraclePoints": 65,
+                "regretPoints": 49,
+                "meanRegret": 9.8
+              },
+              {
+                "k": 10,
+                "eligiblePlayers": 740,
+                "recall": 0,
+                "realizedPoints": 46,
+                "oraclePoints": 115,
+                "regretPoints": 69,
+                "meanRegret": 6.9
+              },
+              {
+                "k": 20,
+                "eligiblePlayers": 740,
+                "recall": 0.15,
+                "realizedPoints": 73,
+                "oraclePoints": 205,
+                "regretPoints": 132,
+                "meanRegret": 6.6
+              }
+            ],
+            "formationGlobalXI": {
+              "selectedPlayerIds": [
+                "565",
+                "8",
+                "226",
+                "72",
+                "260",
+                "373",
+                "237",
+                "241",
+                "387",
+                "249",
+                "430"
+              ],
+              "oraclePlayerIds": [
+                "469",
+                "442",
+                "36",
+                "508",
+                "390",
+                "660",
+                "324",
+                "200",
+                "302",
+                "691",
+                "430"
+              ],
+              "recall": 0.090909,
+              "realizedPoints": 47,
+              "oraclePoints": 120,
+              "regretPoints": 73,
+              "captainId": "8",
+              "viceCaptainId": "249",
+              "captainBonusRealized": 1,
+              "captainOracleBonusWithinXI": 9,
+              "captainRegretWithinXI": 8,
+              "captainTop1Hit": false,
+              "captainTop3Hit": false,
+              "captainNoShow": false,
+              "viceFallback": false,
+              "teamRegret": 87
+            }
+          },
+          "FPL_FORM": {
+            "eligiblePlayers": 740,
+            "topK": [
+              {
+                "k": 1,
+                "eligiblePlayers": 740,
+                "recall": 0,
+                "realizedPoints": 1,
+                "oraclePoints": 15,
+                "regretPoints": 14,
+                "meanRegret": 14
+              },
+              {
+                "k": 3,
+                "eligiblePlayers": 740,
+                "recall": 0,
+                "realizedPoints": 5,
+                "oraclePoints": 43,
+                "regretPoints": 38,
+                "meanRegret": 12.666667
+              },
+              {
+                "k": 5,
+                "eligiblePlayers": 740,
+                "recall": 0,
+                "realizedPoints": 15,
+                "oraclePoints": 65,
+                "regretPoints": 50,
+                "meanRegret": 10
+              },
+              {
+                "k": 10,
+                "eligiblePlayers": 740,
+                "recall": 0,
+                "realizedPoints": 44,
+                "oraclePoints": 115,
+                "regretPoints": 71,
+                "meanRegret": 7.1
+              },
+              {
+                "k": 20,
+                "eligiblePlayers": 740,
+                "recall": 0.15,
+                "realizedPoints": 75,
+                "oraclePoints": 205,
+                "regretPoints": 130,
+                "meanRegret": 6.5
+              }
+            ],
+            "formationGlobalXI": {
+              "selectedPlayerIds": [
+                "287",
+                "8",
+                "72",
+                "226",
+                "260",
+                "237",
+                "241",
+                "419",
+                "249",
+                "714",
+                "430"
+              ],
+              "oraclePlayerIds": [
+                "469",
+                "442",
+                "36",
+                "508",
+                "390",
+                "660",
+                "324",
+                "200",
+                "302",
+                "691",
+                "430"
+              ],
+              "recall": 0.090909,
+              "realizedPoints": 45,
+              "oraclePoints": 120,
+              "regretPoints": 75,
+              "captainId": "714",
+              "viceCaptainId": "8",
+              "captainBonusRealized": 2,
+              "captainOracleBonusWithinXI": 9,
+              "captainRegretWithinXI": 7,
+              "captainTop1Hit": false,
+              "captainTop3Hit": false,
+              "captainNoShow": false,
+              "viceFallback": false,
+              "teamRegret": 88
+            }
+          },
+          "FPL_POINTS_PER_GAME": {
+            "eligiblePlayers": 740,
+            "topK": [
+              {
+                "k": 1,
+                "eligiblePlayers": 740,
+                "recall": 0,
+                "realizedPoints": 9,
+                "oraclePoints": 15,
+                "regretPoints": 6,
+                "meanRegret": 6
+              },
+              {
+                "k": 3,
+                "eligiblePlayers": 740,
+                "recall": 0,
+                "realizedPoints": 10,
+                "oraclePoints": 43,
+                "regretPoints": 33,
+                "meanRegret": 11
+              },
+              {
+                "k": 5,
+                "eligiblePlayers": 740,
+                "recall": 0,
+                "realizedPoints": 17,
+                "oraclePoints": 65,
+                "regretPoints": 48,
+                "meanRegret": 9.6
+              },
+              {
+                "k": 10,
+                "eligiblePlayers": 740,
+                "recall": 0,
+                "realizedPoints": 31,
+                "oraclePoints": 115,
+                "regretPoints": 84,
+                "meanRegret": 8.4
+              },
+              {
+                "k": 20,
+                "eligiblePlayers": 740,
+                "recall": 0.1,
+                "realizedPoints": 66,
+                "oraclePoints": 205,
+                "regretPoints": 139,
+                "meanRegret": 6.95
+              }
+            ],
+            "formationGlobalXI": {
+              "selectedPlayerIds": [
+                "565",
+                "233",
+                "531",
+                "8",
+                "7",
+                "226",
+                "82",
+                "237",
+                "430",
+                "714",
+                "249"
+              ],
+              "oraclePlayerIds": [
+                "469",
+                "442",
+                "36",
+                "508",
+                "390",
+                "660",
+                "324",
+                "200",
+                "302",
+                "691",
+                "430"
+              ],
+              "recall": 0.090909,
+              "realizedPoints": 32,
+              "oraclePoints": 120,
+              "regretPoints": 88,
+              "captainId": "233",
+              "viceCaptainId": "430",
+              "captainBonusRealized": 9,
+              "captainOracleBonusWithinXI": 9,
+              "captainRegretWithinXI": 0,
+              "captainTop1Hit": false,
+              "captainTop3Hit": false,
+              "captainNoShow": true,
+              "viceFallback": true,
+              "teamRegret": 94
+            }
+          }
+        }
+      }
+    }
+  ]
+}

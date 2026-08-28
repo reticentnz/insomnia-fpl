@@ -74,21 +74,34 @@ describe('WP-08 immutable forecast ledger', () => {
     expect(unused.confidence).toBe('LOW')
   })
 
-  it('treats a full-length start in every completed early-season match as stronger short-term minutes evidence', () => {
+  it('treats a full-length early start as strong but still uncertain role evidence', () => {
     const full = { official: { position: 'FWD', status: 'a', chance_of_playing: null, minutes: 90, starts: 1 } } as any
     const partial = { official: { position: 'FWD', status: 'a', chance_of_playing: null, minutes: 75, starts: 1 } } as any
-    expect(baseRole(full, 1).startProbability).toBeGreaterThan(.94)
-    expect(baseRole(partial, 1).startProbability).toBeLessThan(.9)
+    expect(baseRole(full, 1).startProbability).toBeCloseTo(.72, 6)
+    expect(baseRole(partial, 1).startProbability).toBeLessThan(.6)
   })
 
-  it('does not let a lower historic role share suppress a verified full early-season start', () => {
+  it('does not let a lower historic role erase a full early-season start without declaring it nailed', () => {
     const player = { official: { position: 'DEF', status: 'a', chance_of_playing: null, minutes: 90, starts: 1 }, historicalPrior: { sourceSeason: '2025-26', confidence: 1, minutes: 1_032, starts: 12, expectedGoalsPer90: .05, expectedAssistsPer90: .2, bonusPer90: .1 } } as any
-    expect(baseRole(player, 1).startProbability).toBeGreaterThan(.94)
+    expect(baseRole(player, 1).startProbability).toBeCloseTo(.72, 6)
   })
 
-  it('keeps a high-confidence established starter above low minutes when the current snapshot is incomplete', () => {
+  it('updates an established prior downward after a current-season no-show', () => {
     const player = { official: { position: 'FWD', status: 'a', chance_of_playing: null, minutes: 0, starts: 0 }, historicalPrior: { sourceSeason: '2025-26', confidence: 1, minutes: 2_500, starts: 28, expectedGoalsPer90: .5, expectedAssistsPer90: .15, bonusPer90: .4 } } as any
-    expect(baseRole(player, 1).startProbability).toBeGreaterThan(.8)
+    expect(baseRole(player, 1).startProbability).toBeGreaterThan(.45)
+    expect(baseRole(player, 1).startProbability).toBeLessThan(.65)
+  })
+
+  it('does not treat a ten-start historical rotation season as a nailed role', () => {
+    const player = { official: { position: 'MID', status: 'a', chance_of_playing: null, minutes: 0, starts: 0 }, historicalPrior: { sourceSeason: '2025-26', confidence: 1, minutes: 1_100, starts: 10, expectedGoalsPer90: .1, expectedAssistsPer90: .1, bonusPer90: .1 } } as any
+    expect(baseRole(player, 0).startProbability).toBeLessThan(.3)
+  })
+
+  it('separates the current first-choice goalkeeper from the reserve', () => {
+    const starter = { id: 'gk-1', team: { id: 'team-1' }, official: { position: 'GK', status: 'a', chance_of_playing: null, minutes: 90, starts: 1 } } as any
+    const reserve = { id: 'gk-2', team: { id: 'team-1' }, official: { position: 'GK', status: 'a', chance_of_playing: null, minutes: 0, starts: 0 } } as any
+    expect(baseRole(starter, 1, [starter, reserve]).startProbability).toBeGreaterThan(.95)
+    expect(baseRole(reserve, 1, [starter, reserve]).startProbability).toBeLessThan(.02)
   })
 
   it('uses shrunk observed team xG ratings when official strengths and future odds are absent', () => {
