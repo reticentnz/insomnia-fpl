@@ -3016,6 +3016,7 @@ function App() {
               setTab("Transfers");
             }}
             forecastLoading={draftPlanLoading || !forecastSummary || forecastSummary.horizon !== horizon}
+            squadLoading={awaitingOfficialSquad || syncingAccount}
             leagueCoverage={canonicalRecommendation?.league?.coverageByFplId}
             leagueName={canonicalRecommendation?.league?.leagueName}
             signalCounts={signalCounts}
@@ -5720,6 +5721,7 @@ function MyTeamV2({
   setTab,
   onReplacePlayer,
   forecastLoading = false,
+  squadLoading = false,
   leagueCoverage,
   leagueName,
   signalCounts,
@@ -5773,6 +5775,7 @@ function MyTeamV2({
   setTab: (tab: string) => void;
   onReplacePlayer?: (p: Player) => void;
   forecastLoading?: boolean;
+  squadLoading?: boolean;
   leagueCoverage?: Record<string, number>;
   leagueName?: string | null;
   signalCounts: Record<number, number>;
@@ -6030,8 +6033,13 @@ function MyTeamV2({
               Edit planned squad <ArrowRight size={14} />
             </button>
           </div>
-          <div className="pitch">
-            {["GK", "DEF", "MID", "FWD"].map((pos) => (
+          <div className={`pitch${squadLoading ? " pitch-loading" : ""}`} aria-busy={squadLoading}>
+            {squadLoading ? (
+              <div className="team-section-loading" role="status" aria-live="polite">
+                <span className="loading-spinner" aria-hidden="true" />
+                <span>Loading your official squad…</span>
+              </div>
+            ) : ["GK", "DEF", "MID", "FWD"].map((pos) => (
               <div className="pitch-row" key={pos}>
                 {xi
                   .filter((p) => p.position === pos)
@@ -6058,9 +6066,9 @@ function MyTeamV2({
               </div>
             ))}
           </div>
-          <div className="bench">
+          <div className="bench" aria-hidden={squadLoading}>
             <span>BENCH ORDER</span>
-            {bench.map((p) => (
+            {!squadLoading && bench.map((p) => (
               <button
                 className="player-chip sub"
                 onClick={() => onSelectPlayer(p)}
@@ -6089,6 +6097,12 @@ function MyTeamV2({
               </div>
               <Trophy className="gold" size={20} />
             </div>
+            {squadLoading ? (
+              <div className="team-section-loading team-section-loading-compact" role="status" aria-live="polite">
+                <span className="loading-spinner loading-spinner-small" aria-hidden="true" />
+                <span>Choosing captain and vice-captain…</span>
+              </div>
+            ) : <>
             <div className="captain" style={{ marginBottom: "10px" }}>
               <div className="captain-badge">C</div>
               <div>
@@ -6120,17 +6134,23 @@ function MyTeamV2({
                 </small>
               </div>
             </div>
+            </>}
           </div>
           {draftMode ? (
             <div className="panel priority-card squad-health">
               <div className="panel-head">
                 <div>
                   <h2>Squad Rules & Health</h2>
-                  <p>{issues.length ? "Attention needed" : "All rules compliant"}</p>
+                  <p>{squadLoading ? "Checking your squad" : issues.length ? "Attention needed" : "All rules compliant"}</p>
                 </div>
                 <Shield size={19} />
               </div>
-              {issues.length ? (
+              {squadLoading ? (
+                <div className="team-section-loading team-section-loading-compact" role="status" aria-live="polite">
+                  <span className="loading-spinner loading-spinner-small" aria-hidden="true" />
+                  <span>Squad rules will be checked once it arrives.</span>
+                </div>
+              ) : issues.length ? (
                 <>
                   <p style={{ color: "#ef4444", fontSize: "13px" }}>{issues[0].detail}</p>
                   <button className="text-btn" onClick={onEdit}>
