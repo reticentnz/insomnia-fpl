@@ -243,14 +243,30 @@ export function boundedTransferSearch(args: Omit<Parameters<typeof evaluateRecom
   const roll = evaluateRecommendationDraft({ ...args, candidateSquad: args.squad, moves: [], calculateProbability: false })
   const output: RecommendationDraft[] = [roll]
   const byPosition = new Map(args.candidates.filter(player => player.active !== false).map(player => [String(player.id), player]))
-  const incomingPool = [...byPosition.values()].filter(player => !args.squad.some(owned => String(owned.id) === String(player.id)))
-  const candidateSquadFor = (moves: TransferMove[]) => [...args.squad.filter(player => !moves.some(move => String(move.outId) === String(player.id))), ...moves.map(move => move.incoming)]
+  const squadIds = new Set(args.squad.map(player => String(player.id)))
+  const incomingPool = [...byPosition.values()].filter(player => !squadIds.has(String(player.id)))
+  const forecastTotals = new Map<string, { mean: number; selection: number }>()
+  for (const row of args.forecasts) {
+    const current = forecastTotals.get(row.playerId)
+    if (current) {
+      current.mean += row.meanPoints
+      current.selection += row.selectionScore ?? 0
+    } else {
+      forecastTotals.set(row.playerId, { mean: row.meanPoints, selection: row.selectionScore ?? 0 })
+    }
+  }
+  const meanFor = (player: OptimizerPlayer) => forecastTotals.get(String(player.id))?.mean ?? 0
+  const selectionFor = (player: OptimizerPlayer) => forecastTotals.get(String(player.id))?.selection ?? 0
+  const candidateSquadFor = (moves: TransferMove[]) => {
+    const outgoingIds = new Set(moves.map(move => String(move.outId)))
+    return [...args.squad.filter(player => !outgoingIds.has(String(player.id))), ...moves.map(move => move.incoming)]
+  }
   const evaluate = (moves: TransferMove[]) => evaluateRecommendationDraft({ ...args, candidateSquad: candidateSquadFor(moves), moves, calculateProbability: false })
   const choose = <T,>(items: T[], count: number): T[][] => combinations(items, count)
   if (incomingPool.length <= 18) for (let count = 1; count <= max; count++) for (const outgoing of choose(args.squad.filter(player => !player.locked), count)) {
     // A same-club, same-position player that costs no less and projects no more
     // than another candidate is never needed for a legal final squad.
-    const prunedPool = incomingPool.filter(player => !incomingPool.some(other => other !== player && other.club === player.club && other.position === player.position && (other.purchasePriceTenths ?? Infinity) <= (player.purchasePriceTenths ?? Infinity) && forecastMean(args.forecasts, String(other.id)) >= forecastMean(args.forecasts, String(player.id)) && forecastSelectionScore(args.forecasts, String(other.id)) >= forecastSelectionScore(args.forecasts, String(player.id)) && ((other.purchasePriceTenths ?? Infinity) < (player.purchasePriceTenths ?? Infinity) || forecastMean(args.forecasts, String(other.id)) > forecastMean(args.forecasts, String(player.id)) || forecastSelectionScore(args.forecasts, String(other.id)) > forecastSelectionScore(args.forecasts, String(player.id)))))
+    const prunedPool = incomingPool.filter(player => !incomingPool.some(other => other !== player && other.club === player.club && other.position === player.position && (other.purchasePriceTenths ?? Infinity) <= (player.purchasePriceTenths ?? Infinity) && meanFor(other) >= meanFor(player) && selectionFor(other) >= selectionFor(player) && ((other.purchasePriceTenths ?? Infinity) < (player.purchasePriceTenths ?? Infinity) || meanFor(other) > meanFor(player) || selectionFor(other) > selectionFor(player))))
     for (const incoming of choose(prunedPool, count)) {
       const orderedOutgoing = [...outgoing].sort((a, b) => a.position.localeCompare(b.position) || String(a.id).localeCompare(String(b.id)))
       const orderedIncoming = [...incoming].sort((a, b) => a.position.localeCompare(b.position) || String(a.id).localeCompare(String(b.id)))
@@ -264,9 +280,9 @@ export function boundedTransferSearch(args: Omit<Parameters<typeof evaluateRecom
     const replacements = new Map<OptimizerPlayer['position'], OptimizerPlayer[]>()
     for (const position of ['GK', 'DEF', 'MID', 'FWD'] as const) {
       const eligible = incomingPool.filter(player => player.position === position)
-      const pruned = eligible.filter(player => !eligible.some(other => other !== player && other.club === player.club && (other.purchasePriceTenths ?? Infinity) <= (player.purchasePriceTenths ?? Infinity) && forecastMean(args.forecasts, String(other.id)) >= forecastMean(args.forecasts, String(player.id)) && forecastSelectionScore(args.forecasts, String(other.id)) >= forecastSelectionScore(args.forecasts, String(player.id)) && ((other.purchasePriceTenths ?? Infinity) < (player.purchasePriceTenths ?? Infinity) || forecastMean(args.forecasts, String(other.id)) > forecastMean(args.forecasts, String(player.id)) || forecastSelectionScore(args.forecasts, String(other.id)) > forecastSelectionScore(args.forecasts, String(player.id)))))
-      const byMean = [...pruned].sort((left, right) => forecastMean(args.forecasts, String(right.id)) - forecastMean(args.forecasts, String(left.id))).slice(0, 10)
-      const bySelection = [...pruned].sort((left, right) => forecastSelectionScore(args.forecasts, String(right.id)) - forecastSelectionScore(args.forecasts, String(left.id)) || forecastMean(args.forecasts, String(right.id)) - forecastMean(args.forecasts, String(left.id))).slice(0, 10)
+      const pruned = eligible.filter(player => !eligible.some(other => other !== player && other.club === player.club && (other.purchasePriceTenths ?? Infinity) <= (player.purchasePriceTenths ?? Infinity) && meanFor(other) >= meanFor(player) && selectionFor(other) >= selectionFor(player) && ((other.purchasePriceTenths ?? Infinity) < (player.purchasePriceTenths ?? Infinity) || meanFor(other) > meanFor(player) || selectionFor(other) > selectionFor(player))))
+      const byMean = [...pruned].sort((left, right) => meanFor(right) - meanFor(left)).slice(0, 10)
+      const bySelection = [...pruned].sort((left, right) => selectionFor(right) - selectionFor(left) || meanFor(right) - meanFor(left)).slice(0, 10)
       replacements.set(position, [...new Map([...byMean, ...bySelection].map(player => [String(player.id), player])).values()])
     }
     type BeamState = { moves: TransferMove[]; lastOutgoingIndex: number; score: number; selectionScore: number }
@@ -280,8 +296,8 @@ export function boundedTransferSearch(args: Omit<Parameters<typeof evaluateRecom
           const moves = [...state.moves, { outId: sold.id, incoming }]
           const route = evaluateSimultaneousTransfers({ squad: args.squad, moves, bankBeforeTenths: args.bankBeforeTenths, freeTransfers: args.freeTransfers })
           if (!route.legal) continue
-          const rawGainProxy = moves.reduce((total, move) => total + forecastMean(args.forecasts, String(move.incoming.id)) - forecastMean(args.forecasts, String(move.outId)), 0)
-          const selectionGainProxy = moves.reduce((total, move) => total + forecastSelectionScore(args.forecasts, String(move.incoming.id)) - forecastSelectionScore(args.forecasts, String(move.outId)), 0)
+          const rawGainProxy = moves.reduce((total, move) => total + meanFor(move.incoming) - (forecastTotals.get(String(move.outId))?.mean ?? 0), 0)
+          const selectionGainProxy = moves.reduce((total, move) => total + selectionFor(move.incoming) - (forecastTotals.get(String(move.outId))?.selection ?? 0), 0)
           expanded.push({ moves, lastOutgoingIndex: index, score: rawGainProxy - route.hitCost, selectionScore: selectionGainProxy })
         }
       }
