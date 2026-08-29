@@ -2535,6 +2535,10 @@ function App() {
         currentGameweek: liveGameweek,
         totalPoints: advancedToNewGameweek ? account.totalPoints + live.gameweekPoints : account.totalPoints,
         gameweekPoints: live.gameweekPoints,
+        eventTransfers: live.eventTransfers ?? account.eventTransfers,
+        transfersCost: live.transfersCost ?? account.transfersCost,
+        bank: live.bank ?? account.bank,
+        squadValue: live.squadValue ?? account.squadValue,
         chipsUsed: live.chipsUsed,
       };
     });
@@ -4340,7 +4344,7 @@ function SquadEditor({
               </span>
             </div>
             <div className="summary-stat highlight">
-              <span className="stat-label">GW{horizon} PROJECTED SCORE</span>
+              <span className="stat-label">{horizon}-GW PROJECTED SCORE</span>
               <span className="stat-val score">
                 ⚡ {projectedScore.toFixed(1)} pts
               </span>
@@ -4437,7 +4441,7 @@ function SquadEditor({
                   onChange={(e) => setSortBy(e.target.value as any)}
                   className="sort-select"
                 >
-                  <option value="pts">Sort by GW{horizon} Points</option>
+                  <option value="pts">Sort by {horizon}-GW Points</option>
                   <option value="price-desc">Sort by Price (High to Low)</option>
                   <option value="price-asc">Sort by Price (Low to High)</option>
                   <option value="name">Sort by Name</option>
@@ -4720,7 +4724,7 @@ function FplAccountPatch({
         </div>
 
         <div className="patch-card">
-          <span className="patch-card-label">SQUAD VALUE</span>
+          <span className="patch-card-label">OFFICIAL FPL VALUE</span>
           <div className="patch-card-val-group">
             <span className="patch-card-value">
               £{account.squadValue.toFixed(1)}m
@@ -6004,7 +6008,7 @@ function MyTeamV2({
       <div className="hero-grid" style={{ marginBottom: "20px" }}>
         <div className="hero-card">
           <div className="card-top">
-            <span className="label">{draftMode ? "PLANNED SQUAD VALUE" : "SQUAD VALUE"}</span>
+            <span className="label">PLANNED SQUAD COST</span>
             <span className="pill green">£{bank.toFixed(1)}m in bank</span>
           </div>
           <div className="big-number">

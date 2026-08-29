@@ -141,10 +141,15 @@ export async function fetchManagerLiveScore({ teamId, gameweek, fetchJson = offi
   if (livePoints.size === 0) throw new Error(`FPL live scoring is unavailable for GW${event}`)
   const grossPoints = picks.picks.reduce((total, pick) =>
     total + (Number(pick.multiplier) || 0) * (livePoints.get(Number(pick.element)) || 0), 0)
-  const transferCost = integer(picks?.entry_history?.event_transfers_cost ?? 0, 'event_transfers_cost', { minimum: 0 })
+  const entryHistory = picks.entry_history || {}
+  const transferCost = integer(entryHistory.event_transfers_cost ?? 0, 'event_transfers_cost', { minimum: 0 })
   return {
     gameweek: event,
     gameweekPoints: grossPoints - transferCost,
+    eventTransfers: integer(entryHistory.event_transfers ?? 0, 'event_transfers', { minimum: 0 }),
+    transfersCost: transferCost,
+    bank: integer(entryHistory.bank ?? 0, 'bank_tenths', { minimum: 0 }) / 10,
+    squadValue: integer(entryHistory.value ?? 0, 'squad_value_tenths', { minimum: 0 }) / 10,
     updatedAt: new Date().toISOString(),
     chipsUsed: Array.isArray(history?.chips) ? history.chips : [],
   }
@@ -508,7 +513,9 @@ export async function getCurrentManager(db, { fplEntryId, season } = {}) {
       squadValue: Number(snapshot.squad_value_tenths) / 10,
       bank: Number(snapshot.bank_tenths) / 10,
       bankTenths: Number(snapshot.bank_tenths),
-      currentGameweek: Number(snapshot.gameweek_fpl_id),
+      // The squad snapshot may be from the last import, while the account row
+      // can already represent a later live gameweek.
+      currentGameweek: Number(accountRow.current_gameweek),
       transfersCost: Number(snapshot.event_transfer_cost),
       eventTransfers: Number(snapshot.event_transfers),
       chipsUsed,

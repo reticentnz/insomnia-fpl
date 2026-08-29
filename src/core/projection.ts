@@ -273,7 +273,11 @@ export function projectFixture(player: Player, fixture: FixtureItem): FixturePro
 }
 
 function fallbackFixtures(player: Player, horizon: number): FixtureItem[] {
-  if (player.upcomingFixtures) return player.upcomingFixtures.filter(f => f.gameweek >= 1).slice(0, horizon)
+  if (player.upcomingFixtures) {
+    const fixtures = player.upcomingFixtures.filter(f => f.gameweek >= 1)
+    const gameweeks = [...new Set(fixtures.map(f => f.gameweek))].sort((a, b) => a - b).slice(0, horizon)
+    return fixtures.filter(f => gameweeks.includes(f.gameweek))
+  }
   const opponent = player.fixture.split(' ')[0] || 'OPP', venue = player.fixture.includes('(A)') ? 'A' : 'H'
   return Array.from({ length: horizon }, (_, index) => ({ gameweek: index + 1, opponent, venue, difficulty: player.difficulty }))
 }

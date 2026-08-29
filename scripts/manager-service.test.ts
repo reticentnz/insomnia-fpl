@@ -114,7 +114,7 @@ describe('WP-03 manager import and exact economics', () => {
       gameweek: 1,
       fetchJson: async (endpoint: string) => {
         if (endpoint === 'entry/123456/event/1/picks/') return {
-          entry_history: { event_transfers_cost: 4 },
+          entry_history: { event_transfers: 2, event_transfers_cost: 4, bank: 15, value: 1015 },
           picks: [
             { element: 10, multiplier: 2 },
             { element: 11, multiplier: 1 },
@@ -132,7 +132,7 @@ describe('WP-03 manager import and exact economics', () => {
       },
     })
 
-    expect(result).toMatchObject({ gameweek: 1, gameweekPoints: 11 })
+    expect(result).toMatchObject({ gameweek: 1, gameweekPoints: 11, eventTransfers: 2, transfersCost: 4, bank: 1.5, squadValue: 101.5 })
     expect(result.updatedAt).toEqual(expect.any(String))
   })
 

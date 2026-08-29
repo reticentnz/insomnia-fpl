@@ -538,6 +538,10 @@ export async function fetchFplAccount(teamId: number, gameweek?: number): Promis
 export async function fetchFplLiveScore(teamId: number, gameweek: number): Promise<{
   gameweek: number;
   gameweekPoints: number;
+  eventTransfers?: number;
+  transfersCost?: number;
+  bank?: number;
+  squadValue?: number;
   updatedAt: string;
   chipsUsed: LeagueRivalChip[];
 }> {
@@ -550,6 +554,10 @@ export async function fetchFplLiveScore(teamId: number, gameweek: number): Promi
   return {
     gameweek: Number(data.gameweek),
     gameweekPoints: Number(data.gameweekPoints),
+    ...(data.eventTransfers == null ? {} : { eventTransfers: Number(data.eventTransfers) || 0 }),
+    ...(data.transfersCost == null ? {} : { transfersCost: Number(data.transfersCost) || 0 }),
+    ...(data.bank == null ? {} : { bank: Number(data.bank) || 0 }),
+    ...(data.squadValue == null ? {} : { squadValue: Number(data.squadValue) || 0 }),
     updatedAt: String(data.updatedAt || new Date().toISOString()),
     chipsUsed: Array.isArray(data.chipsUsed) ? data.chipsUsed.map((chip: any) => ({
       name: String(chip.name || ''),

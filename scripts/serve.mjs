@@ -1285,7 +1285,7 @@ async function refreshLiveData() {
   const nextGameweek = nextDeadlineRow?.gameweek || null
   const currentGameweekDeadline = gameweeks.find(gw => gw.gameweek === currentGameweek)?.deadline || null
   const players=catalog.players.map((item,index)=>{
-    const official=item.official||{},first=item.fixtures[0]
+    const official=item.official||{},first=item.fixtures.find(fixture => fixture.kickoffAt && Date.parse(fixture.kickoffAt) >= asOfMs) || item.fixtures[0]
     const availability=Number(official.chance_of_playing??100)
     const signals=toCatalogRoleSignals(item)
     const roleProfile=resolvePlayerRole(baseRole(item,Math.max(0,(currentGameweek||1)-1)),signals,{now:new Date(asOf),gameweek:currentGameweek||undefined,completedGameweeks:Math.max(0,(currentGameweek||1)-1)})
@@ -1343,10 +1343,14 @@ function compactClientCatalog(catalogue, fixtureHorizon = 5) {
   const currentGameweekDeadline = gameweeks.find(gw => gw.gameweek === currentGameweek)?.deadline || null
   const players = (catalogue.players || []).map(item => {
     const official = item.official || {}
-    const fixtures = (item.fixtures || [])
+    const allFutureFixtures = (item.fixtures || [])
       .filter(fixture => fixture.kickoffAt && (Date.parse(fixture.kickoffAt) >= asOfMs || (futureFixtures.length === 0 && Number(fixture.gameweekFplId) === Number(currentGameweek))))
       .sort((left, right) => (left.gameweekFplId || Infinity) - (right.gameweekFplId || Infinity))
+    const horizonGameweeks = [...new Set(allFutureFixtures.map(fixture => Number(fixture.gameweekFplId)))]
+      .filter(Number.isFinite)
       .slice(0, horizon)
+    const fixtures = allFutureFixtures
+      .filter(fixture => horizonGameweeks.includes(Number(fixture.gameweekFplId)))
       .map(fixture => ({
         gameweek: fixture.gameweekFplId || 0,
         opponent: fixture.opponent.shortName,

@@ -510,10 +510,14 @@ export const CLUB_FIXTURES: Record<string, FixtureItem[]> = {
 };
 
 export function getPlayerUpcomingFixtures(p: Player, limit = 5): FixtureItem[] {
-  if (p.upcomingFixtures) return p.upcomingFixtures.slice(0, limit);
+  const firstGameweeks = (fixtures: FixtureItem[]) => {
+    const gameweeks = [...new Set(fixtures.map(fixture => fixture.gameweek))].sort((a, b) => a - b).slice(0, limit);
+    return fixtures.filter(fixture => gameweeks.includes(fixture.gameweek));
+  };
+  if (p.upcomingFixtures) return firstGameweeks(p.upcomingFixtures);
   const clubFixtures = CLUB_FIXTURES[p.club];
   if (clubFixtures && clubFixtures.length > 0) {
-    return clubFixtures.slice(0, limit);
+    return firstGameweeks(clubFixtures);
   }
   const opp = p.fixture.split(" ")[0] || "OPP";
   const venue = p.fixture.includes("(A)") ? "A" : "H";
@@ -2940,7 +2944,7 @@ export function getPlayerFixtureTicker(
     player.upcomingFixtures && player.upcomingFixtures.length > 0
       ? player.upcomingFixtures
       : CLUB_FIXTURES[player.club] || getPlayerUpcomingFixtures(player);
-  return upcoming.slice(0, horizon).map((f) => {
+  return getPlayerUpcomingFixtures({ ...player, upcomingFixtures: upcoming }, horizon).map((f) => {
     const diff = Math.min(5, Math.max(1, Math.round(f.difficulty)));
     return {
       gameweek: f.gameweek,
