@@ -921,12 +921,6 @@ function CaptainBreakdownBar({ breakdown }: { breakdown: CaptaincyBreakdown }) {
     </div>
   );
 }
-function getGreeting(userName: string = "Alex") {
-  const hour = new Date().getHours();
-  const timeGreeting =
-    hour < 12 ? "Good morning" : hour < 17 ? "Good afternoon" : "Good evening";
-  return userName ? `${timeGreeting}, ${userName}.` : `${timeGreeting}.`;
-}
 function getInitials(name: string) {
   const parts = name.trim().split(/\s+/).filter(Boolean);
   return (name.trim().slice(0, 2) || "A").toUpperCase();
@@ -2795,7 +2789,7 @@ function App() {
               GAMEWEEK {currentGameweek ?? 1} <span>·</span>{" "}
               {formatDeadlineText(deadlineTime, nextGameweek, currentGameweek)}
             </p>
-            <h1>{tab === "My Team" ? getGreeting(userName) : tab}</h1>
+            <h1>{tab}</h1>
             <p className="muted">
               {tab === "Admin"
                 ? "Run and audit data maintenance tasks from one place."
