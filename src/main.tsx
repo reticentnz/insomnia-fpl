@@ -5043,8 +5043,16 @@ function ReviewView() {
   const [backtest, setBacktest] = useState<any>(null);
   const [decisions, setDecisions] = useState<any[]>([]);
   const [error, setError] = useState<string | null>(null);
+  const [showOlderModels, setShowOlderModels] = useState(false);
+  const backtestModels = useMemo(
+    () => [...(backtest?.models || [])].sort((left: any, right: any) =>
+      String(right.lastForecastAt || '').localeCompare(String(left.lastForecastAt || '')) || String(right.modelVersion).localeCompare(String(left.modelVersion), undefined, { numeric: true, sensitivity: "base" }),
+    ),
+    [backtest],
+  );
+  const hiddenModelCount = Math.max(0, backtestModels.length - 2);
+  const visibleBacktestModels = showOlderModels ? backtestModels : backtestModels.slice(0, 2);
   const [loading, setLoading] = useState<boolean>(true);
-
   useEffect(() => {
     let active = true;
     setLoading(true);
@@ -5113,9 +5121,7 @@ function ReviewView() {
             </span>
           </div>
           <div className="review-panel-body">
-            {[...(backtest.models || [])].sort((left: any, right: any) =>
-              String(right.lastForecastAt || '').localeCompare(String(left.lastForecastAt || '')) || String(right.modelVersion).localeCompare(String(left.modelVersion))
-            ).map((model: any) => (
+            {visibleBacktestModels.map((model: any) => (
               <div key={model.modelVersion}>
                 <div className="review-strip">
                   <span><b>Model</b>{model.modelVersion}</span>
@@ -5148,6 +5154,11 @@ function ReviewView() {
                 )}
               </div>
             ))}
+            {hiddenModelCount > 0 && (
+              <button className="ghost-btn" type="button" aria-expanded={showOlderModels} onClick={() => setShowOlderModels(value => !value)}>
+                {showOlderModels ? 'Hide older models' : `Show ${hiddenModelCount} older model${hiddenModelCount === 1 ? '' : 's'}`}
+              </button>
+            )}
           </div>
         </div>
       )}

@@ -12,6 +12,7 @@ import {
   startFeedRun,
 } from './feed-run.mjs'
 import { refreshForecastIfInputsChanged } from '../src/server/forecast-refresh-service.ts'
+import { evaluatePendingDecisions } from './decision-journal-service.mjs'
 
 const positions = { 1: 'GK', 2: 'DEF', 3: 'MID', 4: 'FWD' }
 const playerObservationColumns = [
@@ -614,6 +615,7 @@ async function runPayloadIngestion({
     // Facts have committed before this independent ledger operation. A no-op
     // upstream poll must not add another immutable ForecastRun.
     const forecast = await refreshForecastIfInputsChanged(db, { asOf: times.observedAt, reasons: ['official'] })
+    const evaluatedDecisions = await evaluatePendingDecisions(db, { evaluatedAt: times.finishedAt })
     return {
       feedRunId,
       status,
@@ -622,6 +624,7 @@ async function runPayloadIngestion({
       payloadHash,
       counts: written.counts,
       forecast,
+      evaluatedDecisions: evaluatedDecisions.filter(decision => decision.evaluatedAt).length,
     }
   } catch (error) {
     if (feedRunId) {

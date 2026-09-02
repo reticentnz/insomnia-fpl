@@ -89,12 +89,18 @@ export async function recordDecision(db, { recommendationSetId, candidateId = nu
   return { ...(await getDecision(db, existing.rows[0].id)), created: false }
 }
 
-async function planActual(db, { planId, forecastRunId }) {
+async function planActual(db, { planId, forecastRunId, horizon }) {
   const fixtures = await db.query(
     `SELECT forecast."player_id", forecast."fixture_id", forecast."mean_points"
      FROM "PlayerFixtureForecast" forecast
      JOIN "PlanPlayer" player ON player."plan_id"=$1 AND player."player_id"=forecast."player_id"
-     WHERE forecast."forecast_run_id"=$2`, [planId, forecastRunId])
+     JOIN "ForecastRun" run ON run."id"=forecast."forecast_run_id"
+     JOIN "FixtureObservation" fixture_observation ON fixture_observation."fixture_id"=forecast."fixture_id" AND fixture_observation."feed_run_id"=run."official_feed_run_id"
+     JOIN "Gameweek" fixture_gameweek ON fixture_gameweek."id"=fixture_observation."gameweek_id"
+     JOIN "Gameweek" forecast_gameweek ON forecast_gameweek."id"=run."gameweek_id"
+     WHERE forecast."forecast_run_id"=$2
+       AND fixture_gameweek."fpl_id">=forecast_gameweek."fpl_id"
+       AND fixture_gameweek."fpl_id"<forecast_gameweek."fpl_id"+$3`, [planId, forecastRunId, horizon])
   if (!fixtures.rows.length) return { pending: true, expectedPoints: 0, realizedPoints: null, missingResults: 0 }
   let expectedPoints = 0, realizedPoints = 0, missingResults = 0
   for (const fixture of fixtures.rows) {
@@ -114,9 +120,9 @@ async function planActual(db, { planId, forecastRunId }) {
 export async function evaluateDecision(db, decisionId, evaluatedAt = new Date().toISOString()) {
   const decision = await getDecision(db, decisionId)
   if (!decision) throw new Error(`Decision ${decisionId} does not exist`)
-  const baseline = await planActual(db, { planId: decision.baselinePlanId, forecastRunId: decision.forecastRunId })
+  const baseline = await planActual(db, { planId: decision.baselinePlanId, forecastRunId: decision.forecastRunId, horizon: decision.horizon })
   const chosen = decision.selectedPlanId
-    ? await planActual(db, { planId: decision.selectedPlanId, forecastRunId: decision.forecastRunId })
+    ? await planActual(db, { planId: decision.selectedPlanId, forecastRunId: decision.forecastRunId, horizon: decision.horizon })
     : baseline
   const pending = baseline.pending || chosen.pending
   const outcome = {
@@ -161,10 +167,11 @@ export async function listDecisions(db, { limit = 50 } = {}) {
   return Promise.all(rows.rows.map(row => getDecision(db, row.id)))
 }
 
-export async function evaluatePendingDecisions(db, { limit = 200 } = {}) {
+/** Recheck decisions after official results are ingested; resolved entries are left immutable. */
+export async function evaluatePendingDecisions(db, { limit = 200, evaluatedAt = new Date().toISOString() } = {}) {
   if (!Number.isInteger(limit) || limit < 1 || limit > 500) throw new Error('limit must be an integer between 1 and 500')
   const rows = await db.query('SELECT "id" FROM "DecisionRecord" WHERE "evaluated_at" IS NULL ORDER BY "created_at" ASC, "id" ASC LIMIT $1', [limit])
   const evaluated = []
-  for (const row of rows.rows) evaluated.push(await evaluateDecision(db, row.id))
+  for (const row of rows.rows) evaluated.push(await evaluateDecision(db, row.id, evaluatedAt))
   return evaluated
 }
